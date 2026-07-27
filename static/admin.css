@@ -51,6 +51,9 @@ input:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px
 
 .app-header { width: 100%; height: 64px; display: flex; align-items: center; justify-content: space-between; padding: 0 clamp(20px, 4vw, 56px); background: #17211c; color: #f4f8f5; border-bottom: 1px solid #2d3b34; }
 .app-brand { color: inherit; text-decoration: none; display: flex; align-items: center; gap: 12px; font-size: 14px; font-weight: 750; }
+.app-brand .app-version { margin-left: 2px; }
+.app-version { color: #789286; font-family: "SFMono-Regular", Consolas, monospace; font-size: 10px; font-weight: 650; letter-spacing: .04em; }
+.login-brand .app-version { display: block; margin-top: 26px; color: #789286; }
 .brand-mark-small { width: 32px; height: 32px; font-size: 11px; }
 .header-actions { display: flex; align-items: center; gap: 14px; }
 .header-actions .quiet-button { color: #d6dfda; border-color: #4a5851; min-height: 34px; padding: 0 12px; }

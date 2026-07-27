@@ -87,7 +87,7 @@ def root() -> RedirectResponse:
 def login_page(request: Request, session: str | None = Cookie(default=None, alias=SESSION_COOKIE)):
     if read_session(session):
         return RedirectResponse("/admin", status_code=302)
-    return templates.TemplateResponse(request=request, name="login.html", context={})
+    return templates.TemplateResponse(request=request, name="login.html", context={"version": settings.app_version})
 
 
 @app.post("/admin/api/login")
@@ -127,7 +127,11 @@ def dashboard(request: Request, session: str | None = Cookie(default=None, alias
     return templates.TemplateResponse(
         request=request,
         name="dashboard.html",
-        context={"username": session_payload["username"], "csrf_token": csrf_token(session)},
+        context={
+            "username": session_payload["username"],
+            "csrf_token": csrf_token(session),
+            "version": settings.app_version,
+        },
     )
 
 

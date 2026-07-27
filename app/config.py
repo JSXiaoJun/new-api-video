@@ -33,6 +33,7 @@ def env_bool(name: str, default: bool = False) -> bool:
 
 @dataclass(frozen=True)
 class Settings:
+    app_version: str
     admin_username: str
     admin_password: str
     session_secret: str
@@ -65,6 +66,7 @@ def load_settings() -> Settings:
         data_dir = ROOT_DIR / data_dir
 
     return Settings(
+        app_version=os.getenv("APP_VERSION", "dev"),
         admin_username=required["ADMIN_USERNAME"],
         admin_password=required["ADMIN_PASSWORD"],
         session_secret=required["SESSION_SECRET"],
@@ -80,4 +82,3 @@ def load_settings() -> Settings:
 
 
 settings = load_settings()
-
