@@ -37,7 +37,7 @@ Add the PIDOI upstream in the admin page. Its base URL is `https://pidoi.com`. M
 sora2 | videos
 gemini-omni-flash | videos
 veo31-fast | videos
-sora-vip3-pro-720p | videos
+sora-v3-933-pro | videos
 seedance-2.0-fast | seedance
 ```
 

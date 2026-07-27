@@ -12,7 +12,7 @@ os.environ.setdefault("ADAPTER_API_KEY", "test-adapter-key")
 os.environ.setdefault("ENCRYPTION_KEY", "IougsRYbjtzQcNSrzLV2O-TQ3k1PDP69XcfdR3Lxp3I=")
 
 from app import database
-from app.main import app
+from app.main import app, normalize_discovered_models
 from app.proxy import normalize_status, normalize_task_payload
 from app.security import create_session, read_session, secret_box
 from fastapi.testclient import TestClient
@@ -59,6 +59,25 @@ class CoreTests(unittest.TestCase):
         encrypted = secret_box.encrypt("sk-secret")
         self.assertNotIn("sk-secret", encrypted)
         self.assertEqual(secret_box.decrypt(encrypted), "sk-secret")
+
+    def test_model_discovery_normalizes_upstream_formats(self):
+        payload = {
+            "data": [
+                {"id": "sora-v3-933-pro"},
+                {"model": "seedance-2.0-fast"},
+                "veo31-fast",
+                {"id": "sora-v3-933-pro"},
+                {"id": ""},
+            ]
+        }
+        self.assertEqual(
+            normalize_discovered_models(payload),
+            [
+                {"model": "sora-v3-933-pro", "protocol": "videos"},
+                {"model": "seedance-2.0-fast", "protocol": "seedance"},
+                {"model": "veo31-fast", "protocol": "videos"},
+            ],
+        )
 
 
 if __name__ == "__main__":

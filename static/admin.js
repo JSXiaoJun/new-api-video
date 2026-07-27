@@ -2,6 +2,11 @@ const csrf = document.querySelector('meta[name="csrf-token"]').content
 const dialog = document.querySelector('#upstream-dialog')
 const form = document.querySelector('#upstream-form')
 const toast = document.querySelector('#toast')
+const discoverModelsButton = document.querySelector('#discover-models')
+const modelPicker = document.querySelector('#model-picker')
+const modelOptions = document.querySelector('#model-options')
+const modelPickerStatus = document.querySelector('#model-picker-status')
+const applyModelsButton = document.querySelector('#apply-models')
 let dashboard = { upstreams: [], tasks: [], stats: {} }
 
 function updateResponsiveClass() {
@@ -120,6 +125,11 @@ function openDialog(upstream = null) {
   document.querySelector('#upstream-enabled').checked = upstream?.enabled ?? true
   document.querySelector('#delete-upstream').hidden = !upstream
   document.querySelector('#form-error').hidden = true
+  modelPicker.hidden = true
+  modelOptions.innerHTML = ''
+  modelPickerStatus.textContent = ''
+  applyModelsButton.disabled = true
+  modelPicker._models = []
   dialog.showModal()
   document.querySelector('#upstream-name').focus()
 }
@@ -127,7 +137,85 @@ function openDialog(upstream = null) {
 function closeDialog() {
   dialog.close()
   form.reset()
+  modelPicker.hidden = true
+  modelOptions.innerHTML = ''
+  modelPicker._models = []
 }
+
+function renderModelOptions(models) {
+  modelOptions.innerHTML = models.map((item, index) => `
+    <label class="model-option">
+      <input type="checkbox" data-model-index="${index}">
+      <span class="model-option-name">${escapeHtml(item.model)}</span>
+      <select data-protocol-index="${index}" aria-label="${escapeHtml(item.model)} 协议">
+        <option value="videos"${item.protocol === 'videos' ? ' selected' : ''}>videos</option>
+        <option value="seedance"${item.protocol === 'seedance' ? ' selected' : ''}>seedance</option>
+      </select>
+    </label>`).join('')
+  modelPicker.hidden = false
+  modelPickerStatus.textContent = `${models.length} 个模型`
+  applyModelsButton.disabled = true
+  for (const checkbox of modelOptions.querySelectorAll('input[type="checkbox"]')) {
+    checkbox.addEventListener('change', () => {
+      applyModelsButton.disabled = !modelOptions.querySelector('input[type="checkbox"]:checked')
+    })
+  }
+  modelPicker._models = models
+}
+
+discoverModelsButton.addEventListener('click', async () => {
+  const baseUrl = document.querySelector('#upstream-base-url').value.trim()
+  const apiKey = document.querySelector('#upstream-api-key').value
+  const upstreamId = document.querySelector('#upstream-id').value
+  if (!baseUrl) {
+    document.querySelector('#form-error').textContent = '请先填写 Base URL'
+    document.querySelector('#form-error').hidden = false
+    return
+  }
+  discoverModelsButton.disabled = true
+  discoverModelsButton.textContent = '获取中...'
+  try {
+    const result = await api('/admin/api/upstreams/models', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        upstream_id: upstreamId ? Number(upstreamId) : null,
+        base_url: baseUrl,
+        api_key: apiKey,
+      }),
+    })
+    renderModelOptions(result.models)
+    showToast(`已获取 ${result.models.length} 个上游模型`)
+  } catch (error) {
+    modelPicker.hidden = true
+    document.querySelector('#form-error').textContent = error.message
+    document.querySelector('#form-error').hidden = false
+  } finally {
+    discoverModelsButton.disabled = false
+    discoverModelsButton.textContent = '获取上游模型'
+  }
+})
+
+applyModelsButton.addEventListener('click', () => {
+  const models = modelPicker._models || []
+  const routes = new Map()
+  try {
+    const currentText = document.querySelector('#upstream-routes').value.trim()
+    for (const route of (currentText ? parseRoutes(currentText) : [])) routes.set(route.model, route)
+    for (const checkbox of modelOptions.querySelectorAll('input[type="checkbox"]:checked')) {
+      const index = Number(checkbox.dataset.modelIndex)
+      const model = models[index]
+      routes.set(model.model, { model: model.model, protocol: modelOptions.querySelector(`[data-protocol-index="${index}"]`).value })
+    }
+  } catch (error) {
+    document.querySelector('#form-error').textContent = error.message
+    document.querySelector('#form-error').hidden = false
+    return
+  }
+  document.querySelector('#upstream-routes').value = [...routes.values()].map((route) => `${route.model} | ${route.protocol}`).join('\n')
+  modelPicker.hidden = true
+  showToast('已将所选模型加入路由')
+})
 
 document.querySelector('#add-upstream').addEventListener('click', () => openDialog())
 document.querySelector('#close-dialog').addEventListener('click', closeDialog)

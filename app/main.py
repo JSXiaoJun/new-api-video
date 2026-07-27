@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+from typing import Any
 
+import httpx
 from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -10,7 +12,7 @@ from fastapi.templating import Jinja2Templates
 
 from . import database, proxy
 from .config import ROOT_DIR, settings
-from .schemas import LoginInput, UpstreamInput
+from .schemas import LoginInput, ModelDiscoveryInput, UpstreamInput
 from .security import (
     SESSION_COOKIE,
     create_session,
@@ -71,6 +73,31 @@ def admin_mutation(
 def adapter_auth(authorization: str | None = Header(default=None)) -> None:
     if not verify_adapter_key(authorization):
         raise HTTPException(status_code=401, detail="Invalid adapter API key")
+
+
+def normalize_discovered_models(payload: Any) -> list[dict[str, str]]:
+    if isinstance(payload, dict):
+        raw_models = payload.get("data", payload.get("models", []))
+    else:
+        raw_models = payload
+    if not isinstance(raw_models, list):
+        return []
+
+    result: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in raw_models:
+        if isinstance(item, str):
+            model_id = item.strip()
+        elif isinstance(item, dict):
+            model_id = str(item.get("id") or item.get("model") or item.get("name") or "").strip()
+        else:
+            model_id = ""
+        if not model_id or len(model_id) > 160 or model_id in seen:
+            continue
+        seen.add(model_id)
+        protocol = "seedance" if "seedance" in model_id.lower() else "videos"
+        result.append({"model": model_id, "protocol": protocol})
+    return result
 
 
 @app.get("/healthz")
@@ -138,6 +165,35 @@ def dashboard(request: Request, session: str | None = Cookie(default=None, alias
 @app.get("/admin/api/dashboard")
 def dashboard_api(_: tuple[str, dict] = Depends(admin_session)):
     return database.dashboard_data()
+
+
+@app.post("/admin/api/upstreams/models")
+async def discover_upstream_models(payload: ModelDiscoveryInput, _: dict = Depends(admin_mutation)):
+    api_key = payload.api_key.strip()
+    if payload.upstream_id and not api_key:
+        existing = database.get_upstream(payload.upstream_id, include_key=True)
+        if existing is None:
+            raise HTTPException(status_code=404, detail="Upstream not found")
+        api_key = existing["api_key"]
+
+    headers = {"Accept": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    try:
+        async with httpx.AsyncClient(timeout=min(settings.upstream_timeout_seconds, 30), follow_redirects=True) as client:
+            response = await client.get(f"{payload.base_url}/v1/models", headers=headers)
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=502, detail=f"上游模型请求失败: {exc}") from exc
+    if not 200 <= response.status_code < 300:
+        raise HTTPException(status_code=502, detail=f"上游模型接口返回 HTTP {response.status_code}")
+    try:
+        upstream_payload = response.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail="上游模型接口返回的不是有效 JSON") from exc
+    models = normalize_discovered_models(upstream_payload)
+    if not models:
+        raise HTTPException(status_code=422, detail="上游没有返回可用模型")
+    return {"models": models}
 
 
 @app.post("/admin/api/upstreams")
