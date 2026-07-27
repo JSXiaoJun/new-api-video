@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="csrf-token" content="{{ csrf_token }}">
+    <link rel="icon" href="data:,">
+    <title>Video Relay Console</title>
+    <link rel="stylesheet" href="/static/admin.css?v=20260727-3">
+  </head>
+  <body>
+    <header class="app-header">
+      <a class="app-brand" href="/admin">
+        <span class="brand-mark brand-mark-small">VR</span>
+        <span>Video Relay Console</span>
+      </a>
+      <div class="header-actions">
+        <span class="operator"><span class="status-dot"></span>{{ username }}</span>
+        <button id="logout-button" class="quiet-button" type="button">退出</button>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <section class="workspace-heading">
+        <div>
+          <p class="eyebrow">UPSTREAM CONTROL</p>
+          <h1>上游管理</h1>
+        </div>
+        <button id="add-upstream" class="primary-button compact" type="button">添加上游</button>
+      </section>
+
+      <section class="stats-band" aria-label="运行概览">
+        <div><span>上游</span><strong id="stat-upstreams">0</strong></div>
+        <div><span>已启用</span><strong id="stat-enabled">0</strong></div>
+        <div><span>模型</span><strong id="stat-models">0</strong></div>
+        <div><span>任务</span><strong id="stat-tasks">0</strong></div>
+      </section>
+
+      <section class="table-section">
+        <div class="section-heading">
+          <h2>上游节点</h2>
+          <button id="refresh-button" class="quiet-button" type="button">刷新</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>状态</th><th>名称</th><th>地址</th><th>模型路由</th><th>优先级</th><th class="align-right">操作</th></tr></thead>
+            <tbody id="upstream-rows"></tbody>
+          </table>
+          <div id="upstream-empty" class="empty-state" hidden>尚未配置上游</div>
+        </div>
+        <div id="upstream-cards" class="mobile-list" aria-label="上游节点列表"></div>
+      </section>
+
+      <section class="table-section task-section">
+        <div class="section-heading"><h2>最近任务</h2><span>最近 50 条</span></div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>任务 ID</th><th>模型</th><th>上游</th><th>状态</th><th>创建时间</th></tr></thead>
+            <tbody id="task-rows"></tbody>
+          </table>
+          <div id="task-empty" class="empty-state" hidden>暂无转接任务</div>
+        </div>
+        <div id="task-cards" class="mobile-list" aria-label="最近任务列表"></div>
+      </section>
+    </main>
+
+    <dialog id="upstream-dialog">
+      <form id="upstream-form" class="dialog-form">
+        <div class="dialog-heading">
+          <div><p class="eyebrow">CONFIGURATION</p><h2 id="dialog-title">添加上游</h2></div>
+          <button id="close-dialog" class="close-button" type="button" aria-label="关闭">×</button>
+        </div>
+        <input id="upstream-id" type="hidden">
+        <div class="form-grid">
+          <label><span>名称</span><input id="upstream-name" required maxlength="80" placeholder="PIDOI 主节点"></label>
+          <label><span>优先级</span><input id="upstream-priority" type="number" min="0" max="9999" value="100" required></label>
+          <label class="span-two"><span>Base URL</span><input id="upstream-base-url" type="url" required placeholder="https://pidoi.com"></label>
+          <label class="span-two"><span>API Key</span><input id="upstream-api-key" type="password" autocomplete="off" placeholder="编辑时留空可保留原密钥"></label>
+          <label class="span-two"><span>模型路由</span><textarea id="upstream-routes" rows="7" required placeholder="sora2 | videos&#10;gemini-omni-flash | videos&#10;veo31-fast | videos&#10;seedance-2.0-fast | seedance"></textarea></label>
+        </div>
+        <label class="toggle-row"><input id="upstream-enabled" type="checkbox" checked><span>启用此上游</span></label>
+        <p id="form-error" class="form-error" role="alert" hidden></p>
+        <div class="dialog-actions">
+          <button id="delete-upstream" class="danger-button" type="button" hidden>删除</button>
+          <span class="action-spacer"></span>
+          <button id="cancel-dialog" class="quiet-button" type="button">取消</button>
+          <button class="primary-button compact" type="submit">保存</button>
+        </div>
+      </form>
+    </dialog>
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+    <script src="/static/admin.js?v=20260727-3" defer></script>
+  </body>
+</html>

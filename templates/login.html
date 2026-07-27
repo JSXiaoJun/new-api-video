@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="icon" href="data:,">
+    <title>Video Relay Console</title>
+    <link rel="stylesheet" href="/static/admin.css?v=20260727-3">
+  </head>
+  <body class="login-body">
+    <main class="login-shell">
+      <section class="login-brand" aria-label="Video Relay Console">
+        <div class="brand-mark">VR</div>
+        <div>
+          <p class="eyebrow">CONTROL PLANE</p>
+          <h1>Video Relay<br>Console</h1>
+          <p class="login-status"><span class="status-dot"></span> Relay administration</p>
+        </div>
+      </section>
+      <section class="login-panel">
+        <div class="login-heading">
+          <h2>管理员登录</h2>
+          <p>访问上游配置与任务状态</p>
+        </div>
+        <form id="login-form" class="stack-form">
+          <label>
+            <span>用户名</span>
+            <input name="username" autocomplete="username" required autofocus>
+          </label>
+          <label>
+            <span>密码</span>
+            <input name="password" type="password" autocomplete="current-password" required>
+          </label>
+          <p id="login-error" class="form-error" role="alert" hidden></p>
+          <button class="primary-button" type="submit">登录</button>
+        </form>
+      </section>
+    </main>
+    <script src="/static/login.js?v=20260727-2" defer></script>
+  </body>
+</html>
