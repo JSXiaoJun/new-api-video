@@ -5,6 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import httpx
+
 os.environ.setdefault("ADMIN_USERNAME", "admin")
 os.environ.setdefault("ADMIN_PASSWORD", "test-password")
 os.environ.setdefault("SESSION_SECRET", "test-session-secret-with-more-than-32-chars")
@@ -13,7 +15,7 @@ os.environ.setdefault("ENCRYPTION_KEY", "IougsRYbjtzQcNSrzLV2O-TQ3k1PDP69XcfdR3L
 
 from app import database
 from app.main import app, normalize_discovered_models
-from app.proxy import normalize_status, normalize_task_payload
+from app.proxy import normalize_status, normalize_task_payload, upstream_error
 from app.security import create_session, read_session, secret_box
 from fastapi.testclient import TestClient
 
@@ -78,6 +80,20 @@ class CoreTests(unittest.TestCase):
                 {"model": "veo31-fast", "protocol": "videos"},
             ],
         )
+
+    def test_upstream_error_does_not_expose_provider_details(self):
+        request = httpx.Request("POST", "https://private-upstream.example/v1/videos")
+        response = httpx.Response(
+            502,
+            request=request,
+            json={"error": {"message": "api.pixellelabs.com internal failure"}},
+        )
+        result = upstream_error(response)
+        body = result.body.decode()
+        self.assertEqual(result.status_code, 502)
+        self.assertIn("Video upstream request failed", body)
+        self.assertNotIn("pixellelabs", body)
+        self.assertNotIn("private-upstream", body)
 
 
 if __name__ == "__main__":

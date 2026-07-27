@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import time
 import uuid
 from typing import Any
@@ -11,6 +12,9 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from . import database
 from .config import settings
+
+
+logger = logging.getLogger("uvicorn.error")
 
 
 STATUS_MAP = {
@@ -36,15 +40,14 @@ def normalize_status(value: Any) -> str:
 
 
 def upstream_error(response: httpx.Response) -> JSONResponse:
-    try:
-        payload = response.json()
-    except ValueError:
-        payload = {
-            "error": {
-                "message": response.text[:2000] or f"Upstream returned HTTP {response.status_code}",
-                "type": "upstream_error",
-            }
+    logger.warning("Video upstream returned HTTP %s: %s", response.status_code, response.text[:2000])
+    payload = {
+        "error": {
+            "message": "Video upstream request failed",
+            "type": "upstream_error",
+            "code": f"upstream_http_{response.status_code}",
         }
+    }
     return JSONResponse(payload, status_code=response.status_code)
 
 
@@ -75,7 +78,8 @@ async def create_video(payload: dict[str, Any], incoming_idempotency_key: str | 
         async with httpx.AsyncClient(timeout=settings.upstream_timeout_seconds) as client:
             response = await client.post(upstream["base_url"] + endpoint, headers=headers, json=payload)
     except httpx.RequestError as exc:
-        raise HTTPException(status_code=502, detail=f"Upstream connection failed: {exc}") from exc
+        logger.warning("Video upstream create request failed: %s", exc)
+        raise HTTPException(status_code=502, detail="Video upstream connection failed") from exc
     if not 200 <= response.status_code < 300:
         return upstream_error(response)
 
@@ -158,7 +162,8 @@ async def fetch_task(task_id: str) -> JSONResponse:
         async with httpx.AsyncClient(timeout=settings.upstream_timeout_seconds) as client:
             response = await client.get(f"{task['base_url']}/v1/videos/{task_id}", headers=headers)
     except httpx.RequestError as exc:
-        raise HTTPException(status_code=502, detail=f"Upstream connection failed: {exc}") from exc
+        logger.warning("Video upstream task request failed: %s", exc)
+        raise HTTPException(status_code=502, detail="Video upstream connection failed") from exc
     if not 200 <= response.status_code < 300:
         return upstream_error(response)
     try:
@@ -201,14 +206,20 @@ async def stream_content(task_id: str, request: Request) -> StreamingResponse:
         upstream_response = await client.send(client.build_request("GET", source_url, headers=headers), stream=True)
     except httpx.RequestError as exc:
         await client.aclose()
-        raise HTTPException(status_code=502, detail=f"Video download failed: {exc}") from exc
+        logger.warning("Video upstream content request failed: %s", exc)
+        raise HTTPException(status_code=502, detail="Video upstream download failed") from exc
     if upstream_response.status_code not in {200, 206}:
         body = await upstream_response.aread()
         await upstream_response.aclose()
         await client.aclose()
+        logger.warning(
+            "Video upstream content returned HTTP %s: %s",
+            upstream_response.status_code,
+            body[:2000].decode(errors="replace"),
+        )
         raise HTTPException(
             status_code=502,
-            detail=f"Video upstream returned HTTP {upstream_response.status_code}: {body[:300].decode(errors='replace')}",
+            detail="Video upstream download failed",
         )
 
     async def iterator():
@@ -229,4 +240,3 @@ async def stream_content(task_id: str, request: Request) -> StreamingResponse:
         media_type=upstream_response.headers.get("content-type", "video/mp4"),
         headers=response_headers,
     )
-
