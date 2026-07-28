@@ -9,6 +9,7 @@ Independent video upstream adapter for New API. It exposes a normalized `/v1/vid
 - Automatic or forwarded `Idempotency-Key`
 - Multiple upstreams, model routing, priority, and enable/disable controls
 - SQLite task ownership so polling returns to the original upstream
+- Upstream task IDs, media URLs, and error details stay internal to the adapter
 - Fernet-encrypted upstream API keys
 - Admin login, signed sessions, CSRF protection, and login rate limiting
 - Video content proxy with Range forwarding
@@ -66,3 +67,7 @@ GET  /v1/videos/{task_id}
 GET  /v1/videos/{task_id}/content
 GET  /healthz
 ```
+
+Task polling responses intentionally omit upstream `id`, `task_id`, and `video_url` fields. Clients must keep the
+public task ID returned by New API when the task is created and download through
+`/v1/videos/{public_task_id}/content` on the New API domain.

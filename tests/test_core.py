@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import unittest
@@ -54,6 +55,34 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(result["status"], "completed")
         self.assertEqual(result["progress"], 100)
         self.assertEqual(video_url, "https://cdn/video.mp4")
+        self.assertNotIn("id", result)
+        self.assertNotIn("task_id", result)
+        self.assertNotIn("video_url", result)
+
+    def test_task_response_keeps_upstream_details_internal(self):
+        task = {
+            "task_id": "upstream-secret-id",
+            "model": "sora-v3-933-pro",
+            "protocol": "videos",
+            "created_at": 100,
+        }
+        payload = {
+            "id": "upstream-secret-id",
+            "task_id": "upstream-secret-id",
+            "status": "completed",
+            "progress": "100",
+            "video_url": "https://api.pixellelabs.com/v4/generated/private.mp4",
+        }
+
+        result, video_url = normalize_task_payload(task, payload)
+        body = json.dumps(result)
+
+        self.assertEqual(video_url, payload["video_url"])
+        self.assertEqual(result["status"], "completed")
+        self.assertNotIn("pixellelabs", body)
+        self.assertNotIn("upstream-secret-id", body)
+        self.assertNotIn("video_url", result)
+        self.assertNotIn("task_id", result)
 
     def test_session_and_secret_round_trip(self):
         session = create_session("admin")

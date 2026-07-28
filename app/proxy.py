@@ -92,19 +92,21 @@ async def create_video(payload: dict[str, Any], incoming_idempotency_key: str | 
         raise HTTPException(status_code=502, detail="Upstream response did not contain a task_id")
 
     status = normalize_status(upstream_payload.get("status", "queued"))
+    if status not in {"queued", "processing", "completed", "failed"}:
+        status = "queued"
     database.create_task(task_id, upstream["id"], model, protocol, status)
-    result = dict(upstream_payload)
-    result.update(
-        {
-            "id": task_id,
-            "task_id": task_id,
-            "object": result.get("object", "video"),
-            "model": result.get("model", model),
-            "status": status,
-            "progress": int(result.get("progress") or 0),
-            "created_at": int(result.get("created_at") or time.time()),
-        }
-    )
+    try:
+        progress = max(0, min(100, int(float(upstream_payload.get("progress") or 0))))
+    except (TypeError, ValueError, OverflowError):
+        progress = 0
+    result = {
+        "id": task_id,
+        "object": "video",
+        "model": model,
+        "status": status,
+        "progress": progress,
+        "created_at": int(time.time()),
+    }
     return JSONResponse(result)
 
 
@@ -112,8 +114,6 @@ def normalize_task_payload(task: dict[str, Any], payload: dict[str, Any]) -> tup
     status_value: Any = payload.get("status")
     video_url: str | None = payload.get("video_url")
     error_value: Any = payload.get("error")
-    created_at = payload.get("created_at") or task["created_at"]
-    updated_at = payload.get("updated_at") or int(time.time())
     progress: Any = payload.get("progress")
 
     if task["protocol"] == "seedance":
@@ -125,29 +125,25 @@ def normalize_task_payload(task: dict[str, Any], payload: dict[str, Any]) -> tup
         error_value = outer_data.get("error") or job_data.get("error") or error_value
 
     status = normalize_status(status_value)
+    if status not in {"queued", "processing", "completed", "failed"}:
+        status = "queued"
     if progress is None:
         progress = 100 if status in {"completed", "failed"} else (30 if status == "processing" else 0)
-    if isinstance(error_value, dict):
-        error_message = str(error_value.get("message") or error_value.get("error") or "") or None
-    elif error_value:
-        error_message = str(error_value)
-    else:
-        error_message = None
+    try:
+        progress = max(0, min(100, int(float(progress))))
+    except (TypeError, ValueError, OverflowError):
+        progress = 0
 
     result = {
-        "id": task["task_id"],
-        "task_id": task["task_id"],
         "object": "video",
         "model": task["model"],
         "status": status,
         "progress": progress,
-        "created_at": created_at,
-        "updated_at": updated_at,
+        "created_at": int(task["created_at"]),
+        "updated_at": int(time.time()),
     }
-    if video_url:
-        result["video_url"] = video_url
-    if error_message:
-        result["error"] = {"message": error_message, "code": "upstream_task_failed"}
+    if error_value:
+        result["error"] = {"message": "Video generation failed", "code": "video_generation_failed"}
     else:
         result["error"] = None
     return result, video_url
@@ -184,11 +180,13 @@ async def stream_content(task_id: str, request: Request) -> StreamingResponse:
     source_url = task.get("source_video_url")
     if not source_url:
         task_response = await fetch_task(task_id)
-        task_payload = bytes(task_response.body)
         import json
 
-        status_payload = json.loads(task_payload)
-        source_url = status_payload.get("video_url")
+        status_payload = json.loads(bytes(task_response.body))
+        refreshed_task = database.get_task(task_id)
+        if refreshed_task is not None:
+            task = refreshed_task
+            source_url = task.get("source_video_url")
         if not source_url and status_payload.get("status") != "completed":
             raise HTTPException(status_code=409, detail="Video is not completed")
 
