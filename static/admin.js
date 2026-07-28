@@ -7,7 +7,13 @@ const modelPicker = document.querySelector('#model-picker')
 const modelOptions = document.querySelector('#model-options')
 const modelPickerStatus = document.querySelector('#model-picker-status')
 const applyModelsButton = document.querySelector('#apply-models')
+const auditDialog = document.querySelector('#audit-dialog')
+const auditVideo = document.querySelector('#audit-video')
+const auditEvent = document.querySelector('#audit-event')
+const auditJson = document.querySelector('#audit-json')
 let dashboard = { upstreams: [], tasks: [], stats: {} }
+let activeAudit = null
+let activeAuditView = 'request'
 
 function updateResponsiveClass() {
   document.documentElement.classList.toggle('is-mobile', window.matchMedia('(max-width: 760px)').matches)
@@ -53,6 +59,14 @@ function formatTime(timestamp) {
   return new Intl.DateTimeFormat('zh-CN', { dateStyle: 'short', timeStyle: 'medium' }).format(new Date(timestamp * 1000))
 }
 
+function formatJson(value) {
+  if (value === null || value === undefined || value === '') return '无记录'
+  if (typeof value === 'string') {
+    try { return JSON.stringify(JSON.parse(value), null, 2) } catch { return value }
+  }
+  return JSON.stringify(value, null, 2)
+}
+
 function render() {
   for (const [key, value] of Object.entries(dashboard.stats)) {
     const node = document.querySelector(`#stat-${key}`)
@@ -83,24 +97,118 @@ function render() {
   const taskRows = document.querySelector('#task-rows')
   taskRows.innerHTML = dashboard.tasks.map((task) => `
     <tr>
-      <td><code>${escapeHtml(task.task_id)}</code></td>
+      <td><code>${escapeHtml(task.relay_request_id)}</code></td>
       <td>${escapeHtml(task.model)}</td>
       <td>${escapeHtml(task.upstream_name)}</td>
       <td><span class="task-status ${escapeHtml(task.status)}">${escapeHtml(statusLabel(task.status))}</span></td>
       <td>${formatTime(task.created_at)}</td>
+      <td class="align-right"><button class="table-action" data-audit="${escapeHtml(task.relay_request_id)}" type="button">详情</button></td>
     </tr>`).join('')
   document.querySelector('#task-empty').hidden = dashboard.tasks.length > 0
   document.querySelector('#task-cards').innerHTML = dashboard.tasks.map((task) => `
     <article class="mobile-item task-item">
-      <div class="mobile-item-heading"><code>${escapeHtml(task.task_id)}</code><span class="task-status ${escapeHtml(task.status)}">${escapeHtml(statusLabel(task.status))}</span></div>
+      <div class="mobile-item-heading"><code>${escapeHtml(task.relay_request_id)}</code><span class="task-status ${escapeHtml(task.status)}">${escapeHtml(statusLabel(task.status))}</span></div>
       <div class="task-summary"><strong>${escapeHtml(task.model)}</strong><span>${escapeHtml(task.upstream_name)}</span></div>
-      <time>${formatTime(task.created_at)}</time>
+      <div class="mobile-item-footer"><time>${formatTime(task.created_at)}</time><button class="table-action" data-audit="${escapeHtml(task.relay_request_id)}" type="button">详情</button></div>
     </article>`).join('')
 }
 
 async function loadDashboard() {
   dashboard = await api('/admin/api/dashboard')
   render()
+}
+
+async function loadTasks() {
+  const params = new URLSearchParams()
+  const query = document.querySelector('#task-search').value.trim()
+  const status = document.querySelector('#task-status').value
+  if (query) params.set('q', query)
+  if (status) params.set('status', status)
+  const result = await api(`/admin/api/tasks?${params}`)
+  dashboard.tasks = result.tasks
+  render()
+}
+
+function selectedAuditEvent() {
+  if (!activeAudit) return null
+  const eventId = Number(auditEvent.value)
+  return activeAudit.events.find((event) => event.id === eventId) || activeAudit.events[0] || null
+}
+
+function renderAuditJson() {
+  const event = selectedAuditEvent()
+  if (activeAuditView === 'request') {
+    auditJson.textContent = formatJson(activeAudit?.request_payload)
+  } else if (activeAuditView === 'upstream') {
+    auditJson.textContent = formatJson(event?.upstream_body)
+  } else {
+    auditJson.textContent = formatJson(event?.sanitized_body)
+  }
+}
+
+function renderAuditDetail(task) {
+  activeAudit = task
+  document.querySelector('#audit-relay-id').textContent = task.relay_request_id
+  document.querySelector('#audit-upstream-id').textContent = task.upstream_task_id || '尚未返回'
+  document.querySelector('#audit-model').textContent = task.model
+  document.querySelector('#audit-upstream').textContent = task.upstream_name
+  document.querySelector('#audit-created').textContent = formatTime(task.created_at)
+  document.querySelector('#audit-status').innerHTML = `<span class="task-status ${escapeHtml(task.status)}">${escapeHtml(statusLabel(task.status))}</span>`
+
+  const sourceUrl = task.source_video_url || ''
+  document.querySelector('#audit-source-url').textContent = sourceUrl || '尚未返回'
+  const sourceOpen = document.querySelector('#audit-source-open')
+  sourceOpen.hidden = !sourceUrl
+  sourceOpen.href = sourceUrl || '#'
+  document.querySelector('[data-copy-target="audit-source-url"]').disabled = !sourceUrl
+
+  document.querySelector('#public-task-id').value = task.public_task_id || ''
+  document.querySelector('#audit-public-url').textContent = task.sanitized_video_url || '填写公开任务 ID 后生成'
+  document.querySelector('[data-copy-target="audit-public-url"]').disabled = !task.sanitized_video_url
+
+  const videoAvailable = task.status === 'completed' && task.upstream_task_id
+  auditVideo.hidden = !videoAvailable
+  if (videoAvailable) {
+    auditVideo.src = `/admin/api/tasks/${encodeURIComponent(task.relay_request_id)}/content`
+    auditVideo.load()
+  } else {
+    auditVideo.removeAttribute('src')
+    auditVideo.load()
+  }
+
+  auditEvent.innerHTML = task.events.map((event) => `
+    <option value="${event.id}">${event.phase === 'create' ? '创建' : '轮询'} · HTTP ${event.http_status ?? '连接失败'} · ${formatTime(event.created_at)}</option>
+  `).join('') || '<option value="">暂无事件</option>'
+  activeAuditView = 'request'
+  for (const tab of document.querySelectorAll('.audit-tab')) {
+    const active = tab.dataset.auditView === activeAuditView
+    tab.classList.toggle('active', active)
+    tab.setAttribute('aria-selected', String(active))
+  }
+  renderAuditJson()
+}
+
+async function openAuditDialog(relayRequestId) {
+  document.querySelector('#audit-loading').hidden = false
+  document.querySelector('#audit-content').hidden = true
+  auditDialog.showModal()
+  try {
+    const task = await api(`/admin/api/tasks/${encodeURIComponent(relayRequestId)}`)
+    renderAuditDetail(task)
+    document.querySelector('#audit-loading').hidden = true
+    document.querySelector('#audit-content').hidden = false
+  } catch (error) {
+    auditDialog.close()
+    showToast(error.message, 'error')
+  }
+}
+
+function closeAuditDialog() {
+  auditVideo.pause()
+  auditVideo.removeAttribute('src')
+  auditVideo.load()
+  activeAudit = null
+  auditDialog.close()
 }
 
 function parseRoutes(value) {
@@ -224,12 +332,61 @@ document.querySelector('#refresh-button').addEventListener('click', async () => 
   await loadDashboard()
   showToast('数据已刷新')
 })
+document.querySelector('#task-filter').addEventListener('submit', async (event) => {
+  event.preventDefault()
+  try { await loadTasks() } catch (error) { showToast(error.message, 'error') }
+})
+document.querySelector('#task-rows').addEventListener('click', (event) => {
+  if (event.target.dataset.audit) openAuditDialog(event.target.dataset.audit)
+})
+document.querySelector('#task-cards').addEventListener('click', (event) => {
+  if (event.target.dataset.audit) openAuditDialog(event.target.dataset.audit)
+})
 document.querySelector('#upstream-rows').addEventListener('click', (event) => {
   const id = Number(event.target.dataset.edit)
   if (id) openDialog(dashboard.upstreams.find((item) => item.id === id))
 })
 dialog.addEventListener('click', (event) => {
   if (event.target === dialog) closeDialog()
+})
+document.querySelector('#close-audit').addEventListener('click', closeAuditDialog)
+auditDialog.addEventListener('click', (event) => {
+  if (event.target === auditDialog) closeAuditDialog()
+})
+auditEvent.addEventListener('change', renderAuditJson)
+document.querySelector('.audit-tabs').addEventListener('click', (event) => {
+  const view = event.target.dataset.auditView
+  if (!view) return
+  activeAuditView = view
+  for (const tab of document.querySelectorAll('.audit-tab')) {
+    const active = tab.dataset.auditView === view
+    tab.classList.toggle('active', active)
+    tab.setAttribute('aria-selected', String(active))
+  }
+  renderAuditJson()
+})
+document.querySelector('#public-task-form').addEventListener('submit', async (event) => {
+  event.preventDefault()
+  if (!activeAudit) return
+  try {
+    const task = await api(`/admin/api/tasks/${encodeURIComponent(activeAudit.relay_request_id)}/public-task`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ public_task_id: document.querySelector('#public-task-id').value.trim() }),
+    })
+    renderAuditDetail(task)
+    showToast('公开任务 ID 已保存')
+  } catch (error) {
+    showToast(error.message, 'error')
+  }
+})
+document.querySelectorAll('.copy-button').forEach((button) => {
+  button.addEventListener('click', async () => {
+    const value = document.querySelector(`#${button.dataset.copyTarget}`).textContent
+    if (!value || button.disabled) return
+    await navigator.clipboard.writeText(value)
+    showToast('已复制')
+  })
 })
 
 form.addEventListener('submit', async (event) => {

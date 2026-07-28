@@ -42,6 +42,7 @@ class Settings:
     host: str
     port: int
     public_base_url: str
+    new_api_public_base_url: str
     cookie_secure: bool
     upstream_timeout_seconds: float
     data_dir: Path
@@ -75,6 +76,7 @@ def load_settings() -> Settings:
         host=os.getenv("HOST", "0.0.0.0"),
         port=int(os.getenv("PORT", "8787")),
         public_base_url=os.getenv("PUBLIC_BASE_URL", "http://127.0.0.1:8787").rstrip("/"),
+        new_api_public_base_url=os.getenv("NEW_API_PUBLIC_BASE_URL", "").rstrip("/"),
         cookie_secure=env_bool("COOKIE_SECURE"),
         upstream_timeout_seconds=float(os.getenv("UPSTREAM_TIMEOUT_SECONDS", "60")),
         data_dir=data_dir,

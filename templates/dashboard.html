@@ -6,7 +6,7 @@
     <meta name="csrf-token" content="{{ csrf_token }}">
     <link rel="icon" href="data:,">
     <title>Video Relay Console</title>
-    <link rel="stylesheet" href="/static/admin.css?v=20260727-4">
+    <link rel="stylesheet" href="/static/admin.css?v=20260728-3">
   </head>
   <body>
     <header class="app-header">
@@ -53,10 +53,23 @@
       </section>
 
       <section class="table-section task-section">
-        <div class="section-heading"><h2>最近任务</h2><span>最近 50 条</span></div>
+        <div class="section-heading task-heading">
+          <div><h2>任务审计</h2><span>最近 50 条</span></div>
+          <form id="task-filter" class="task-filter" role="search">
+            <input id="task-search" type="search" maxlength="191" placeholder="关联 ID、任务 ID 或模型" aria-label="搜索任务">
+            <select id="task-status" aria-label="任务状态">
+              <option value="">全部状态</option>
+              <option value="queued">排队中</option>
+              <option value="processing">处理中</option>
+              <option value="completed">已完成</option>
+              <option value="failed">失败</option>
+            </select>
+            <button class="quiet-button compact" type="submit">搜索</button>
+          </form>
+        </div>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>任务 ID</th><th>模型</th><th>上游</th><th>状态</th><th>创建时间</th></tr></thead>
+            <thead><tr><th>关联 ID</th><th>模型</th><th>上游</th><th>状态</th><th>创建时间</th><th class="align-right">操作</th></tr></thead>
             <tbody id="task-rows"></tbody>
           </table>
           <div id="task-empty" class="empty-state" hidden>暂无转接任务</div>
@@ -89,7 +102,54 @@
         </div>
       </form>
     </dialog>
+    <dialog id="audit-dialog" class="audit-dialog">
+      <div class="audit-shell">
+        <header class="audit-header">
+          <div><p class="eyebrow">TASK AUDIT</p><h2>任务详情</h2></div>
+          <button id="close-audit" class="close-button" type="button" aria-label="关闭">×</button>
+        </header>
+        <div id="audit-loading" class="audit-loading">正在读取任务...</div>
+        <div id="audit-content" hidden>
+          <section class="audit-summary" aria-label="任务摘要">
+            <div><span>关联 ID</span><code id="audit-relay-id"></code></div>
+            <div><span>上游任务 ID</span><code id="audit-upstream-id"></code></div>
+            <div><span>模型</span><strong id="audit-model"></strong></div>
+            <div><span>状态</span><span id="audit-status"></span></div>
+            <div><span>上游</span><strong id="audit-upstream"></strong></div>
+            <div><span>创建时间</span><time id="audit-created"></time></div>
+          </section>
+
+          <section class="audit-section media-section">
+            <div class="audit-section-heading"><h3>视频访问</h3><a id="audit-source-open" class="table-action" target="_blank" rel="noreferrer" hidden>打开源链接</a></div>
+            <video id="audit-video" controls preload="metadata" playsinline></video>
+            <div class="url-line"><span>真实上游链接</span><code id="audit-source-url"></code><button class="table-action copy-button" data-copy-target="audit-source-url" type="button">复制</button></div>
+          </section>
+
+          <section class="audit-section public-task-section">
+            <div class="audit-section-heading"><h3>用户侧链接</h3></div>
+            <form id="public-task-form" class="public-task-form">
+              <input id="public-task-id" maxlength="191" placeholder="task_xxxxxxxxx" aria-label="New API 公开任务 ID">
+              <button class="quiet-button compact" type="submit">保存任务 ID</button>
+            </form>
+            <div class="url-line"><span>脱敏链接</span><code id="audit-public-url"></code><button class="table-action copy-button" data-copy-target="audit-public-url" type="button">复制</button></div>
+          </section>
+
+          <section class="audit-section response-section">
+            <div class="audit-section-heading response-heading">
+              <h3>响应审计</h3>
+              <select id="audit-event" aria-label="审计事件"></select>
+            </div>
+            <div class="audit-tabs" role="tablist" aria-label="审计内容">
+              <button class="audit-tab active" data-audit-view="request" type="button" role="tab" aria-selected="true">请求参数</button>
+              <button class="audit-tab" data-audit-view="upstream" type="button" role="tab" aria-selected="false">上游原始响应</button>
+              <button class="audit-tab" data-audit-view="sanitized" type="button" role="tab" aria-selected="false">脱敏响应</button>
+            </div>
+            <pre id="audit-json" tabindex="0"></pre>
+          </section>
+        </div>
+      </div>
+    </dialog>
     <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
-    <script src="/static/admin.js?v=20260727-4" defer></script>
+    <script src="/static/admin.js?v=20260728-3" defer></script>
   </body>
 </html>

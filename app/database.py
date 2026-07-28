@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
+import uuid
 from contextlib import contextmanager
 from typing import Any, Iterator
 
@@ -12,6 +13,28 @@ from .security import secret_box
 
 settings.data_dir.mkdir(parents=True, exist_ok=True)
 DB_PATH = settings.data_dir / "adapter.db"
+
+
+def _new_relay_request_id(prefix: str = "vrq") -> str:
+    return f"{prefix}_{uuid.uuid4().hex}"
+
+
+def _encrypt_json(value: Any) -> str:
+    return secret_box.encrypt(json.dumps(value, ensure_ascii=False, separators=(",", ":")))
+
+
+def _decrypt_json(value: str | None) -> Any:
+    if not value:
+        return None
+    return json.loads(secret_box.decrypt(value))
+
+
+def _encrypt_text(value: str | None) -> str | None:
+    return secret_box.encrypt(value) if value else None
+
+
+def _decrypt_text(value: str | None) -> str | None:
+    return secret_box.decrypt(value) if value else None
 
 
 @contextmanager
@@ -53,6 +76,7 @@ def initialize() -> None:
             CREATE TABLE IF NOT EXISTS tasks (
                 task_id TEXT PRIMARY KEY,
                 upstream_id INTEGER NOT NULL REFERENCES upstreams(id),
+                relay_request_id TEXT,
                 model TEXT NOT NULL,
                 protocol TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'queued',
@@ -62,8 +86,73 @@ def initialize() -> None:
                 updated_at INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_tasks_created_at ON tasks(created_at DESC);
+            CREATE TABLE IF NOT EXISTS audit_requests (
+                relay_request_id TEXT PRIMARY KEY,
+                upstream_id INTEGER NOT NULL REFERENCES upstreams(id),
+                upstream_task_id TEXT,
+                public_task_id TEXT,
+                model TEXT NOT NULL,
+                protocol TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'queued',
+                request_payload_encrypted TEXT,
+                source_video_url_encrypted TEXT,
+                error TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_audit_requests_created_at
+                ON audit_requests(created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_audit_requests_upstream_task_id
+                ON audit_requests(upstream_task_id);
+            CREATE INDEX IF NOT EXISTS idx_audit_requests_public_task_id
+                ON audit_requests(public_task_id);
+            CREATE TABLE IF NOT EXISTS audit_events (
+                id INTEGER PRIMARY KEY,
+                relay_request_id TEXT NOT NULL REFERENCES audit_requests(relay_request_id) ON DELETE CASCADE,
+                phase TEXT NOT NULL,
+                http_status INTEGER,
+                upstream_body_encrypted TEXT,
+                sanitized_body_encrypted TEXT,
+                created_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_audit_events_request
+                ON audit_events(relay_request_id, id DESC);
             """
         )
+        task_columns = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()}
+        if "relay_request_id" not in task_columns:
+            conn.execute("ALTER TABLE tasks ADD COLUMN relay_request_id TEXT")
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_relay_request_id ON tasks(relay_request_id)")
+
+        legacy_tasks = conn.execute(
+            """
+            SELECT task_id, upstream_id, model, protocol, status, source_video_url, error, created_at, updated_at
+            FROM tasks WHERE relay_request_id IS NULL OR relay_request_id = ''
+            """
+        ).fetchall()
+        for task in legacy_tasks:
+            relay_request_id = _new_relay_request_id("vrq_legacy")
+            conn.execute("UPDATE tasks SET relay_request_id = ? WHERE task_id = ?", (relay_request_id, task["task_id"]))
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO audit_requests(
+                    relay_request_id, upstream_id, upstream_task_id, model, protocol, status,
+                    source_video_url_encrypted, error, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    relay_request_id,
+                    task["upstream_id"],
+                    task["task_id"],
+                    task["model"],
+                    task["protocol"],
+                    task["status"],
+                    _encrypt_text(task["source_video_url"]),
+                    task["error"],
+                    task["created_at"],
+                    task["updated_at"],
+                ),
+            )
 
 
 def _route_rows(conn: sqlite3.Connection, upstream_id: int) -> list[dict[str, str]]:
@@ -163,7 +252,14 @@ def save_upstream(payload: dict[str, Any], upstream_id: int | None = None) -> di
 
 def delete_upstream(upstream_id: int) -> None:
     with connection() as conn:
-        task_count = conn.execute("SELECT COUNT(*) FROM tasks WHERE upstream_id = ?", (upstream_id,)).fetchone()[0]
+        task_count = conn.execute(
+            """
+            SELECT
+                (SELECT COUNT(*) FROM tasks WHERE upstream_id = ?)
+                + (SELECT COUNT(*) FROM audit_requests WHERE upstream_id = ?)
+            """,
+            (upstream_id, upstream_id),
+        ).fetchone()[0]
         if task_count:
             raise ValueError("upstream_has_tasks")
         cursor = conn.execute("DELETE FROM upstreams WHERE id = ?", (upstream_id,))
@@ -192,15 +288,88 @@ def select_upstream(model: str) -> dict[str, Any] | None:
         return item
 
 
-def create_task(task_id: str, upstream_id: int, model: str, protocol: str, status: str) -> None:
+def start_audit_request(upstream_id: int, model: str, protocol: str, request_payload: dict[str, Any]) -> str:
+    relay_request_id = _new_relay_request_id()
     now = int(time.time())
     with connection() as conn:
         conn.execute(
             """
-            INSERT OR REPLACE INTO tasks(task_id, upstream_id, model, protocol, status, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, COALESCE((SELECT created_at FROM tasks WHERE task_id = ?), ?), ?)
+            INSERT INTO audit_requests(
+                relay_request_id, upstream_id, model, protocol, status,
+                request_payload_encrypted, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?)
             """,
-            (task_id, upstream_id, model, protocol, status, task_id, now, now),
+            (relay_request_id, upstream_id, model, protocol, _encrypt_json(request_payload), now, now),
+        )
+    return relay_request_id
+
+
+def record_audit_event(
+    relay_request_id: str,
+    phase: str,
+    http_status: int | None,
+    upstream_body: str | None,
+    sanitized_body: dict[str, Any] | None,
+) -> None:
+    with connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO audit_events(
+                relay_request_id, phase, http_status, upstream_body_encrypted,
+                sanitized_body_encrypted, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                relay_request_id,
+                phase,
+                http_status,
+                _encrypt_text(upstream_body),
+                _encrypt_json(sanitized_body) if sanitized_body is not None else None,
+                int(time.time()),
+            ),
+        )
+
+
+def fail_audit_request(relay_request_id: str, error: str) -> None:
+    with connection() as conn:
+        conn.execute(
+            "UPDATE audit_requests SET status = 'failed', error = ?, updated_at = ? WHERE relay_request_id = ?",
+            (error, int(time.time()), relay_request_id),
+        )
+
+
+def create_task(
+    task_id: str,
+    upstream_id: int,
+    relay_request_id: str,
+    model: str,
+    protocol: str,
+    status: str,
+) -> None:
+    now = int(time.time())
+    with connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO tasks(
+                task_id, upstream_id, relay_request_id, model, protocol, status, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(task_id) DO UPDATE SET
+                upstream_id = excluded.upstream_id,
+                relay_request_id = excluded.relay_request_id,
+                model = excluded.model,
+                protocol = excluded.protocol,
+                status = excluded.status,
+                updated_at = excluded.updated_at
+            """,
+            (task_id, upstream_id, relay_request_id, model, protocol, status, now, now),
+        )
+        conn.execute(
+            """
+            UPDATE audit_requests
+            SET upstream_task_id = ?, status = ?, updated_at = ?
+            WHERE relay_request_id = ?
+            """,
+            (task_id, status, now, relay_request_id),
         )
 
 
@@ -230,6 +399,107 @@ def update_task(task_id: str, status: str, source_video_url: str | None, error: 
             """,
             (status, source_video_url, error, int(time.time()), task_id),
         )
+        task = conn.execute("SELECT relay_request_id FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
+        if task is not None and task["relay_request_id"]:
+            conn.execute(
+                """
+                UPDATE audit_requests
+                SET status = ?, source_video_url_encrypted = COALESCE(?, source_video_url_encrypted),
+                    error = ?, updated_at = ?
+                WHERE relay_request_id = ?
+                """,
+                (
+                    status,
+                    _encrypt_text(source_video_url),
+                    error,
+                    int(time.time()),
+                    task["relay_request_id"],
+                ),
+            )
+
+
+def list_audit_requests(query: str = "", status: str = "", limit: int = 50) -> list[dict[str, Any]]:
+    clauses = []
+    params: list[Any] = []
+    if query:
+        pattern = f"%{query}%"
+        clauses.append(
+            "(a.relay_request_id LIKE ? OR a.upstream_task_id LIKE ? OR a.public_task_id LIKE ? OR a.model LIKE ?)"
+        )
+        params.extend([pattern, pattern, pattern, pattern])
+    if status:
+        clauses.append("a.status = ?")
+        params.append(status)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    params.append(max(1, min(limit, 200)))
+    with connection() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT a.relay_request_id, a.upstream_task_id, a.public_task_id, a.model, a.protocol,
+                   a.status, a.error, a.created_at, a.updated_at, u.name AS upstream_name
+            FROM audit_requests a JOIN upstreams u ON u.id = a.upstream_id
+            {where}
+            ORDER BY a.created_at DESC LIMIT ?
+            """,
+            params,
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_audit_request(relay_request_id: str) -> dict[str, Any] | None:
+    with connection() as conn:
+        row = conn.execute(
+            """
+            SELECT a.*, u.name AS upstream_name, u.base_url
+            FROM audit_requests a JOIN upstreams u ON u.id = a.upstream_id
+            WHERE a.relay_request_id = ?
+            """,
+            (relay_request_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        events = conn.execute(
+            """
+            SELECT id, phase, http_status, upstream_body_encrypted,
+                   sanitized_body_encrypted, created_at
+            FROM audit_events WHERE relay_request_id = ? ORDER BY id DESC
+            """,
+            (relay_request_id,),
+        ).fetchall()
+
+    result = dict(row)
+    result["request_payload"] = _decrypt_json(result.pop("request_payload_encrypted"))
+    result["source_video_url"] = _decrypt_text(result.pop("source_video_url_encrypted"))
+    result["events"] = []
+    for event_row in events:
+        event = dict(event_row)
+        event["upstream_body"] = _decrypt_text(event.pop("upstream_body_encrypted"))
+        event["sanitized_body"] = _decrypt_json(event.pop("sanitized_body_encrypted"))
+        result["events"].append(event)
+    if result["public_task_id"] and settings.new_api_public_base_url:
+        result["sanitized_video_url"] = (
+            f"{settings.new_api_public_base_url}/v1/videos/{result['public_task_id']}/content"
+        )
+    else:
+        result["sanitized_video_url"] = None
+    return result
+
+
+def set_public_task_id(relay_request_id: str, public_task_id: str) -> bool:
+    with connection() as conn:
+        cursor = conn.execute(
+            "UPDATE audit_requests SET public_task_id = ?, updated_at = ? WHERE relay_request_id = ?",
+            (public_task_id or None, int(time.time()), relay_request_id),
+        )
+    return cursor.rowcount > 0
+
+
+def get_task_by_relay_request_id(relay_request_id: str) -> dict[str, Any] | None:
+    with connection() as conn:
+        row = conn.execute("SELECT task_id FROM tasks WHERE relay_request_id = ?", (relay_request_id,)).fetchone()
+    if row is None:
+        return None
+    return get_task(row["task_id"])
 
 
 def dashboard_data() -> dict[str, Any]:
@@ -238,17 +508,10 @@ def dashboard_data() -> dict[str, Any]:
         enabled = conn.execute("SELECT COUNT(*) FROM upstreams WHERE enabled = 1").fetchone()[0]
         models = conn.execute("SELECT COUNT(DISTINCT model) FROM model_routes").fetchone()[0]
         tasks = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
-        recent_rows = conn.execute(
-            """
-            SELECT t.task_id, t.model, t.status, t.error, t.created_at, t.updated_at, u.name AS upstream_name
-            FROM tasks t JOIN upstreams u ON u.id = t.upstream_id
-            ORDER BY t.created_at DESC LIMIT 50
-            """
-        ).fetchall()
     return {
         "stats": {"upstreams": upstreams, "enabled": enabled, "models": models, "tasks": tasks},
         "upstreams": list_upstreams(),
-        "tasks": [dict(row) for row in recent_rows],
+        "tasks": list_audit_requests(),
     }
 
 
@@ -262,4 +525,3 @@ def list_models() -> list[str]:
             """
         ).fetchall()
     return [row["model"] for row in rows]
-

@@ -5,14 +5,14 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Request, Response
+from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from . import database, proxy
 from .config import ROOT_DIR, settings
-from .schemas import LoginInput, ModelDiscoveryInput, UpstreamInput
+from .schemas import LoginInput, ModelDiscoveryInput, PublicTaskInput, UpstreamInput
 from .security import (
     SESSION_COOKIE,
     create_session,
@@ -44,7 +44,7 @@ async def security_headers(request: Request, call_next):
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; "
-        "connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+        "connect-src 'self'; media-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
     )
     return response
 
@@ -165,6 +165,49 @@ def dashboard(request: Request, session: str | None = Cookie(default=None, alias
 @app.get("/admin/api/dashboard")
 def dashboard_api(_: tuple[str, dict] = Depends(admin_session)):
     return database.dashboard_data()
+
+
+@app.get("/admin/api/tasks")
+def audit_tasks(
+    q: str = Query(default="", max_length=191),
+    status: str = Query(default="", pattern="^(|queued|processing|completed|failed)$"),
+    _: tuple[str, dict] = Depends(admin_session),
+):
+    return {"tasks": database.list_audit_requests(q.strip(), status)}
+
+
+@app.get("/admin/api/tasks/{relay_request_id}")
+def audit_task(relay_request_id: str, _: tuple[str, dict] = Depends(admin_session)):
+    task = database.get_audit_request(relay_request_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return task
+
+
+@app.put("/admin/api/tasks/{relay_request_id}/public-task")
+def update_public_task(
+    relay_request_id: str,
+    payload: PublicTaskInput,
+    _: dict = Depends(admin_mutation),
+):
+    if not database.set_public_task_id(relay_request_id, payload.public_task_id):
+        raise HTTPException(status_code=404, detail="Task not found")
+    task = database.get_audit_request(relay_request_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return task
+
+
+@app.get("/admin/api/tasks/{relay_request_id}/content")
+async def audit_task_content(
+    relay_request_id: str,
+    request: Request,
+    _: tuple[str, dict] = Depends(admin_session),
+):
+    task = database.get_task_by_relay_request_id(relay_request_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return await proxy.stream_content(task["task_id"], request)
 
 
 @app.post("/admin/api/upstreams/models")

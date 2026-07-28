@@ -15,6 +15,7 @@ from .config import settings
 
 
 logger = logging.getLogger("uvicorn.error")
+REQUEST_ID_HEADER = "X-Oneapi-Request-Id"
 
 
 STATUS_MAP = {
@@ -39,7 +40,12 @@ def normalize_status(value: Any) -> str:
     return STATUS_MAP.get(value.strip().upper(), value.strip().lower())
 
 
-def upstream_error(response: httpx.Response) -> JSONResponse:
+def upstream_error(
+    response: httpx.Response,
+    relay_request_id: str | None = None,
+    phase: str | None = None,
+    mark_failed: bool = False,
+) -> JSONResponse:
     logger.warning("Video upstream returned HTTP %s: %s", response.status_code, response.text[:2000])
     payload = {
         "error": {
@@ -48,7 +54,12 @@ def upstream_error(response: httpx.Response) -> JSONResponse:
             "code": f"upstream_http_{response.status_code}",
         }
     }
-    return JSONResponse(payload, status_code=response.status_code)
+    if relay_request_id and phase:
+        database.record_audit_event(relay_request_id, phase, response.status_code, response.text, payload)
+        if mark_failed:
+            database.fail_audit_request(relay_request_id, payload["error"]["message"])
+    headers = {REQUEST_ID_HEADER: relay_request_id} if relay_request_id else None
+    return JSONResponse(payload, status_code=response.status_code, headers=headers)
 
 
 async def create_video(payload: dict[str, Any], incoming_idempotency_key: str | None) -> JSONResponse:
@@ -64,6 +75,8 @@ async def create_video(payload: dict[str, Any], incoming_idempotency_key: str | 
         raise HTTPException(status_code=404, detail=f"No enabled upstream for model {model}")
 
     protocol = upstream["protocol"]
+    relay_request_id = database.start_audit_request(upstream["id"], model, protocol, payload)
+    response_headers = {REQUEST_ID_HEADER: relay_request_id}
     endpoint = "/v1/video/generations" if protocol == "seedance" else "/v1/videos"
     headers = {
         "Authorization": f"Bearer {upstream['api_key']}",
@@ -79,22 +92,30 @@ async def create_video(payload: dict[str, Any], incoming_idempotency_key: str | 
             response = await client.post(upstream["base_url"] + endpoint, headers=headers, json=payload)
     except httpx.RequestError as exc:
         logger.warning("Video upstream create request failed: %s", exc)
-        raise HTTPException(status_code=502, detail="Video upstream connection failed") from exc
+        sanitized = {"detail": "Video upstream connection failed"}
+        database.record_audit_event(relay_request_id, "create", None, None, sanitized)
+        database.fail_audit_request(relay_request_id, sanitized["detail"])
+        raise HTTPException(status_code=502, detail=sanitized["detail"], headers=response_headers) from exc
     if not 200 <= response.status_code < 300:
-        return upstream_error(response)
+        return upstream_error(response, relay_request_id, "create", mark_failed=True)
 
     try:
         upstream_payload = response.json()
     except ValueError as exc:
-        raise HTTPException(status_code=502, detail="Upstream returned invalid JSON") from exc
+        sanitized = {"detail": "Upstream returned invalid JSON"}
+        database.record_audit_event(relay_request_id, "create", response.status_code, response.text, sanitized)
+        database.fail_audit_request(relay_request_id, sanitized["detail"])
+        raise HTTPException(status_code=502, detail=sanitized["detail"], headers=response_headers) from exc
     task_id = str(upstream_payload.get("task_id") or upstream_payload.get("id") or "").strip()
     if not task_id:
-        raise HTTPException(status_code=502, detail="Upstream response did not contain a task_id")
+        sanitized = {"detail": "Upstream response did not contain a task_id"}
+        database.record_audit_event(relay_request_id, "create", response.status_code, response.text, sanitized)
+        database.fail_audit_request(relay_request_id, sanitized["detail"])
+        raise HTTPException(status_code=502, detail=sanitized["detail"], headers=response_headers)
 
     status = normalize_status(upstream_payload.get("status", "queued"))
     if status not in {"queued", "processing", "completed", "failed"}:
         status = "queued"
-    database.create_task(task_id, upstream["id"], model, protocol, status)
     try:
         progress = max(0, min(100, int(float(upstream_payload.get("progress") or 0))))
     except (TypeError, ValueError, OverflowError):
@@ -107,7 +128,9 @@ async def create_video(payload: dict[str, Any], incoming_idempotency_key: str | 
         "progress": progress,
         "created_at": int(time.time()),
     }
-    return JSONResponse(result)
+    database.create_task(task_id, upstream["id"], relay_request_id, model, protocol, status)
+    database.record_audit_event(relay_request_id, "create", response.status_code, response.text, result)
+    return JSONResponse(result, headers=response_headers)
 
 
 def normalize_task_payload(task: dict[str, Any], payload: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
@@ -154,22 +177,32 @@ async def fetch_task(task_id: str) -> JSONResponse:
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
     headers = {"Authorization": f"Bearer {task['api_key']}", "Accept": "application/json"}
+    relay_request_id = task.get("relay_request_id")
+    response_headers = {REQUEST_ID_HEADER: relay_request_id} if relay_request_id else None
     try:
         async with httpx.AsyncClient(timeout=settings.upstream_timeout_seconds) as client:
             response = await client.get(f"{task['base_url']}/v1/videos/{task_id}", headers=headers)
     except httpx.RequestError as exc:
         logger.warning("Video upstream task request failed: %s", exc)
-        raise HTTPException(status_code=502, detail="Video upstream connection failed") from exc
+        sanitized = {"detail": "Video upstream connection failed"}
+        if relay_request_id:
+            database.record_audit_event(relay_request_id, "poll", None, None, sanitized)
+        raise HTTPException(status_code=502, detail=sanitized["detail"], headers=response_headers) from exc
     if not 200 <= response.status_code < 300:
-        return upstream_error(response)
+        return upstream_error(response, relay_request_id, "poll")
     try:
         payload = response.json()
     except ValueError as exc:
-        raise HTTPException(status_code=502, detail="Upstream returned invalid JSON") from exc
+        sanitized = {"detail": "Upstream returned invalid JSON"}
+        if relay_request_id:
+            database.record_audit_event(relay_request_id, "poll", response.status_code, response.text, sanitized)
+        raise HTTPException(status_code=502, detail=sanitized["detail"], headers=response_headers) from exc
     result, video_url = normalize_task_payload(task, payload)
     error = result["error"]["message"] if result.get("error") else None
     database.update_task(task_id, result["status"], video_url, error)
-    return JSONResponse(result)
+    if relay_request_id:
+        database.record_audit_event(relay_request_id, "poll", response.status_code, response.text, result)
+    return JSONResponse(result, headers=response_headers)
 
 
 async def stream_content(task_id: str, request: Request) -> StreamingResponse:

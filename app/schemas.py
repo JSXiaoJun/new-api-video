@@ -65,3 +65,15 @@ class ModelDiscoveryInput(BaseModel):
 class LoginInput(BaseModel):
     username: str = Field(max_length=100)
     password: str = Field(max_length=500)
+
+
+class PublicTaskInput(BaseModel):
+    public_task_id: str = Field(default="", max_length=191, pattern=r"^(|task_[A-Za-z0-9_-]+)$")
+
+    @field_validator("public_task_id")
+    @classmethod
+    def normalize_public_task_id(cls, value: str) -> str:
+        normalized = value.strip()
+        if normalized and not normalized.startswith("task_"):
+            raise ValueError("public_task_id must start with task_")
+        return normalized
