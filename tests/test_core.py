@@ -5,6 +5,7 @@ import json
 import os
 import sqlite3
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -21,6 +22,7 @@ TEST_DATA_DIR = tempfile.TemporaryDirectory()
 os.environ["DATA_DIR"] = TEST_DATA_DIR.name
 
 from app import database
+from app.config import settings
 from app.main import app, normalize_discovered_models
 from app.proxy import create_video, normalize_status, normalize_task_payload, upstream_error
 from app.security import SESSION_COOKIE, create_session, csrf_token, read_session, secret_box
@@ -201,11 +203,23 @@ class CoreTests(unittest.TestCase):
         self.assertNotIn("task_id", result)
 
     def test_session_and_secret_round_trip(self):
+        before = int(time.time())
         session = create_session("admin")
-        self.assertEqual(read_session(session)["username"], "admin")
+        payload = read_session(session)
+        self.assertEqual(payload["username"], "admin")
+        self.assertGreaterEqual(payload["expires_at"], before + settings.session_ttl_seconds)
+        self.assertLessEqual(payload["expires_at"], int(time.time()) + settings.session_ttl_seconds)
         encrypted = secret_box.encrypt("sk-secret")
         self.assertNotIn("sk-secret", encrypted)
         self.assertEqual(secret_box.decrypt(encrypted), "sk-secret")
+
+    def test_login_cookie_uses_configured_session_lifetime(self):
+        response = TestClient(app).post(
+            "/admin/api/login",
+            json={"username": "admin", "password": "test-password"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(f"Max-Age={settings.session_ttl_seconds}", response.headers["set-cookie"])
 
     def test_model_discovery_normalizes_upstream_formats(self):
         payload = {

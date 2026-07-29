@@ -130,7 +130,7 @@ def login(payload: LoginInput, request: Request, response: Response):
     result.set_cookie(
         SESSION_COOKIE,
         token,
-        max_age=12 * 60 * 60,
+        max_age=settings.session_ttl_seconds,
         httponly=True,
         secure=settings.cookie_secure,
         samesite="strict",

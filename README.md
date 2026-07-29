@@ -16,6 +16,7 @@ Independent video upstream adapter for New API. It exposes a normalized `/v1/vid
 - One-click copying for request, original response, and sanitized response payloads
 - Fernet-encrypted upstream API keys
 - Admin login, signed sessions, CSRF protection, and login rate limiting
+- Configurable persistent admin sessions (`SESSION_TTL_DAYS`, default 30 days)
 - Video content proxy with Range forwarding
 
 ## Run Locally
@@ -27,6 +28,10 @@ Edit `.env`, then run:
 ```
 
 Open `http://127.0.0.1:8787/admin`.
+
+Admin sessions remain valid for 30 days by default. Set `SESSION_TTL_DAYS` to an integer from `1` to `365` to
+change the signed session and persistent browser cookie lifetime. Browsers configured to clear cookies on exit
+will still require a new login after closing the browser.
 
 ## New API Channel
 

@@ -44,6 +44,7 @@ class Settings:
     public_base_url: str
     new_api_public_base_url: str
     cookie_secure: bool
+    session_ttl_seconds: int
     upstream_timeout_seconds: float
     data_dir: Path
 
@@ -62,6 +63,13 @@ def load_settings() -> Settings:
     if len(required["SESSION_SECRET"]) < 32:
         raise RuntimeError("SESSION_SECRET must contain at least 32 characters")
 
+    try:
+        session_ttl_days = int(os.getenv("SESSION_TTL_DAYS", "30"))
+    except ValueError as exc:
+        raise RuntimeError("SESSION_TTL_DAYS must be an integer") from exc
+    if not 1 <= session_ttl_days <= 365:
+        raise RuntimeError("SESSION_TTL_DAYS must be between 1 and 365")
+
     data_dir = Path(os.getenv("DATA_DIR", "./data"))
     if not data_dir.is_absolute():
         data_dir = ROOT_DIR / data_dir
@@ -78,6 +86,7 @@ def load_settings() -> Settings:
         public_base_url=os.getenv("PUBLIC_BASE_URL", "http://127.0.0.1:8787").rstrip("/"),
         new_api_public_base_url=os.getenv("NEW_API_PUBLIC_BASE_URL", "").rstrip("/"),
         cookie_secure=env_bool("COOKIE_SECURE"),
+        session_ttl_seconds=session_ttl_days * 24 * 60 * 60,
         upstream_timeout_seconds=float(os.getenv("UPSTREAM_TIMEOUT_SECONDS", "60")),
         data_dir=data_dir,
     )

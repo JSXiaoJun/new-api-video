@@ -15,7 +15,6 @@ from .config import settings
 
 
 SESSION_COOKIE = "pidoi_admin_session"
-SESSION_TTL_SECONDS = 12 * 60 * 60
 
 
 def _b64encode(data: bytes) -> str:
@@ -33,7 +32,7 @@ def _sign(value: str) -> str:
 def create_session(username: str) -> str:
     payload = {
         "username": username,
-        "expires_at": int(time.time()) + SESSION_TTL_SECONDS,
+        "expires_at": int(time.time()) + settings.session_ttl_seconds,
         "nonce": secrets.token_urlsafe(18),
     }
     encoded = _b64encode(json.dumps(payload, separators=(",", ":")).encode())
@@ -122,4 +121,3 @@ class SecretBox:
 
 
 secret_box = SecretBox(settings.encryption_key)
-
