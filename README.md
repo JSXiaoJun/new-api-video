@@ -13,6 +13,7 @@ Independent video upstream adapter for New API. It exposes a normalized `/v1/vid
 - Request correlation with New API logs through `upstream_request_id`
 - Encrypted task audit history with original and sanitized upstream responses
 - Admin-only video preview, source URL inspection, and public task link mapping
+- One-click copying for request, original response, and sanitized response payloads
 - Fernet-encrypted upstream API keys
 - Admin login, signed sessions, CSRF protection, and login rate limiting
 - Video content proxy with Range forwarding
@@ -83,11 +84,12 @@ Set the public New API address in `.env`:
 NEW_API_PUBLIC_BASE_URL=https://zl.yyapi.cloud
 ```
 
-The adapter returns `X-Oneapi-Request-Id: vrq_...` on create and poll responses. New API `v1.0.0-rc.21`
+The adapter returns `X-Oneapi-Request-Id: vrq_...` on create and poll responses. New API `v1.0.0-rc.22`
 records this value as `upstream_request_id` without any New API code changes. Search that value in the adapter's
 admin task audit page to inspect the encrypted request history, upstream task ID, original responses, sanitized
 responses, and the real video source URL.
 
 New API's public `task_...` ID is generated outside the adapter, so paste it into the matching audit detail when a
-public `https://zl.yyapi.cloud/v1/videos/{task_id}/content` link is needed. Audit payloads and source URLs are stored
-encrypted with `ENCRYPTION_KEY`; keep that key and `data/adapter.db` backed up together.
+public `https://zl.yyapi.cloud/v1/videos/{task_id}/content` link is needed. For completed tasks, the audit view adds
+that public URL to `url`, `video_url`, `result_url`, and `download_url` in the sanitized response. Audit payloads and
+source URLs are stored encrypted with `ENCRYPTION_KEY`; keep that key and `data/adapter.db` backed up together.

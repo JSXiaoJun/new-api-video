@@ -11,6 +11,7 @@ const auditDialog = document.querySelector('#audit-dialog')
 const auditVideo = document.querySelector('#audit-video')
 const auditEvent = document.querySelector('#audit-event')
 const auditJson = document.querySelector('#audit-json')
+const copyAuditJsonButton = document.querySelector('#copy-audit-json')
 let dashboard = { upstreams: [], tasks: [], stats: {} }
 let activeAudit = null
 let activeAuditView = 'request'
@@ -65,6 +66,23 @@ function formatJson(value) {
     try { return JSON.stringify(JSON.parse(value), null, 2) } catch { return value }
   }
   return JSON.stringify(value, null, 2)
+}
+
+async function copyText(value) {
+  if (navigator.clipboard && window.isSecureContext) {
+    await navigator.clipboard.writeText(value)
+    return
+  }
+  const textarea = document.createElement('textarea')
+  textarea.value = value
+  textarea.setAttribute('readonly', '')
+  textarea.style.position = 'fixed'
+  textarea.style.opacity = '0'
+  document.body.appendChild(textarea)
+  textarea.select()
+  const copied = document.execCommand('copy')
+  textarea.remove()
+  if (!copied) throw new Error('复制失败')
 }
 
 function render() {
@@ -144,6 +162,7 @@ function renderAuditJson() {
   } else {
     auditJson.textContent = formatJson(event?.sanitized_body)
   }
+  copyAuditJsonButton.disabled = !auditJson.textContent
 }
 
 function renderAuditDetail(task) {
@@ -384,9 +403,23 @@ document.querySelectorAll('.copy-button').forEach((button) => {
   button.addEventListener('click', async () => {
     const value = document.querySelector(`#${button.dataset.copyTarget}`).textContent
     if (!value || button.disabled) return
-    await navigator.clipboard.writeText(value)
-    showToast('已复制')
+    try {
+      await copyText(value)
+      showToast('已复制')
+    } catch (error) {
+      showToast(error.message, 'error')
+    }
   })
+})
+copyAuditJsonButton.addEventListener('click', async () => {
+  const value = auditJson.textContent
+  if (!value || copyAuditJsonButton.disabled) return
+  try {
+    await copyText(value)
+    showToast('已复制全部内容')
+  } catch (error) {
+    showToast(error.message, 'error')
+  }
 })
 
 form.addEventListener('submit', async (event) => {

@@ -470,18 +470,31 @@ def get_audit_request(relay_request_id: str) -> dict[str, Any] | None:
     result = dict(row)
     result["request_payload"] = _decrypt_json(result.pop("request_payload_encrypted"))
     result["source_video_url"] = _decrypt_text(result.pop("source_video_url_encrypted"))
+    if result["status"] == "completed" and result["public_task_id"] and settings.new_api_public_base_url:
+        result["sanitized_video_url"] = (
+            f"{settings.new_api_public_base_url.rstrip('/')}/v1/videos/{result['public_task_id']}/content"
+        )
+    else:
+        result["sanitized_video_url"] = None
     result["events"] = []
     for event_row in events:
         event = dict(event_row)
         event["upstream_body"] = _decrypt_text(event.pop("upstream_body_encrypted"))
         event["sanitized_body"] = _decrypt_json(event.pop("sanitized_body_encrypted"))
+        if (
+            result["sanitized_video_url"]
+            and isinstance(event["sanitized_body"], dict)
+            and event["sanitized_body"].get("status") == "completed"
+        ):
+            event["sanitized_body"].update(
+                {
+                    "url": result["sanitized_video_url"],
+                    "video_url": result["sanitized_video_url"],
+                    "result_url": result["sanitized_video_url"],
+                    "download_url": result["sanitized_video_url"],
+                }
+            )
         result["events"].append(event)
-    if result["public_task_id"] and settings.new_api_public_base_url:
-        result["sanitized_video_url"] = (
-            f"{settings.new_api_public_base_url}/v1/videos/{result['public_task_id']}/content"
-        )
-    else:
-        result["sanitized_video_url"] = None
     return result
 
 

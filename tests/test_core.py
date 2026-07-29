@@ -47,6 +47,13 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(response.status_code, 302)
         self.assertEqual(response.headers["location"], "/admin/login")
 
+    def test_admin_page_has_copy_all_audit_control(self):
+        client = TestClient(app)
+        client.cookies.set(SESSION_COOKIE, create_session("admin"))
+        response = client.get("/admin")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('id="copy-audit-json"', response.text)
+
     def test_adapter_endpoint_requires_channel_key(self):
         response = TestClient(app).get("/v1/models")
         self.assertEqual(response.status_code, 401)
@@ -271,6 +278,9 @@ class CoreTests(unittest.TestCase):
             detail["sanitized_video_url"],
             "https://zl.yyapi.cloud/v1/videos/task_public_123/content",
         )
+        sanitized = detail["events"][0]["sanitized_body"]
+        for field in ("url", "video_url", "result_url", "download_url"):
+            self.assertEqual(sanitized[field], detail["sanitized_video_url"])
         self.assertIn("pixellelabs", detail["events"][0]["upstream_body"])
 
         with database.connection() as conn:
@@ -285,6 +295,41 @@ class CoreTests(unittest.TestCase):
         self.assertNotIn("private prompt", row["request_payload_encrypted"])
         self.assertNotIn("pixellelabs", row["source_video_url_encrypted"])
         self.assertNotIn("pixellelabs", event["upstream_body_encrypted"])
+
+    def test_failed_audit_does_not_publish_content_link(self):
+        relay_request_id = database.start_audit_request(
+            self.upstream["id"],
+            "audit-model",
+            "videos",
+            {"model": "audit-model", "prompt": "failed prompt"},
+        )
+        database.create_task(
+            "upstream-failed-task",
+            self.upstream["id"],
+            relay_request_id,
+            "audit-model",
+            "videos",
+            "queued",
+        )
+        database.record_audit_event(
+            relay_request_id,
+            "poll",
+            200,
+            '{"status":"failed","video_url":"https://private-upstream.example/content"}',
+            {"status": "failed", "error": {"message": "Video generation failed"}},
+        )
+        database.update_task(
+            "upstream-failed-task",
+            "failed",
+            "https://private-upstream.example/content",
+            "Video generation failed",
+        )
+        self.assertTrue(database.set_public_task_id(relay_request_id, "task_public_failed"))
+
+        detail = database.get_audit_request(relay_request_id)
+
+        self.assertIsNone(detail["sanitized_video_url"])
+        self.assertNotIn("video_url", detail["events"][0]["sanitized_body"])
 
     def test_create_response_sets_new_api_correlation_header(self):
         response = httpx.Response(

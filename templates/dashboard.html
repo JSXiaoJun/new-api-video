@@ -6,7 +6,7 @@
     <meta name="csrf-token" content="{{ csrf_token }}">
     <link rel="icon" href="data:,">
     <title>Video Relay Console</title>
-    <link rel="stylesheet" href="/static/admin.css?v=20260728-3">
+    <link rel="stylesheet" href="/static/admin.css?v=20260729-1">
   </head>
   <body>
     <header class="app-header">
@@ -144,12 +144,15 @@
               <button class="audit-tab" data-audit-view="upstream" type="button" role="tab" aria-selected="false">上游原始响应</button>
               <button class="audit-tab" data-audit-view="sanitized" type="button" role="tab" aria-selected="false">脱敏响应</button>
             </div>
-            <pre id="audit-json" tabindex="0"></pre>
+            <div class="audit-json-wrap">
+              <button id="copy-audit-json" class="audit-copy-button" type="button">复制全部</button>
+              <pre id="audit-json" tabindex="0"></pre>
+            </div>
           </section>
         </div>
       </div>
     </dialog>
     <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
-    <script src="/static/admin.js?v=20260728-3" defer></script>
+    <script src="/static/admin.js?v=20260729-1" defer></script>
   </body>
 </html>

@@ -149,7 +149,11 @@ dialog::backdrop { background: rgba(17, 26, 21, .62); backdrop-filter: blur(2px)
 .audit-tabs { display: flex; gap: 0; border-bottom: 1px solid var(--line); }
 .audit-tab { min-height: 38px; padding: 0 14px; border: 0; border-bottom: 2px solid transparent; color: var(--muted); background: transparent; font-size: 12px; font-weight: 700; }
 .audit-tab.active { color: var(--accent-dark); border-bottom-color: var(--accent); }
-#audit-json { min-height: 220px; max-height: 440px; margin: 0; padding: 18px; overflow: auto; color: #dce9e2; background: #142019; font: 12px/1.65 "SFMono-Regular", Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.audit-json-wrap { position: relative; background: #142019; }
+.audit-copy-button { position: absolute; z-index: 1; top: 10px; right: 10px; min-height: 32px; padding: 0 12px; border: 1px solid #547263; border-radius: 4px; color: #e8f2ed; background: #20382c; font-size: 12px; font-weight: 700; }
+.audit-copy-button:hover { border-color: #8db69f; background: #294838; }
+.audit-copy-button:disabled { cursor: not-allowed; opacity: .45; }
+#audit-json { min-height: 220px; max-height: 440px; margin: 0; padding: 52px 18px 18px; overflow: auto; color: #dce9e2; background: transparent; font: 12px/1.65 "SFMono-Regular", Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 .toast { position: fixed; right: 24px; bottom: 24px; max-width: min(380px, calc(100vw - 48px)); padding: 13px 16px; border-radius: 6px; color: #fff; background: #17211c; box-shadow: 0 10px 32px rgba(10, 25, 17, .24); font-size: 13px; animation: toast-in .18s ease-out; }
 .toast[data-tone="error"] { background: #9f2d24; }
 @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } }
