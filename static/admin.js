@@ -296,6 +296,7 @@ function addRouteRow(route = {}) {
   const mappedUpstreamModel = route.upstream_model || route.mapped_upstream_model || ''
   const selectedDurations = routeDurations(route)
   row.dataset.durations = JSON.stringify(selectedDurations)
+  row.dataset.profile = route.profile || 'default'
   row.innerHTML = `
     <input data-route-field="model" maxlength="160" value="${escapeHtml(route.model || '')}" placeholder="对外模型名" aria-label="对外模型名">
     <select data-route-field="protocol" aria-label="请求类型">
@@ -303,9 +304,6 @@ function addRouteRow(route = {}) {
       <option value="seedance"${route.protocol === 'seedance' ? ' selected' : ''}>seedance</option>
     </select>
     <input data-route-field="upstream_model" maxlength="160" value="${escapeHtml(mappedUpstreamModel)}" placeholder="上游模型名" aria-label="映射上游模型名">
-    <select data-route-field="profile" aria-label="上游请求模板" title="用于转换上游请求体，不等于对外请求类型">
-      ${dashboard.profiles.map((profile) => `<option value="${profile.id}"${(route.profile || 'default') === profile.id ? ' selected' : ''}>${escapeHtml(profile.label)}</option>`).join('')}
-    </select>
     <button class="duration-picker" data-duration-trigger data-duration-summary type="button">${selectedDurations.length ? selectedDurations.map((duration) => `${duration}s`).join(', ') : '工作台默认'}</button>
     <div class="media-support-options" aria-label="素材支持">
       <label><input data-route-support="image" type="checkbox"${route.supports_image !== false ? ' checked' : ''}>图片</label>
@@ -335,7 +333,7 @@ function readRoutes(allowEmpty = false, preserveBlankModel = false) {
       model: preserveBlankModel ? model : effectiveModel,
       upstream_model: upstreamModel,
       protocol: row.querySelector('[data-route-field="protocol"]').value,
-      profile: row.querySelector('[data-route-field="profile"]').value,
+      profile: row.dataset.profile || 'default',
       durations,
       duration_override: durations.length === 1 ? durations[0] : null,
       supports_image: row.querySelector('[data-route-support="image"]').checked,
@@ -419,6 +417,12 @@ routeRows.addEventListener('click', (event) => {
   closeDurationMenu()
   target.closest('.route-editor-row').remove()
   updateRouteEmpty()
+})
+routeRows.addEventListener('change', (event) => {
+  const target = event.target instanceof Element ? event.target : null
+  if (!target?.matches('[data-route-field="protocol"]')) return
+  const row = target.closest('.route-editor-row')
+  if (row && target.value === 'seedance') row.dataset.profile = 'default'
 })
 document.addEventListener('click', (event) => {
   if (!activeDurationMenu) return
