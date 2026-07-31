@@ -150,13 +150,16 @@ def capabilities_for(
     supports_image: bool = True,
     supports_video: bool = True,
     supports_audio: bool = True,
+    max_images: int | None = None,
 ) -> dict[str, Any]:
     capabilities = deepcopy(PROFILE_DEFINITIONS[profile]['capabilities'])
     if isinstance(duration_overrides, int):
         duration_overrides = [duration_overrides]
     if duration_overrides:
         capabilities['durations'] = duration_overrides
-    if not supports_image:
+    if max_images is not None:
+        capabilities['maxImages'] = max(0, max_images)
+    elif not supports_image:
         capabilities['maxImages'] = 0
     elif not capabilities.get('maxImages'):
         capabilities['maxImages'] = 1

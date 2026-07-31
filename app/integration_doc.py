@@ -56,7 +56,7 @@ def _model_capability_section(model: dict[str, Any]) -> list[str]:
         f"| 时长 | {_table_text(durations)} |",
         f"| 参考图片 | 最多 {capabilities.get('maxImages', 0)} 张 |",
         f"| 参考视频 | {'支持' if capabilities.get('referenceVideo') else '不支持'} |",
-        f"| 参考音频 | 最多 {capabilities.get('maxAudios', 0)} 个 |",
+        f"| 参考音频 | {'支持（最多 ' + str(capabilities.get('maxAudios', 0)) + ' 个）' if capabilities.get('maxAudios', 0) else '不支持'} |",
     ]
     if capabilities.get("maxReferences"):
         lines.append(f"| 图片、视频和音频总数 | 最多 {capabilities['maxReferences']} 个 |")
@@ -159,8 +159,8 @@ def build_integration_document(base_url: str, models: list[dict[str, Any]]) -> s
         "",
         "## 当前开放模型",
         "",
-        "| 对外模型名 | 画面比例 | 时长 | 分辨率 | 图片 | 视频 | 音频 |",
-        "| --- | --- | --- | --- | ---: | --- | ---: |",
+        "| 对外模型名 | 画面比例 | 时长 | 分辨率 | 图片数量 | 视频 | 音频 |",
+        "| --- | --- | --- | --- | ---: | --- | --- |",
     ]
     if models:
         for model in models:
@@ -172,10 +172,10 @@ def build_integration_document(base_url: str, models: list[dict[str, Any]]) -> s
                 f"{_table_text(capabilities.get('resolutions', []))} | "
                 f"{capabilities.get('maxImages', 0)} | "
                 f"{'支持' if capabilities.get('referenceVideo') else '不支持'} | "
-                f"{capabilities.get('maxAudios', 0)} |"
+                f"{'支持' if capabilities.get('maxAudios', 0) else '不支持'} |"
             )
     else:
-        lines.append("| 暂无启用模型 | - | - | - | 0 | 不支持 | 0 |")
+        lines.append("| 暂无启用模型 | - | - | - | 0 | 不支持 | 不支持 |")
 
     lines.extend([
         "",

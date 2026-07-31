@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from . import database, proxy
-from .config import PUBLIC_LINK_BASE_URLS, ROOT_DIR, settings
+from .config import DEFAULT_PUBLIC_LINK_BASE_URL, PUBLIC_LINK_BASE_URLS, ROOT_DIR, settings
 from .integration_doc import build_integration_document
 from .model_profiles import profile_options, suggest_duration_override, suggest_profile
 from .schemas import LoginInput, ModelDiscoveryInput, PublicLinkSettingsInput, PublicTaskInput, UpstreamInput
@@ -203,7 +203,7 @@ def update_public_link_settings(payload: PublicLinkSettingsInput, _: dict = Depe
 @app.get("/admin/api/integration-document")
 def integration_document(_: tuple[str, dict] = Depends(admin_session)):
     content = build_integration_document(
-        database.get_public_link_base_url(),
+        DEFAULT_PUBLIC_LINK_BASE_URL,
         database.list_model_capabilities(),
     )
     return Response(

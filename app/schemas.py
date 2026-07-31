@@ -23,6 +23,7 @@ class RouteInput(BaseModel):
         "grok-fast",
     ] = "default"
     durations: list[int] = Field(default_factory=list, max_length=len(SUPPORTED_DURATION_OPTIONS))
+    image_count: int | None = Field(default=None, ge=0, le=20)
     supports_image: bool = True
     supports_video: bool = True
     supports_audio: bool = True

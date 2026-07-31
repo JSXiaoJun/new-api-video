@@ -305,11 +305,9 @@ function addRouteRow(route = {}) {
     </select>
     <input data-route-field="upstream_model" maxlength="160" value="${escapeHtml(mappedUpstreamModel)}" placeholder="上游模型名" aria-label="映射上游模型名">
     <button class="duration-picker" data-duration-trigger data-duration-summary type="button">${selectedDurations.length ? selectedDurations.map((duration) => `${duration}s`).join(', ') : '工作台默认'}</button>
-    <div class="media-support-options" aria-label="素材支持">
-      <label><input data-route-support="image" type="checkbox"${route.supports_image !== false ? ' checked' : ''}>图片</label>
-      <label><input data-route-support="video" type="checkbox"${route.supports_video !== false ? ' checked' : ''}>视频</label>
-      <label><input data-route-support="audio" type="checkbox"${route.supports_audio !== false ? ' checked' : ''}>音频</label>
-    </div>
+    <label class="image-count"><input data-route-field="image_count" type="number" min="0" max="20" value="${route.image_count ?? 1}" aria-label="图片数量"><span>张</span></label>
+    <label class="media-support-cell"><input data-route-support="video" type="checkbox"${route.supports_video !== false ? ' checked' : ''} aria-label="支持视频"></label>
+    <label class="media-support-cell"><input data-route-support="audio" type="checkbox"${route.supports_audio !== false ? ' checked' : ''} aria-label="支持音频"></label>
     <button class="route-remove" type="button" title="移除此模型" aria-label="移除此模型">×</button>`
   routeRows.appendChild(row)
   updateRouteEmpty()
@@ -327,6 +325,7 @@ function readRoutes(allowEmpty = false, preserveBlankModel = false) {
     const model = row.querySelector('[data-route-field="model"]').value.trim()
     const upstreamModel = row.querySelector('[data-route-field="upstream_model"]').value.trim()
     const durations = JSON.parse(row.dataset.durations || '[]')
+    const imageCount = Math.max(0, Math.min(20, Number(row.querySelector('[data-route-field="image_count"]').value) || 0))
     const effectiveModel = model || upstreamModel
     if (!effectiveModel) throw new Error('每一行都必须填写对外模型名或映射上游模型名')
     return {
@@ -336,7 +335,8 @@ function readRoutes(allowEmpty = false, preserveBlankModel = false) {
       profile: row.dataset.profile || 'default',
       durations,
       duration_override: durations.length === 1 ? durations[0] : null,
-      supports_image: row.querySelector('[data-route-support="image"]').checked,
+      image_count: imageCount,
+      supports_image: imageCount > 0,
       supports_video: row.querySelector('[data-route-support="video"]').checked,
       supports_audio: row.querySelector('[data-route-support="audio"]').checked,
     }

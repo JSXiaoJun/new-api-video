@@ -165,6 +165,8 @@ def initialize() -> None:
         for column in ("supports_image", "supports_video", "supports_audio"):
             if column not in route_columns:
                 conn.execute(f"ALTER TABLE model_routes ADD COLUMN {column} INTEGER NOT NULL DEFAULT 1")
+        if "image_count" not in route_columns:
+            conn.execute("ALTER TABLE model_routes ADD COLUMN image_count INTEGER")
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_model_routes_upstream_model ON model_routes(upstream_id, upstream_model)"
         )
@@ -219,7 +221,7 @@ def _route_rows(conn: sqlite3.Connection, upstream_id: int) -> list[dict[str, An
     rows = conn.execute(
         """
         SELECT model, upstream_model, protocol, profile, duration_override, durations_json,
-               supports_image, supports_video, supports_audio
+               image_count, supports_image, supports_video, supports_audio
         FROM model_routes WHERE upstream_id = ? ORDER BY model
         """,
         (upstream_id,),
@@ -228,6 +230,14 @@ def _route_rows(conn: sqlite3.Connection, upstream_id: int) -> list[dict[str, An
     for row in rows:
         item = dict(row)
         item["durations"] = _decode_durations(item.pop("durations_json"), item["duration_override"])
+        if item["image_count"] is None:
+            item["image_count"] = capabilities_for(
+                item["profile"],
+                item["durations"],
+                bool(item["supports_image"]),
+                bool(item["supports_video"]),
+                bool(item["supports_audio"]),
+            ).get("maxImages", 0)
         item["supports_image"] = bool(item["supports_image"])
         item["supports_video"] = bool(item["supports_video"])
         item["supports_audio"] = bool(item["supports_audio"])
@@ -341,8 +351,8 @@ def save_upstream(payload: dict[str, Any], upstream_id: int | None = None) -> di
             """
             INSERT INTO model_routes(
                 upstream_id, model, upstream_model, protocol, profile, duration_override, durations_json,
-                supports_image, supports_video, supports_audio
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                image_count, supports_image, supports_video, supports_audio
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
@@ -353,7 +363,8 @@ def save_upstream(payload: dict[str, Any], upstream_id: int | None = None) -> di
                     route.get("profile", "default"),
                     durations[0] if len(durations) == 1 else None,
                     json.dumps(durations),
-                    int(route.get("supports_image", True)),
+                    route.get("image_count"),
+                    int(route.get("supports_image", route.get("image_count") is None or route.get("image_count", 0) > 0)),
                     int(route.get("supports_video", True)),
                     int(route.get("supports_audio", True)),
                 )
@@ -686,7 +697,7 @@ def list_model_capabilities() -> list[dict[str, Any]]:
         rows = conn.execute(
             """
             SELECT r.model, r.profile, r.duration_override, r.durations_json,
-                   r.supports_image, r.supports_video, r.supports_audio
+                   r.image_count, r.supports_image, r.supports_video, r.supports_audio
             FROM model_routes r
             JOIN upstreams u ON u.id = r.upstream_id
             WHERE u.enabled = 1
@@ -707,6 +718,7 @@ def list_model_capabilities() -> list[dict[str, Any]]:
                 bool(row["supports_image"]),
                 bool(row["supports_video"]),
                 bool(row["supports_audio"]),
+                row["image_count"],
             ),
         })
     return result
