@@ -5,6 +5,8 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, field_validator
 
+from .model_profiles import SUPPORTED_DURATION_OPTIONS
+
 
 class RouteInput(BaseModel):
     model: str = Field(min_length=1, max_length=160)
@@ -20,12 +22,20 @@ class RouteInput(BaseModel):
         "grok-auto",
         "grok-fast",
     ] = "default"
+    durations: list[int] = Field(default_factory=list, max_length=len(SUPPORTED_DURATION_OPTIONS))
     duration_override: int | None = Field(default=None, ge=1, le=60)
 
     @field_validator("model", "upstream_model")
     @classmethod
     def normalize_model(cls, value: str) -> str:
         return value.strip()
+
+    @field_validator("durations")
+    @classmethod
+    def validate_durations(cls, value: list[int]) -> list[int]:
+        if any(duration not in SUPPORTED_DURATION_OPTIONS for duration in value):
+            raise ValueError("durations contains an unsupported value")
+        return sorted(set(value))
 
 
 class UpstreamInput(BaseModel):

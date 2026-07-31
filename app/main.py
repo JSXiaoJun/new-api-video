@@ -13,6 +13,7 @@ from fastapi.templating import Jinja2Templates
 
 from . import database, proxy
 from .config import PUBLIC_LINK_BASE_URLS, ROOT_DIR, settings
+from .integration_doc import build_integration_document
 from .model_profiles import profile_options, suggest_duration_override, suggest_profile
 from .schemas import LoginInput, ModelDiscoveryInput, PublicLinkSettingsInput, PublicTaskInput, UpstreamInput
 from .security import (
@@ -91,7 +92,7 @@ def normalize_discovered_models(payload: Any) -> list[dict[str, Any]]:
     if not isinstance(raw_models, list):
         return []
 
-    result: list[dict[str, str]] = []
+    result: list[dict[str, Any]] = []
     seen: set[str] = set()
     for item in raw_models:
         if isinstance(item, str):
@@ -105,11 +106,11 @@ def normalize_discovered_models(payload: Any) -> list[dict[str, Any]]:
         seen.add(model_id)
         protocol = "seedance" if "seedance" in model_id.lower() else "videos"
         result.append({
-            "model": model_id,
-            "upstream_model": "",
+            "model": "",
+            "upstream_model": model_id,
             "protocol": protocol,
             "profile": suggest_profile(model_id, protocol),
-            "duration_override": suggest_duration_override(model_id),
+            "durations": [duration] if (duration := suggest_duration_override(model_id)) else [],
         })
     return result
 
@@ -197,6 +198,19 @@ def dashboard_api(_: tuple[str, dict] = Depends(admin_session)):
 @app.put("/admin/api/settings/public-link")
 def update_public_link_settings(payload: PublicLinkSettingsInput, _: dict = Depends(admin_mutation)):
     return {"public_link_base_url": database.set_public_link_base_url(payload.public_base_url)}
+
+
+@app.get("/admin/api/integration-document")
+def integration_document(_: tuple[str, dict] = Depends(admin_session)):
+    content = build_integration_document(
+        database.get_public_link_base_url(),
+        database.list_model_capabilities(),
+    )
+    return Response(
+        content=content,
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="video-api-integration.md"'},
+    )
 
 
 @app.get("/admin/api/tasks")

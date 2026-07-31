@@ -11,6 +11,7 @@ const auditVideo = document.querySelector('#audit-video')
 const auditEvent = document.querySelector('#audit-event')
 const auditJson = document.querySelector('#audit-json')
 const copyAuditJsonButton = document.querySelector('#copy-audit-json')
+const DURATION_OPTIONS = [4, 5, 8, 10, 12, 15]
 const publicLinkForm = document.querySelector('#public-link-form')
 const publicLinkBaseUrl = document.querySelector('#public-link-base-url')
 let dashboard = { upstreams: [], tasks: [], stats: {} }
@@ -107,7 +108,7 @@ function render() {
       <td><span class="state ${upstream.enabled ? 'enabled' : 'disabled'}">${upstream.enabled ? '启用' : '停用'}</span></td>
       <td><strong>${escapeHtml(upstream.name)}</strong></td>
       <td><code>${escapeHtml(upstream.base_url)}</code></td>
-      <td><div class="route-list">${upstream.routes.map((route) => `<span>${escapeHtml(route.model)}${route.mapped_upstream_model ? `<b>→ ${escapeHtml(route.upstream_model)}</b>` : ''}<small>${route.protocol} · ${escapeHtml(profileLabel(route.profile))}${route.duration_override ? ` · ${route.duration_override}s` : ''}</small></span>`).join('')}</div></td>
+      <td><div class="route-list">${upstream.routes.map((route) => `<span>${escapeHtml(route.model)}${route.mapped_upstream_model ? `<b>→ ${escapeHtml(route.upstream_model)}</b>` : ''}<small>${route.protocol} · ${escapeHtml(profileLabel(route.profile))}${route.durations?.length ? ` · ${route.durations.map((duration) => `${duration}s`).join(', ')}` : ''}</small></span>`).join('')}</div></td>
       <td>${upstream.priority}</td>
       <td class="align-right"><button class="table-action" data-edit="${upstream.id}" type="button">编辑</button></td>
     </tr>`).join('')
@@ -119,7 +120,7 @@ function render() {
         <div class="mobile-item-actions"><span class="state ${upstream.enabled ? 'enabled' : 'disabled'}">${upstream.enabled ? '启用' : '停用'}</span><button class="table-action" data-edit="${upstream.id}" type="button">编辑</button></div>
       </div>
       <code class="mobile-url">${escapeHtml(upstream.base_url)}</code>
-      <div class="route-list">${upstream.routes.map((route) => `<span>${escapeHtml(route.model)}${route.mapped_upstream_model ? `<b>→ ${escapeHtml(route.upstream_model)}</b>` : ''}<small>${route.protocol} · ${escapeHtml(profileLabel(route.profile))}${route.duration_override ? ` · ${route.duration_override}s` : ''}</small></span>`).join('')}</div>
+      <div class="route-list">${upstream.routes.map((route) => `<span>${escapeHtml(route.model)}${route.mapped_upstream_model ? `<b>→ ${escapeHtml(route.upstream_model)}</b>` : ''}<small>${route.protocol} · ${escapeHtml(profileLabel(route.profile))}${route.durations?.length ? ` · ${route.durations.map((duration) => `${duration}s`).join(', ')}` : ''}</small></span>`).join('')}</div>
     </article>`).join('')
 
   const taskRows = document.querySelector('#task-rows')
@@ -244,21 +245,39 @@ function updateRouteEmpty() {
   routeEmpty.hidden = routeRows.children.length > 0
 }
 
+function routeDurations(route) {
+  const values = Array.isArray(route.durations)
+    ? route.durations
+    : (route.duration_override ? [route.duration_override] : [])
+  return DURATION_OPTIONS.filter((duration) => values.includes(duration))
+}
+
+function updateDurationSummary(row) {
+  const values = [...row.querySelectorAll('[data-route-duration]:checked')].map((input) => `${input.value}s`)
+  row.querySelector('[data-duration-summary]').textContent = values.length ? values.join(', ') : '工作台默认'
+}
+
 function addRouteRow(route = {}) {
   const row = document.createElement('div')
   row.className = 'route-editor-row'
-  const mappedUpstreamModel = route.mapped_upstream_model ?? route.upstream_model ?? ''
+  const mappedUpstreamModel = route.upstream_model || route.mapped_upstream_model || ''
+  const selectedDurations = routeDurations(route)
   row.innerHTML = `
     <input data-route-field="model" maxlength="160" value="${escapeHtml(route.model || '')}" placeholder="对外模型名" aria-label="对外模型名">
     <select data-route-field="protocol" aria-label="请求类型">
       <option value="videos"${route.protocol !== 'seedance' ? ' selected' : ''}>videos</option>
       <option value="seedance"${route.protocol === 'seedance' ? ' selected' : ''}>seedance</option>
     </select>
-    <input data-route-field="upstream_model" maxlength="160" value="${escapeHtml(mappedUpstreamModel)}" placeholder="留空则与对外名称相同" aria-label="映射上游模型名">
+    <input data-route-field="upstream_model" maxlength="160" value="${escapeHtml(mappedUpstreamModel)}" placeholder="上游模型名" aria-label="映射上游模型名">
     <select data-route-field="profile" aria-label="工作台类型">
       ${dashboard.profiles.map((profile) => `<option value="${profile.id}"${(route.profile || 'default') === profile.id ? ' selected' : ''}>${escapeHtml(profile.label)}</option>`).join('')}
     </select>
-    <input data-route-field="duration_override" type="number" min="1" max="60" value="${route.duration_override ?? ''}" placeholder="默认" aria-label="固定时长">
+    <details class="duration-picker">
+      <summary data-duration-summary>${selectedDurations.length ? selectedDurations.map((duration) => `${duration}s`).join(', ') : '工作台默认'}</summary>
+      <div class="duration-options">
+        ${DURATION_OPTIONS.map((duration) => `<label><input data-route-duration type="checkbox" value="${duration}"${selectedDurations.includes(duration) ? ' checked' : ''}>${duration}s</label>`).join('')}
+      </div>
+    </details>
     <button class="route-remove" type="button" title="移除此模型" aria-label="移除此模型">×</button>`
   routeRows.appendChild(row)
   updateRouteEmpty()
@@ -270,26 +289,24 @@ function setRouteRows(routes) {
   updateRouteEmpty()
 }
 
-function readRoutes(allowEmpty = false) {
+function readRoutes(allowEmpty = false, preserveBlankModel = false) {
   const routes = [...routeRows.children].map((row) => {
     const model = row.querySelector('[data-route-field="model"]').value.trim()
     const upstreamModel = row.querySelector('[data-route-field="upstream_model"]').value.trim()
-    const durationText = row.querySelector('[data-route-field="duration_override"]').value.trim()
-    const durationOverride = durationText ? Number(durationText) : null
-    if (!model) throw new Error('每一行都必须填写对外模型名')
-    if (durationText && (!Number.isInteger(durationOverride) || durationOverride < 1 || durationOverride > 60)) {
-      throw new Error(`${model} 的固定时长必须是 1–60 的整数`)
-    }
+    const durations = [...row.querySelectorAll('[data-route-duration]:checked')].map((input) => Number(input.value))
+    const effectiveModel = model || upstreamModel
+    if (!effectiveModel) throw new Error('每一行都必须填写对外模型名或映射上游模型名')
     return {
-      model,
+      model: preserveBlankModel ? model : effectiveModel,
       upstream_model: upstreamModel,
       protocol: row.querySelector('[data-route-field="protocol"]').value,
       profile: row.querySelector('[data-route-field="profile"]').value,
-      duration_override: durationOverride,
+      durations,
+      duration_override: durations.length === 1 ? durations[0] : null,
     }
   })
   if (!routes.length && !allowEmpty) throw new Error('至少需要一个模型路由')
-  const publicModels = routes.map((route) => route.model)
+  const publicModels = routes.map((route) => route.model || route.upstream_model)
   if (new Set(publicModels).size !== publicModels.length) throw new Error('对外模型名不能重复')
   const upstreamModels = routes.map((route) => route.upstream_model || route.model)
   if (new Set(upstreamModels).size !== upstreamModels.length) throw new Error('同一个上游模型不能重复映射')
@@ -338,9 +355,9 @@ discoverModelsButton.addEventListener('click', async () => {
         api_key: apiKey,
       }),
     })
-    const currentRoutes = readRoutes(true)
+    const currentRoutes = readRoutes(true, true)
     const currentByUpstream = new Map(currentRoutes.map((route) => [route.upstream_model || route.model, route]))
-    setRouteRows(result.models.map((item) => currentByUpstream.get(item.model) || item))
+    setRouteRows(result.models.map((item) => currentByUpstream.get(item.upstream_model) || item))
     showToast(`已同步 ${result.models.length} 个上游模型`)
   } catch (error) {
     document.querySelector('#form-error').textContent = error.message
@@ -357,6 +374,10 @@ routeRows.addEventListener('click', (event) => {
   if (!event.target.classList.contains('route-remove')) return
   event.target.closest('.route-editor-row').remove()
   updateRouteEmpty()
+})
+routeRows.addEventListener('change', (event) => {
+  if (!event.target.matches('[data-route-duration]')) return
+  updateDurationSummary(event.target.closest('.route-editor-row'))
 })
 
 document.querySelector('#add-upstream').addEventListener('click', () => openDialog())

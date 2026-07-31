@@ -55,6 +55,14 @@ substituted only when forwarding the request. Leaving it empty uses the public m
 models preserves existing aliases by upstream model name, adds newly discovered models, and removes models that have
 disappeared upstream. `WORKBENCH_ORIGIN` controls which browser origin may read the public model capability endpoint.
 
+The admin page's model route editor keeps the discovered upstream name in `映射上游模型名`; leaving `对外模型名`
+empty uses that upstream name as the public name when saving. Supported fixed durations are `4s`, `5s`, `8s`, `10s`,
+`12s`, and `15s`, and multiple values can be selected for one model. `工作台类型` remains a single selection because
+it determines the upstream request format.
+
+Use `生成对接文档` in the admin page to download a Markdown document generated from the currently enabled public
+models and their configured capabilities.
+
 ## Docker
 
 Pushes to `main` automatically build the `linux/amd64` image and publish both `latest` and `sha-<commit>` tags to:

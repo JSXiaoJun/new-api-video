@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from typing import Any, Iterator
 
 from .config import DEFAULT_PUBLIC_LINK_BASE_URL, PUBLIC_LINK_BASE_URLS, settings
-from .model_profiles import capabilities_for, suggest_profile
+from .model_profiles import SUPPORTED_DURATION_OPTIONS, capabilities_for, suggest_profile
 from .security import secret_box
 
 
@@ -151,6 +151,17 @@ def initialize() -> None:
             conn.execute("ALTER TABLE model_routes ADD COLUMN profile TEXT NOT NULL DEFAULT 'default'")
         if "duration_override" not in route_columns:
             conn.execute("ALTER TABLE model_routes ADD COLUMN duration_override INTEGER")
+        if "durations_json" not in route_columns:
+            conn.execute("ALTER TABLE model_routes ADD COLUMN durations_json TEXT NOT NULL DEFAULT '[]'")
+            legacy_routes = conn.execute(
+                "SELECT id, duration_override FROM model_routes WHERE duration_override IS NOT NULL"
+            ).fetchall()
+            for route in legacy_routes:
+                if route["duration_override"] in SUPPORTED_DURATION_OPTIONS:
+                    conn.execute(
+                        "UPDATE model_routes SET durations_json = ? WHERE id = ?",
+                        (json.dumps([route["duration_override"]]), route["id"]),
+                    )
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_model_routes_upstream_model ON model_routes(upstream_id, upstream_model)"
         )
@@ -204,7 +215,7 @@ def initialize() -> None:
 def _route_rows(conn: sqlite3.Connection, upstream_id: int) -> list[dict[str, Any]]:
     rows = conn.execute(
         """
-        SELECT model, upstream_model, protocol, profile, duration_override
+        SELECT model, upstream_model, protocol, profile, duration_override, durations_json
         FROM model_routes WHERE upstream_id = ? ORDER BY model
         """,
         (upstream_id,),
@@ -212,9 +223,25 @@ def _route_rows(conn: sqlite3.Connection, upstream_id: int) -> list[dict[str, An
     result = []
     for row in rows:
         item = dict(row)
+        item["durations"] = _decode_durations(item.pop("durations_json"), item["duration_override"])
         item["mapped_upstream_model"] = "" if item["model"] == item["upstream_model"] else item["upstream_model"]
         result.append(item)
     return result
+
+
+def _decode_durations(value: str | None, legacy_duration: int | None = None) -> list[int]:
+    try:
+        durations = json.loads(value or "[]")
+    except (TypeError, ValueError):
+        durations = []
+    if not isinstance(durations, list):
+        durations = []
+    normalized = sorted({duration for duration in durations if duration in SUPPORTED_DURATION_OPTIONS})
+    if normalized:
+        return normalized
+    if legacy_duration in SUPPORTED_DURATION_OPTIONS:
+        return [legacy_duration]
+    return []
 
 
 def list_upstreams(include_keys: bool = False) -> list[dict[str, Any]]:
@@ -252,6 +279,14 @@ def get_upstream(upstream_id: int, include_key: bool = False) -> dict[str, Any] 
 def save_upstream(payload: dict[str, Any], upstream_id: int | None = None) -> dict[str, Any]:
     now = int(time.time())
     routes = payload["routes"]
+    prepared_routes = [
+        (
+            route,
+            route.get("durations")
+            or ([route["duration_override"]] if route.get("duration_override") in SUPPORTED_DURATION_OPTIONS else []),
+        )
+        for route in routes
+    ]
     with connection() as conn:
         if upstream_id is None:
             cursor = conn.execute(
@@ -297,8 +332,8 @@ def save_upstream(payload: dict[str, Any], upstream_id: int | None = None) -> di
 
         conn.executemany(
             """
-            INSERT INTO model_routes(upstream_id, model, upstream_model, protocol, profile, duration_override)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO model_routes(upstream_id, model, upstream_model, protocol, profile, duration_override, durations_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
@@ -307,9 +342,10 @@ def save_upstream(payload: dict[str, Any], upstream_id: int | None = None) -> di
                     route.get("upstream_model") or route["model"],
                     route["protocol"],
                     route.get("profile", "default"),
-                    route.get("duration_override"),
+                    durations[0] if len(durations) == 1 else None,
+                    json.dumps(durations),
                 )
-                for route in routes
+                for route, durations in prepared_routes
             ],
         )
     item = get_upstream(upstream_id)
@@ -637,7 +673,7 @@ def list_model_capabilities() -> list[dict[str, Any]]:
     with connection() as conn:
         rows = conn.execute(
             """
-            SELECT r.model, r.profile, r.duration_override
+            SELECT r.model, r.profile, r.duration_override, r.durations_json
             FROM model_routes r
             JOIN upstreams u ON u.id = r.upstream_id
             WHERE u.enabled = 1
@@ -652,6 +688,9 @@ def list_model_capabilities() -> list[dict[str, Any]]:
         seen.add(row["model"])
         result.append({
             "id": row["model"],
-            "capabilities": capabilities_for(row["profile"], row["duration_override"]),
+            "capabilities": capabilities_for(
+                row["profile"],
+                _decode_durations(row["durations_json"], row["duration_override"]),
+            ),
         })
     return result

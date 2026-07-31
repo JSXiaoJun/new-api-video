@@ -6,7 +6,7 @@
     <meta name="csrf-token" content="{{ csrf_token }}">
     <link rel="icon" href="data:,">
     <title>Video Relay Console</title>
-    <link rel="stylesheet" href="/static/admin.css?v=20260731-3">
+    <link rel="stylesheet" href="/static/admin.css?v=20260731-4">
   </head>
   <body>
     <header class="app-header">
@@ -27,7 +27,10 @@
           <p class="eyebrow">UPSTREAM CONTROL</p>
           <h1>上游管理</h1>
         </div>
-        <button id="add-upstream" class="primary-button compact" type="button">添加上游</button>
+        <div class="workspace-actions">
+          <a class="quiet-button compact" href="/admin/api/integration-document">生成对接文档</a>
+          <button id="add-upstream" class="primary-button compact" type="button">添加上游</button>
+        </div>
       </section>
 
       <section class="stats-band" aria-label="运行概览">
@@ -111,7 +114,7 @@
             </div>
             <div class="route-editor">
               <div class="route-editor-header" aria-hidden="true">
-                <span>对外模型名</span><span>请求类型</span><span>映射上游模型名</span><span>工作台类型</span><span>固定时长</span><span></span>
+                <span>对外模型名</span><span>请求类型</span><span>映射上游模型名</span><span>工作台类型</span><span>支持时长</span><span></span>
               </div>
               <div id="route-rows" class="route-editor-rows"></div>
               <div id="route-empty" class="route-editor-empty">尚未添加模型</div>
@@ -179,6 +182,6 @@
       </div>
     </dialog>
     <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
-    <script src="/static/admin.js?v=20260731-3" defer></script>
+    <script src="/static/admin.js?v=20260731-4" defer></script>
   </body>
 </html>

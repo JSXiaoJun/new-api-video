@@ -66,6 +66,16 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn('id="copy-audit-json"', response.text)
 
+    def test_admin_can_download_integration_document(self):
+        client = TestClient(app)
+        client.cookies.set(SESSION_COOKIE, create_session("admin"))
+        response = client.get("/admin/api/integration-document")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("attachment; filename=\"video-api-integration.md\"", response.headers["content-disposition"])
+        self.assertIn("stable-manxue", response.text)
+        self.assertNotIn("manxue-900-10s", response.text)
+        self.assertIn("/v1/videos", response.text)
+
     def test_adapter_endpoint_requires_channel_key(self):
         response = TestClient(app).get("/v1/models")
         self.assertEqual(response.status_code, 401)
@@ -375,9 +385,9 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(
             normalize_discovered_models(payload),
             [
-                {"model": "sora-v3-933-pro", "upstream_model": "", "protocol": "videos", "profile": "default", "duration_override": None},
-                {"model": "seedance-2.0-fast", "upstream_model": "", "protocol": "seedance", "profile": "default", "duration_override": None},
-                {"model": "veo31-fast", "upstream_model": "", "protocol": "videos", "profile": "veo31-fast", "duration_override": None},
+                {"model": "", "upstream_model": "sora-v3-933-pro", "protocol": "videos", "profile": "default", "durations": []},
+                {"model": "", "upstream_model": "seedance-2.0-fast", "protocol": "seedance", "profile": "default", "durations": []},
+                {"model": "", "upstream_model": "veo31-fast", "protocol": "videos", "profile": "veo31-fast", "durations": []},
             ],
         )
 
@@ -416,6 +426,35 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(result.status_code, 200)
         self.assertEqual(captured["payload"]["model"], "manxue-900-10s")
         self.assertEqual(captured["payload"]["seconds"], 10)
+
+    def test_route_supports_multiple_hardcoded_durations(self):
+        upstream = database.save_upstream(
+            {
+                "name": "duration-options",
+                "base_url": "https://duration-options.example",
+                "api_key": "duration-key",
+                "enabled": True,
+                "priority": 50,
+                "routes": [
+                    {
+                        "model": "duration-options-model",
+                        "upstream_model": "duration-options-upstream",
+                        "protocol": "videos",
+                        "profile": "default",
+                        "durations": [4, 5, 8, 10, 12, 15],
+                    }
+                ],
+            }
+        )
+        try:
+            route = database.get_upstream(upstream["id"])["routes"][0]
+            self.assertEqual(route["durations"], [4, 5, 8, 10, 12, 15])
+            capabilities = next(
+                item for item in database.list_model_capabilities() if item["id"] == "duration-options-model"
+            )
+            self.assertEqual(capabilities["capabilities"]["durations"], [4, 5, 8, 10, 12, 15])
+        finally:
+            database.delete_upstream(upstream["id"])
 
     def test_manxue_profile_transforms_canonical_payload(self):
         payload = transform_create_payload(

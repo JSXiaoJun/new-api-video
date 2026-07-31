@@ -5,6 +5,9 @@ import re
 from typing import Any
 
 
+SUPPORTED_DURATION_OPTIONS = (4, 5, 8, 10, 12, 15)
+
+
 PROFILE_DEFINITIONS: dict[str, dict[str, Any]] = {
     'default': {
         'label': '通用视频',
@@ -134,17 +137,19 @@ def suggest_duration_override(model: str) -> int | None:
     if not match:
         return None
     duration = int(match.group(1))
-    return duration if 1 <= duration <= 60 else None
+    return duration if duration in SUPPORTED_DURATION_OPTIONS else None
 
 
 def profile_options() -> list[dict[str, str]]:
     return [{'id': profile, 'label': data['label']} for profile, data in PROFILE_DEFINITIONS.items()]
 
 
-def capabilities_for(profile: str, duration_override: int | None = None) -> dict[str, Any]:
+def capabilities_for(profile: str, duration_overrides: list[int] | int | None = None) -> dict[str, Any]:
     capabilities = deepcopy(PROFILE_DEFINITIONS[profile]['capabilities'])
-    if duration_override is not None:
-        capabilities['durations'] = [duration_override]
+    if isinstance(duration_overrides, int):
+        duration_overrides = [duration_overrides]
+    if duration_overrides:
+        capabilities['durations'] = duration_overrides
     return capabilities
 
 
