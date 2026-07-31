@@ -43,6 +43,7 @@ class Settings:
     port: int
     public_base_url: str
     new_api_public_base_url: str
+    workbench_origin: str
     cookie_secure: bool
     session_ttl_seconds: int
     upstream_timeout_seconds: float
@@ -85,6 +86,7 @@ def load_settings() -> Settings:
         port=int(os.getenv("PORT", "8787")),
         public_base_url=os.getenv("PUBLIC_BASE_URL", "http://127.0.0.1:8787").rstrip("/"),
         new_api_public_base_url=os.getenv("NEW_API_PUBLIC_BASE_URL", "").rstrip("/"),
+        workbench_origin=os.getenv("WORKBENCH_ORIGIN", "https://image.yyapi.cloud").rstrip("/"),
         cookie_secure=env_bool("COOKIE_SECURE"),
         session_ttl_seconds=session_ttl_days * 24 * 60 * 60,
         upstream_timeout_seconds=float(os.getenv("UPSTREAM_TIMEOUT_SECONDS", "60")),

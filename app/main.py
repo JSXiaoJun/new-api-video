@@ -7,11 +7,13 @@ from typing import Any
 import httpx
 from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from . import database, proxy
 from .config import ROOT_DIR, settings
+from .model_profiles import profile_options, suggest_duration_override, suggest_profile
 from .schemas import LoginInput, ModelDiscoveryInput, PublicTaskInput, UpstreamInput
 from .security import (
     SESSION_COOKIE,
@@ -26,6 +28,12 @@ from .security import (
 
 
 app = FastAPI(title="Video Relay Console", docs_url=None, redoc_url=None, openapi_url=None)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[settings.workbench_origin],
+    allow_methods=["GET", "OPTIONS"],
+    allow_headers=["*"],
+)
 app.mount("/static", StaticFiles(directory=ROOT_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=ROOT_DIR / "templates")
 
@@ -75,7 +83,7 @@ def adapter_auth(authorization: str | None = Header(default=None)) -> None:
         raise HTTPException(status_code=401, detail="Invalid adapter API key")
 
 
-def normalize_discovered_models(payload: Any) -> list[dict[str, str]]:
+def normalize_discovered_models(payload: Any) -> list[dict[str, Any]]:
     if isinstance(payload, dict):
         raw_models = payload.get("data", payload.get("models", []))
     else:
@@ -96,13 +104,26 @@ def normalize_discovered_models(payload: Any) -> list[dict[str, str]]:
             continue
         seen.add(model_id)
         protocol = "seedance" if "seedance" in model_id.lower() else "videos"
-        result.append({"model": model_id, "protocol": protocol})
+        result.append({
+            "model": model_id,
+            "protocol": protocol,
+            "profile": suggest_profile(model_id, protocol),
+            "duration_override": suggest_duration_override(model_id),
+        })
     return result
 
 
 @app.get("/healthz")
 def healthz() -> dict:
     return {"status": "ok", "time": int(time.time())}
+
+
+@app.get("/v1/model-capabilities")
+def model_capabilities() -> JSONResponse:
+    return JSONResponse(
+        {"data": database.list_model_capabilities()},
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.get("/", include_in_schema=False)
@@ -164,7 +185,7 @@ def dashboard(request: Request, session: str | None = Cookie(default=None, alias
 
 @app.get("/admin/api/dashboard")
 def dashboard_api(_: tuple[str, dict] = Depends(admin_session)):
-    return database.dashboard_data()
+    return {**database.dashboard_data(), "profiles": profile_options()}
 
 
 @app.get("/admin/api/tasks")

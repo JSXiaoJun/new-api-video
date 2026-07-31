@@ -9,6 +9,17 @@ from pydantic import BaseModel, Field, field_validator
 class RouteInput(BaseModel):
     model: str = Field(min_length=1, max_length=160)
     protocol: Literal["videos", "seedance"] = "videos"
+    profile: Literal[
+        "default",
+        "gemini-omni",
+        "sora2",
+        "veo31-fast",
+        "manxue-900",
+        "manxue-933",
+        "grok-auto",
+        "grok-fast",
+    ] = "default"
+    duration_override: int | None = Field(default=None, ge=1, le=60)
 
     @field_validator("model")
     @classmethod

@@ -24,6 +24,7 @@ os.environ["DATA_DIR"] = TEST_DATA_DIR.name
 from app import database
 from app.config import settings
 from app.main import app, normalize_discovered_models
+from app.model_profiles import capabilities_for, transform_create_payload
 from app.proxy import create_video, normalize_status, normalize_task_payload, upstream_error
 from app.security import SESSION_COOKIE, create_session, csrf_token, read_session, secret_box
 from fastapi.testclient import TestClient
@@ -149,6 +150,55 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(detail["upstream_task_id"], "legacy-upstream-task")
             self.assertEqual(detail["source_video_url"], "https://legacy.example/video.mp4")
 
+    def test_initialize_migrates_legacy_model_profiles(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            legacy_path = Path(data_dir) / "adapter.db"
+            conn = sqlite3.connect(legacy_path)
+            conn.executescript(
+                """
+                CREATE TABLE upstreams (
+                    id INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    base_url TEXT NOT NULL,
+                    api_key_encrypted TEXT NOT NULL,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    priority INTEGER NOT NULL DEFAULT 100,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    last_used_at INTEGER
+                );
+                CREATE TABLE model_routes (
+                    id INTEGER PRIMARY KEY,
+                    upstream_id INTEGER NOT NULL REFERENCES upstreams(id) ON DELETE CASCADE,
+                    model TEXT NOT NULL,
+                    protocol TEXT NOT NULL,
+                    UNIQUE(upstream_id, model)
+                );
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO upstreams(id, name, base_url, api_key_encrypted, enabled, priority, created_at, updated_at)
+                VALUES (1, 'legacy', 'https://legacy.example', ?, 1, 1, 100, 100)
+                """,
+                (secret_box.encrypt("legacy-key"),),
+            )
+            conn.execute(
+                "INSERT INTO model_routes(upstream_id, model, protocol) VALUES (1, 'manxue-933', 'videos')"
+            )
+            conn.commit()
+            conn.close()
+
+            with patch.object(database, "DB_PATH", legacy_path):
+                database.initialize()
+                with database.connection() as migrated:
+                    route = migrated.execute(
+                        "SELECT profile, duration_override FROM model_routes WHERE model = 'manxue-933'"
+                    ).fetchone()
+
+            self.assertEqual(route["profile"], "manxue-933")
+            self.assertIsNone(route["duration_override"])
+
     def test_status_mapping(self):
         expected = {
             "NOT_START": "queued",
@@ -234,11 +284,52 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(
             normalize_discovered_models(payload),
             [
-                {"model": "sora-v3-933-pro", "protocol": "videos"},
-                {"model": "seedance-2.0-fast", "protocol": "seedance"},
-                {"model": "veo31-fast", "protocol": "videos"},
+                {"model": "sora-v3-933-pro", "protocol": "videos", "profile": "default", "duration_override": None},
+                {"model": "seedance-2.0-fast", "protocol": "seedance", "profile": "default", "duration_override": None},
+                {"model": "veo31-fast", "protocol": "videos", "profile": "veo31-fast", "duration_override": None},
             ],
         )
+
+    def test_manxue_profile_transforms_canonical_payload(self):
+        payload = transform_create_payload(
+            {
+                "model": "manxue-900-10s",
+                "prompt": "test",
+                "aspect_ratio": "16:9",
+                "duration": 10,
+                "resolution": "720p",
+                "generate_audio": True,
+                "image_urls": ["https://cdn/main.png", "https://cdn/ref.png"],
+                "reference_video": "https://cdn/ref.mp4",
+                "audio_urls": ["https://cdn/voice.mp3"],
+            },
+            "manxue-933",
+        )
+        self.assertEqual(
+            payload,
+            {
+                "model": "manxue-900-10s",
+                "prompt": "test",
+                "aspect_ratio": "16:9",
+                "seconds": 10,
+                "resolution": "720p",
+                "generate_audio": True,
+                "image_url": "https://cdn/main.png",
+                "reference_image_urls": ["https://cdn/ref.png"],
+                "reference_videos": ["https://cdn/ref.mp4"],
+                "audio_urls": ["https://cdn/voice.mp3"],
+            },
+        )
+        self.assertEqual(capabilities_for("manxue-933", 10)["durations"], [10])
+
+    def test_model_capabilities_are_public_and_cors_limited(self):
+        response = TestClient(app).get(
+            "/v1/model-capabilities",
+            headers={"Origin": "https://image.yyapi.cloud"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["access-control-allow-origin"], "https://image.yyapi.cloud")
+        self.assertTrue(any(item["id"] == "audit-model" for item in response.json()["data"]))
 
     def test_upstream_error_does_not_expose_provider_details(self):
         request = httpx.Request("POST", "https://private-upstream.example/v1/videos")

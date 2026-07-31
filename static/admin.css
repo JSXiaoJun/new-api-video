@@ -55,10 +55,10 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); box-sha
 .model-picker { display: grid; gap: 12px; margin-top: 12px; padding: 12px; border: 1px solid var(--line); border-radius: var(--radius); background: #f7f9f7; }
 .model-picker-heading { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 12px; }
 .model-options { display: grid; gap: 7px; max-height: 240px; overflow-y: auto; }
-.model-option { display: grid; grid-template-columns: 18px minmax(0, 1fr) 105px; align-items: center; gap: 9px; padding: 8px 9px; border: 1px solid #dce4df; border-radius: 4px; background: #fff; font-size: 12px; }
+.model-option { display: grid; grid-template-columns: 18px minmax(0, 1fr) 90px 145px 88px; align-items: center; gap: 9px; padding: 8px 9px; border: 1px solid #dce4df; border-radius: 4px; background: #fff; font-size: 12px; }
 .model-option input { width: 16px; height: 16px; accent-color: var(--accent); }
 .model-option-name { overflow-wrap: anywhere; }
-.model-option select { width: 105px; height: 32px; border: 1px solid #cbd4cf; border-radius: 4px; background: #fff; padding: 0 6px; color: var(--ink); }
+.model-option select, .model-option input[type="number"] { width: 100%; height: 32px; border: 1px solid #cbd4cf; border-radius: 4px; background: #fff; padding: 0 6px; color: var(--ink); }
 .model-picker-actions { display: flex; justify-content: flex-end; }
 
 .app-header { width: 100%; height: 64px; display: flex; align-items: center; justify-content: space-between; padding: 0 clamp(20px, 4vw, 56px); background: #17211c; color: #f4f8f5; border-bottom: 1px solid #2d3b34; }
@@ -171,6 +171,8 @@ dialog::backdrop { background: rgba(17, 26, 21, .62); backdrop-filter: blur(2px)
   .stats-band > div:nth-child(2) { border-right: 0; }
   .stats-band > div:nth-child(-n+2) { border-bottom: 1px solid #d4ddd7; }
   .form-grid { grid-template-columns: 1fr; }
+  .model-option { grid-template-columns: 18px minmax(0, 1fr); }
+  .model-option select, .model-option input[type="number"] { grid-column: 2; }
   .span-two { grid-column: auto; }
   .dialog-form { padding: 20px; }
   .task-section { margin-top: 48px; }

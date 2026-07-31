@@ -35,6 +35,15 @@ function showToast(message, tone = 'default') {
   showToast.timer = setTimeout(() => { toast.hidden = true }, 2800)
 }
 
+function profileLabel(profile) {
+  return dashboard.profiles?.find((item) => item.id === profile)?.label || profile
+}
+
+function formatRoute(route) {
+  const base = `${route.model} | ${route.protocol} | ${route.profile || 'default'}`
+  return route.duration_override ? `${base} | ${route.duration_override}` : base
+}
+
 async function api(url, options = {}) {
   const headers = { ...(options.headers || {}) }
   if (options.method && options.method !== 'GET') headers['X-CSRF-Token'] = csrf
@@ -97,7 +106,7 @@ function render() {
       <td><span class="state ${upstream.enabled ? 'enabled' : 'disabled'}">${upstream.enabled ? '启用' : '停用'}</span></td>
       <td><strong>${escapeHtml(upstream.name)}</strong></td>
       <td><code>${escapeHtml(upstream.base_url)}</code></td>
-      <td><div class="route-list">${upstream.routes.map((route) => `<span>${escapeHtml(route.model)}<small>${route.protocol}</small></span>`).join('')}</div></td>
+      <td><div class="route-list">${upstream.routes.map((route) => `<span>${escapeHtml(route.model)}<small>${route.protocol} · ${escapeHtml(profileLabel(route.profile))}${route.duration_override ? ` · ${route.duration_override}s` : ''}</small></span>`).join('')}</div></td>
       <td>${upstream.priority}</td>
       <td class="align-right"><button class="table-action" data-edit="${upstream.id}" type="button">编辑</button></td>
     </tr>`).join('')
@@ -109,7 +118,7 @@ function render() {
         <div class="mobile-item-actions"><span class="state ${upstream.enabled ? 'enabled' : 'disabled'}">${upstream.enabled ? '启用' : '停用'}</span><button class="table-action" data-edit="${upstream.id}" type="button">编辑</button></div>
       </div>
       <code class="mobile-url">${escapeHtml(upstream.base_url)}</code>
-      <div class="route-list">${upstream.routes.map((route) => `<span>${escapeHtml(route.model)}<small>${route.protocol}</small></span>`).join('')}</div>
+      <div class="route-list">${upstream.routes.map((route) => `<span>${escapeHtml(route.model)}<small>${route.protocol} · ${escapeHtml(profileLabel(route.profile))}${route.duration_override ? ` · ${route.duration_override}s` : ''}</small></span>`).join('')}</div>
     </article>`).join('')
 
   const taskRows = document.querySelector('#task-rows')
@@ -232,10 +241,16 @@ function closeAuditDialog() {
 
 function parseRoutes(value) {
   const routes = value.split('\n').map((line) => line.trim()).filter(Boolean).map((line) => {
-    const [modelPart, protocolPart] = line.split('|').map((part) => part.trim())
+    const [modelPart, protocolPart, profilePart, durationPart] = line.split('|').map((part) => part.trim())
     const protocol = protocolPart || (modelPart === 'seedance-2.0-fast' ? 'seedance' : 'videos')
     if (!['videos', 'seedance'].includes(protocol)) throw new Error(`未知协议：${protocol}`)
-    return { model: modelPart, protocol }
+    const profile = profilePart || 'default'
+    if (!dashboard.profiles.some((item) => item.id === profile)) throw new Error(`未知能力模板：${profile}`)
+    const durationOverride = durationPart ? Number(durationPart) : null
+    if (durationPart && (!Number.isInteger(durationOverride) || durationOverride < 1 || durationOverride > 60)) {
+      throw new Error(`固定时长必须是 1–60 的整数：${durationPart}`)
+    }
+    return { model: modelPart, protocol, profile, duration_override: durationOverride }
   })
   if (!routes.length || routes.some((route) => !route.model)) throw new Error('至少需要一个模型路由')
   return routes
@@ -248,7 +263,7 @@ function openDialog(upstream = null) {
   document.querySelector('#upstream-priority').value = upstream?.priority ?? 100
   document.querySelector('#upstream-base-url').value = upstream?.base_url || 'https://pidoi.com'
   document.querySelector('#upstream-api-key').value = ''
-  document.querySelector('#upstream-routes').value = upstream?.routes.map((route) => `${route.model} | ${route.protocol}`).join('\n') || ''
+  document.querySelector('#upstream-routes').value = upstream?.routes.map(formatRoute).join('\n') || ''
   document.querySelector('#upstream-enabled').checked = upstream?.enabled ?? true
   document.querySelector('#delete-upstream').hidden = !upstream
   document.querySelector('#form-error').hidden = true
@@ -270,18 +285,31 @@ function closeDialog() {
 }
 
 function renderModelOptions(models) {
+  const currentRoutes = new Map()
+  try {
+    const currentText = document.querySelector('#upstream-routes').value.trim()
+    for (const route of (currentText ? parseRoutes(currentText) : [])) currentRoutes.set(route.model, route)
+  } catch (error) {
+    document.querySelector('#form-error').textContent = error.message
+    document.querySelector('#form-error').hidden = false
+    return
+  }
   modelOptions.innerHTML = models.map((item, index) => `
     <label class="model-option">
-      <input type="checkbox" data-model-index="${index}">
+      <input type="checkbox" data-model-index="${index}"${currentRoutes.has(item.model) ? ' checked' : ''}>
       <span class="model-option-name">${escapeHtml(item.model)}</span>
       <select data-protocol-index="${index}" aria-label="${escapeHtml(item.model)} 协议">
-        <option value="videos"${item.protocol === 'videos' ? ' selected' : ''}>videos</option>
-        <option value="seedance"${item.protocol === 'seedance' ? ' selected' : ''}>seedance</option>
+        <option value="videos"${(currentRoutes.get(item.model)?.protocol || item.protocol) === 'videos' ? ' selected' : ''}>videos</option>
+        <option value="seedance"${(currentRoutes.get(item.model)?.protocol || item.protocol) === 'seedance' ? ' selected' : ''}>seedance</option>
       </select>
+      <select data-profile-index="${index}" aria-label="${escapeHtml(item.model)} 能力模板">
+        ${dashboard.profiles.map((profile) => `<option value="${profile.id}"${(currentRoutes.get(item.model)?.profile || item.profile) === profile.id ? ' selected' : ''}>${escapeHtml(profile.label)}</option>`).join('')}
+      </select>
+      <input type="number" data-duration-index="${index}" min="1" max="60" placeholder="默认时长" value="${currentRoutes.get(item.model)?.duration_override ?? item.duration_override ?? ''}" aria-label="${escapeHtml(item.model)} 固定时长">
     </label>`).join('')
   modelPicker.hidden = false
   modelPickerStatus.textContent = `${models.length} 个模型`
-  applyModelsButton.disabled = true
+  applyModelsButton.disabled = !modelOptions.querySelector('input[type="checkbox"]:checked')
   for (const checkbox of modelOptions.querySelectorAll('input[type="checkbox"]')) {
     checkbox.addEventListener('change', () => {
       applyModelsButton.disabled = !modelOptions.querySelector('input[type="checkbox"]:checked')
@@ -327,21 +355,29 @@ applyModelsButton.addEventListener('click', () => {
   const models = modelPicker._models || []
   const routes = new Map()
   try {
-    const currentText = document.querySelector('#upstream-routes').value.trim()
-    for (const route of (currentText ? parseRoutes(currentText) : [])) routes.set(route.model, route)
     for (const checkbox of modelOptions.querySelectorAll('input[type="checkbox"]:checked')) {
       const index = Number(checkbox.dataset.modelIndex)
       const model = models[index]
-      routes.set(model.model, { model: model.model, protocol: modelOptions.querySelector(`[data-protocol-index="${index}"]`).value })
+      const durationText = modelOptions.querySelector(`[data-duration-index="${index}"]`).value.trim()
+      const durationOverride = durationText ? Number(durationText) : null
+      if (durationText && (!Number.isInteger(durationOverride) || durationOverride < 1 || durationOverride > 60)) {
+        throw new Error(`${model.model} 的固定时长必须是 1–60 的整数`)
+      }
+      routes.set(model.model, {
+        model: model.model,
+        protocol: modelOptions.querySelector(`[data-protocol-index="${index}"]`).value,
+        profile: modelOptions.querySelector(`[data-profile-index="${index}"]`).value,
+        duration_override: durationOverride,
+      })
     }
   } catch (error) {
     document.querySelector('#form-error').textContent = error.message
     document.querySelector('#form-error').hidden = false
     return
   }
-  document.querySelector('#upstream-routes').value = [...routes.values()].map((route) => `${route.model} | ${route.protocol}`).join('\n')
+  document.querySelector('#upstream-routes').value = [...routes.values()].map(formatRoute).join('\n')
   modelPicker.hidden = true
-  showToast('已将所选模型加入路由')
+  showToast('已按上游列表同步所选模型')
 })
 
 document.querySelector('#add-upstream').addEventListener('click', () => openDialog())

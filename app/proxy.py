@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from . import database
 from .config import settings
+from .model_profiles import transform_create_payload
 
 
 logger = logging.getLogger("uvicorn.error")
@@ -76,6 +77,7 @@ async def create_video(payload: dict[str, Any], incoming_idempotency_key: str | 
 
     protocol = upstream["protocol"]
     relay_request_id = database.start_audit_request(upstream["id"], model, protocol, payload)
+    upstream_payload = transform_create_payload(payload, upstream["profile"])
     response_headers = {REQUEST_ID_HEADER: relay_request_id}
     endpoint = "/v1/video/generations" if protocol == "seedance" else "/v1/videos"
     headers = {
@@ -89,7 +91,7 @@ async def create_video(payload: dict[str, Any], incoming_idempotency_key: str | 
 
     try:
         async with httpx.AsyncClient(timeout=settings.upstream_timeout_seconds) as client:
-            response = await client.post(upstream["base_url"] + endpoint, headers=headers, json=payload)
+            response = await client.post(upstream["base_url"] + endpoint, headers=headers, json=upstream_payload)
     except httpx.RequestError as exc:
         logger.warning("Video upstream create request failed: %s", exc)
         sanitized = {"detail": "Video upstream connection failed"}

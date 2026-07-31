@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from typing import Any, Iterator
 
 from .config import settings
+from .model_profiles import capabilities_for, suggest_profile
 from .security import secret_box
 
 
@@ -70,6 +71,8 @@ def initialize() -> None:
                 upstream_id INTEGER NOT NULL REFERENCES upstreams(id) ON DELETE CASCADE,
                 model TEXT NOT NULL,
                 protocol TEXT NOT NULL CHECK(protocol IN ('videos', 'seedance')),
+                profile TEXT NOT NULL DEFAULT 'default',
+                duration_override INTEGER,
                 UNIQUE(upstream_id, model)
             );
             CREATE INDEX IF NOT EXISTS idx_model_routes_model ON model_routes(model);
@@ -124,6 +127,28 @@ def initialize() -> None:
             conn.execute("ALTER TABLE tasks ADD COLUMN relay_request_id TEXT")
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_relay_request_id ON tasks(relay_request_id)")
 
+        route_columns = {row["name"] for row in conn.execute("PRAGMA table_info(model_routes)").fetchall()}
+        profile_added = "profile" not in route_columns
+        if profile_added:
+            conn.execute("ALTER TABLE model_routes ADD COLUMN profile TEXT NOT NULL DEFAULT 'default'")
+        if "duration_override" not in route_columns:
+            conn.execute("ALTER TABLE model_routes ADD COLUMN duration_override INTEGER")
+        if profile_added:
+            for model in (
+                "gemini-omni-flash",
+                "sora2",
+                "veo31-fast",
+                "manxue-900",
+                "manxue-933",
+                "grok-imagine-1.0-video",
+                "grok-imagine-video-1.5-fast",
+                "grok-imagine-video-1.5-preview",
+            ):
+                conn.execute(
+                    "UPDATE model_routes SET profile = ? WHERE model = ? AND profile = 'default'",
+                    (suggest_profile(model, "videos"), model),
+                )
+
         legacy_tasks = conn.execute(
             """
             SELECT task_id, upstream_id, model, protocol, status, source_video_url, error, created_at, updated_at
@@ -155,9 +180,10 @@ def initialize() -> None:
             )
 
 
-def _route_rows(conn: sqlite3.Connection, upstream_id: int) -> list[dict[str, str]]:
+def _route_rows(conn: sqlite3.Connection, upstream_id: int) -> list[dict[str, Any]]:
     rows = conn.execute(
-        "SELECT model, protocol FROM model_routes WHERE upstream_id = ? ORDER BY model", (upstream_id,)
+        "SELECT model, protocol, profile, duration_override FROM model_routes WHERE upstream_id = ? ORDER BY model",
+        (upstream_id,),
     ).fetchall()
     return [dict(row) for row in rows]
 
@@ -241,8 +267,20 @@ def save_upstream(payload: dict[str, Any], upstream_id: int | None = None) -> di
             conn.execute("DELETE FROM model_routes WHERE upstream_id = ?", (upstream_id,))
 
         conn.executemany(
-            "INSERT INTO model_routes(upstream_id, model, protocol) VALUES (?, ?, ?)",
-            [(upstream_id, route["model"], route["protocol"]) for route in routes],
+            """
+            INSERT INTO model_routes(upstream_id, model, protocol, profile, duration_override)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    upstream_id,
+                    route["model"],
+                    route["protocol"],
+                    route.get("profile", "default"),
+                    route.get("duration_override"),
+                )
+                for route in routes
+            ],
         )
     item = get_upstream(upstream_id)
     if item is None:
@@ -271,7 +309,7 @@ def select_upstream(model: str) -> dict[str, Any] | None:
     with connection() as conn:
         row = conn.execute(
             """
-            SELECT u.*, r.protocol
+            SELECT u.*, r.protocol, r.profile, r.duration_override
             FROM upstreams u
             JOIN model_routes r ON r.upstream_id = u.id
             WHERE u.enabled = 1 AND r.model = ?
@@ -538,3 +576,27 @@ def list_models() -> list[str]:
             """
         ).fetchall()
     return [row["model"] for row in rows]
+
+
+def list_model_capabilities() -> list[dict[str, Any]]:
+    with connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.model, r.profile, r.duration_override
+            FROM model_routes r
+            JOIN upstreams u ON u.id = r.upstream_id
+            WHERE u.enabled = 1
+            ORDER BY r.model, u.priority, u.id
+            """
+        ).fetchall()
+    result = []
+    seen = set()
+    for row in rows:
+        if row["model"] in seen:
+            continue
+        seen.add(row["model"])
+        result.append({
+            "id": row["model"],
+            "capabilities": capabilities_for(row["profile"], row["duration_override"]),
+        })
+    return result
