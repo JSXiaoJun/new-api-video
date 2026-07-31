@@ -271,7 +271,7 @@ function openDurationMenu(row, trigger) {
   const selected = JSON.parse(row.dataset.durations || '[]')
   menu.innerHTML = DURATION_OPTIONS.map((duration) => `
     <label><input data-menu-duration type="checkbox" value="${duration}"${selected.includes(duration) ? ' checked' : ''}>${duration}s</label>`).join('')
-  document.body.appendChild(menu)
+  dialog.appendChild(menu)
   const rect = trigger.getBoundingClientRect()
   const menuRect = menu.getBoundingClientRect()
   const left = Math.min(Math.max(8, rect.left), window.innerWidth - menuRect.width - 8)
@@ -303,7 +303,7 @@ function addRouteRow(route = {}) {
       <option value="seedance"${route.protocol === 'seedance' ? ' selected' : ''}>seedance</option>
     </select>
     <input data-route-field="upstream_model" maxlength="160" value="${escapeHtml(mappedUpstreamModel)}" placeholder="上游模型名" aria-label="映射上游模型名">
-    <select data-route-field="profile" aria-label="能力模板">
+    <select data-route-field="profile" aria-label="上游请求模板" title="用于转换上游请求体，不等于对外请求类型">
       ${dashboard.profiles.map((profile) => `<option value="${profile.id}"${(route.profile || 'default') === profile.id ? ' selected' : ''}>${escapeHtml(profile.label)}</option>`).join('')}
     </select>
     <button class="duration-picker" data-duration-trigger data-duration-summary type="button">${selectedDurations.length ? selectedDurations.map((duration) => `${duration}s`).join(', ') : '工作台默认'}</button>
