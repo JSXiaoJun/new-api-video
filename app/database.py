@@ -162,6 +162,9 @@ def initialize() -> None:
                         "UPDATE model_routes SET durations_json = ? WHERE id = ?",
                         (json.dumps([route["duration_override"]]), route["id"]),
                     )
+        for column in ("supports_image", "supports_video", "supports_audio"):
+            if column not in route_columns:
+                conn.execute(f"ALTER TABLE model_routes ADD COLUMN {column} INTEGER NOT NULL DEFAULT 1")
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_model_routes_upstream_model ON model_routes(upstream_id, upstream_model)"
         )
@@ -215,7 +218,8 @@ def initialize() -> None:
 def _route_rows(conn: sqlite3.Connection, upstream_id: int) -> list[dict[str, Any]]:
     rows = conn.execute(
         """
-        SELECT model, upstream_model, protocol, profile, duration_override, durations_json
+        SELECT model, upstream_model, protocol, profile, duration_override, durations_json,
+               supports_image, supports_video, supports_audio
         FROM model_routes WHERE upstream_id = ? ORDER BY model
         """,
         (upstream_id,),
@@ -224,6 +228,9 @@ def _route_rows(conn: sqlite3.Connection, upstream_id: int) -> list[dict[str, An
     for row in rows:
         item = dict(row)
         item["durations"] = _decode_durations(item.pop("durations_json"), item["duration_override"])
+        item["supports_image"] = bool(item["supports_image"])
+        item["supports_video"] = bool(item["supports_video"])
+        item["supports_audio"] = bool(item["supports_audio"])
         item["mapped_upstream_model"] = "" if item["model"] == item["upstream_model"] else item["upstream_model"]
         result.append(item)
     return result
@@ -332,8 +339,10 @@ def save_upstream(payload: dict[str, Any], upstream_id: int | None = None) -> di
 
         conn.executemany(
             """
-            INSERT INTO model_routes(upstream_id, model, upstream_model, protocol, profile, duration_override, durations_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO model_routes(
+                upstream_id, model, upstream_model, protocol, profile, duration_override, durations_json,
+                supports_image, supports_video, supports_audio
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
@@ -344,6 +353,9 @@ def save_upstream(payload: dict[str, Any], upstream_id: int | None = None) -> di
                     route.get("profile", "default"),
                     durations[0] if len(durations) == 1 else None,
                     json.dumps(durations),
+                    int(route.get("supports_image", True)),
+                    int(route.get("supports_video", True)),
+                    int(route.get("supports_audio", True)),
                 )
                 for route, durations in prepared_routes
             ],
@@ -673,7 +685,8 @@ def list_model_capabilities() -> list[dict[str, Any]]:
     with connection() as conn:
         rows = conn.execute(
             """
-            SELECT r.model, r.profile, r.duration_override, r.durations_json
+            SELECT r.model, r.profile, r.duration_override, r.durations_json,
+                   r.supports_image, r.supports_video, r.supports_audio
             FROM model_routes r
             JOIN upstreams u ON u.id = r.upstream_id
             WHERE u.enabled = 1
@@ -691,6 +704,9 @@ def list_model_capabilities() -> list[dict[str, Any]]:
             "capabilities": capabilities_for(
                 row["profile"],
                 _decode_durations(row["durations_json"], row["duration_override"]),
+                bool(row["supports_image"]),
+                bool(row["supports_video"]),
+                bool(row["supports_audio"]),
             ),
         })
     return result

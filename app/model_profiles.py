@@ -144,12 +144,39 @@ def profile_options() -> list[dict[str, str]]:
     return [{'id': profile, 'label': data['label']} for profile, data in PROFILE_DEFINITIONS.items()]
 
 
-def capabilities_for(profile: str, duration_overrides: list[int] | int | None = None) -> dict[str, Any]:
+def capabilities_for(
+    profile: str,
+    duration_overrides: list[int] | int | None = None,
+    supports_image: bool = True,
+    supports_video: bool = True,
+    supports_audio: bool = True,
+) -> dict[str, Any]:
     capabilities = deepcopy(PROFILE_DEFINITIONS[profile]['capabilities'])
     if isinstance(duration_overrides, int):
         duration_overrides = [duration_overrides]
     if duration_overrides:
         capabilities['durations'] = duration_overrides
+    if not supports_image:
+        capabilities['maxImages'] = 0
+    elif not capabilities.get('maxImages'):
+        capabilities['maxImages'] = 1
+    if not supports_video:
+        capabilities['referenceVideo'] = False
+        for key in ('minReferenceVideoDuration', 'maxReferenceVideoDuration'):
+            capabilities.pop(key, None)
+    else:
+        capabilities['referenceVideo'] = True
+        capabilities.setdefault('minReferenceVideoDuration', 0)
+        capabilities.setdefault('maxReferenceVideoDuration', 30)
+    if not supports_audio:
+        capabilities['maxAudios'] = 0
+        for key in ('minAudioDuration', 'maxAudioDuration', 'maxTotalAudioDuration'):
+            capabilities.pop(key, None)
+    else:
+        capabilities['maxAudios'] = max(1, capabilities.get('maxAudios', 0))
+        capabilities.setdefault('minAudioDuration', 2)
+        capabilities.setdefault('maxAudioDuration', 15)
+        capabilities.setdefault('maxTotalAudioDuration', 15)
     return capabilities
 
 

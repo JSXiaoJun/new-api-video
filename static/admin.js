@@ -17,6 +17,7 @@ const publicLinkBaseUrl = document.querySelector('#public-link-base-url')
 let dashboard = { upstreams: [], tasks: [], stats: {} }
 let activeAudit = null
 let activeAuditView = 'request'
+let activeDurationMenu = null
 
 function updateResponsiveClass() {
   document.documentElement.classList.toggle('is-mobile', window.matchMedia('(max-width: 760px)').matches)
@@ -253,8 +254,40 @@ function routeDurations(route) {
 }
 
 function updateDurationSummary(row) {
-  const values = [...row.querySelectorAll('[data-route-duration]:checked')].map((input) => `${input.value}s`)
+  const values = JSON.parse(row.dataset.durations || '[]').map((duration) => `${duration}s`)
   row.querySelector('[data-duration-summary]').textContent = values.length ? values.join(', ') : '工作台默认'
+}
+
+function closeDurationMenu() {
+  if (!activeDurationMenu) return
+  activeDurationMenu.menu.remove()
+  activeDurationMenu = null
+}
+
+function openDurationMenu(row, trigger) {
+  closeDurationMenu()
+  const menu = document.createElement('div')
+  menu.className = 'duration-menu'
+  const selected = JSON.parse(row.dataset.durations || '[]')
+  menu.innerHTML = DURATION_OPTIONS.map((duration) => `
+    <label><input data-menu-duration type="checkbox" value="${duration}"${selected.includes(duration) ? ' checked' : ''}>${duration}s</label>`).join('')
+  document.body.appendChild(menu)
+  const rect = trigger.getBoundingClientRect()
+  const menuRect = menu.getBoundingClientRect()
+  const left = Math.min(Math.max(8, rect.left), window.innerWidth - menuRect.width - 8)
+  const below = rect.bottom + 4
+  const top = below + menuRect.height <= window.innerHeight - 8
+    ? below
+    : Math.max(8, rect.top - menuRect.height - 4)
+  menu.style.left = `${left}px`
+  menu.style.top = `${top}px`
+  activeDurationMenu = { menu, row }
+  menu.addEventListener('change', (event) => {
+    if (!event.target.matches('[data-menu-duration]')) return
+    const durations = [...menu.querySelectorAll('[data-menu-duration]:checked')].map((input) => Number(input.value))
+    row.dataset.durations = JSON.stringify(durations)
+    updateDurationSummary(row)
+  })
 }
 
 function addRouteRow(route = {}) {
@@ -262,6 +295,7 @@ function addRouteRow(route = {}) {
   row.className = 'route-editor-row'
   const mappedUpstreamModel = route.upstream_model || route.mapped_upstream_model || ''
   const selectedDurations = routeDurations(route)
+  row.dataset.durations = JSON.stringify(selectedDurations)
   row.innerHTML = `
     <input data-route-field="model" maxlength="160" value="${escapeHtml(route.model || '')}" placeholder="对外模型名" aria-label="对外模型名">
     <select data-route-field="protocol" aria-label="请求类型">
@@ -269,21 +303,22 @@ function addRouteRow(route = {}) {
       <option value="seedance"${route.protocol === 'seedance' ? ' selected' : ''}>seedance</option>
     </select>
     <input data-route-field="upstream_model" maxlength="160" value="${escapeHtml(mappedUpstreamModel)}" placeholder="上游模型名" aria-label="映射上游模型名">
-    <select data-route-field="profile" aria-label="工作台类型">
+    <select data-route-field="profile" aria-label="能力模板">
       ${dashboard.profiles.map((profile) => `<option value="${profile.id}"${(route.profile || 'default') === profile.id ? ' selected' : ''}>${escapeHtml(profile.label)}</option>`).join('')}
     </select>
-    <details class="duration-picker">
-      <summary data-duration-summary>${selectedDurations.length ? selectedDurations.map((duration) => `${duration}s`).join(', ') : '工作台默认'}</summary>
-      <div class="duration-options">
-        ${DURATION_OPTIONS.map((duration) => `<label><input data-route-duration type="checkbox" value="${duration}"${selectedDurations.includes(duration) ? ' checked' : ''}>${duration}s</label>`).join('')}
-      </div>
-    </details>
+    <button class="duration-picker" data-duration-trigger data-duration-summary type="button">${selectedDurations.length ? selectedDurations.map((duration) => `${duration}s`).join(', ') : '工作台默认'}</button>
+    <div class="media-support-options" aria-label="素材支持">
+      <label><input data-route-support="image" type="checkbox"${route.supports_image !== false ? ' checked' : ''}>图片</label>
+      <label><input data-route-support="video" type="checkbox"${route.supports_video !== false ? ' checked' : ''}>视频</label>
+      <label><input data-route-support="audio" type="checkbox"${route.supports_audio !== false ? ' checked' : ''}>音频</label>
+    </div>
     <button class="route-remove" type="button" title="移除此模型" aria-label="移除此模型">×</button>`
   routeRows.appendChild(row)
   updateRouteEmpty()
 }
 
 function setRouteRows(routes) {
+  closeDurationMenu()
   routeRows.innerHTML = ''
   for (const route of routes) addRouteRow(route)
   updateRouteEmpty()
@@ -293,7 +328,7 @@ function readRoutes(allowEmpty = false, preserveBlankModel = false) {
   const routes = [...routeRows.children].map((row) => {
     const model = row.querySelector('[data-route-field="model"]').value.trim()
     const upstreamModel = row.querySelector('[data-route-field="upstream_model"]').value.trim()
-    const durations = [...row.querySelectorAll('[data-route-duration]:checked')].map((input) => Number(input.value))
+    const durations = JSON.parse(row.dataset.durations || '[]')
     const effectiveModel = model || upstreamModel
     if (!effectiveModel) throw new Error('每一行都必须填写对外模型名或映射上游模型名')
     return {
@@ -303,6 +338,9 @@ function readRoutes(allowEmpty = false, preserveBlankModel = false) {
       profile: row.querySelector('[data-route-field="profile"]').value,
       durations,
       duration_override: durations.length === 1 ? durations[0] : null,
+      supports_image: row.querySelector('[data-route-support="image"]').checked,
+      supports_video: row.querySelector('[data-route-support="video"]').checked,
+      supports_audio: row.querySelector('[data-route-support="audio"]').checked,
     }
   })
   if (!routes.length && !allowEmpty) throw new Error('至少需要一个模型路由')
@@ -329,6 +367,7 @@ function openDialog(upstream = null) {
 }
 
 function closeDialog() {
+  closeDurationMenu()
   dialog.close()
   form.reset()
   setRouteRows([])
@@ -371,14 +410,23 @@ discoverModelsButton.addEventListener('click', async () => {
 
 addRouteButton.addEventListener('click', () => addRouteRow())
 routeRows.addEventListener('click', (event) => {
-  if (!event.target.classList.contains('route-remove')) return
-  event.target.closest('.route-editor-row').remove()
+  const target = event.target instanceof Element ? event.target : null
+  if (target?.matches('[data-duration-trigger]')) {
+    openDurationMenu(target.closest('.route-editor-row'), target)
+    return
+  }
+  if (!target?.classList.contains('route-remove')) return
+  closeDurationMenu()
+  target.closest('.route-editor-row').remove()
   updateRouteEmpty()
 })
-routeRows.addEventListener('change', (event) => {
-  if (!event.target.matches('[data-route-duration]')) return
-  updateDurationSummary(event.target.closest('.route-editor-row'))
+document.addEventListener('click', (event) => {
+  if (!activeDurationMenu) return
+  const target = event.target instanceof Node ? event.target : null
+  if (activeDurationMenu.menu.contains(target) || (target instanceof Element && target.matches('[data-duration-trigger]'))) return
+  closeDurationMenu()
 })
+window.addEventListener('resize', closeDurationMenu)
 
 document.querySelector('#add-upstream').addEventListener('click', () => openDialog())
 document.querySelector('#close-dialog').addEventListener('click', closeDialog)
