@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from typing import Any, Iterator
 
 from .config import DEFAULT_PUBLIC_LINK_BASE_URL, PUBLIC_LINK_BASE_URLS, settings
-from .model_profiles import SUPPORTED_DURATION_OPTIONS, capabilities_for, suggest_profile
+from .model_profiles import MAX_DURATION_SECONDS, capabilities_for, suggest_profile
 from .security import secret_box
 
 
@@ -157,7 +157,7 @@ def initialize() -> None:
                 "SELECT id, duration_override FROM model_routes WHERE duration_override IS NOT NULL"
             ).fetchall()
             for route in legacy_routes:
-                if route["duration_override"] in SUPPORTED_DURATION_OPTIONS:
+                if 1 <= route["duration_override"] <= MAX_DURATION_SECONDS:
                     conn.execute(
                         "UPDATE model_routes SET durations_json = ? WHERE id = ?",
                         (json.dumps([route["duration_override"]]), route["id"]),
@@ -253,10 +253,10 @@ def _decode_durations(value: str | None, legacy_duration: int | None = None) -> 
         durations = []
     if not isinstance(durations, list):
         durations = []
-    normalized = sorted({duration for duration in durations if duration in SUPPORTED_DURATION_OPTIONS})
+    normalized = sorted({duration for duration in durations if isinstance(duration, int) and 1 <= duration <= MAX_DURATION_SECONDS})
     if normalized:
         return normalized
-    if legacy_duration in SUPPORTED_DURATION_OPTIONS:
+    if isinstance(legacy_duration, int) and 1 <= legacy_duration <= MAX_DURATION_SECONDS:
         return [legacy_duration]
     return []
 
@@ -300,7 +300,7 @@ def save_upstream(payload: dict[str, Any], upstream_id: int | None = None) -> di
         (
             route,
             route.get("durations")
-            or ([route["duration_override"]] if route.get("duration_override") in SUPPORTED_DURATION_OPTIONS else []),
+            or ([route["duration_override"]] if isinstance(route.get("duration_override"), int) and 1 <= route["duration_override"] <= MAX_DURATION_SECONDS else []),
         )
         for route in routes
     ]

@@ -5,7 +5,7 @@ import re
 from typing import Any
 
 
-SUPPORTED_DURATION_OPTIONS = (4, 5, 8, 10, 12, 15)
+MAX_DURATION_SECONDS = 60
 
 
 PROFILE_DEFINITIONS: dict[str, dict[str, Any]] = {
@@ -137,7 +137,7 @@ def suggest_duration_override(model: str) -> int | None:
     if not match:
         return None
     duration = int(match.group(1))
-    return duration if duration in SUPPORTED_DURATION_OPTIONS else None
+    return duration if 1 <= duration <= MAX_DURATION_SECONDS else None
 
 
 def profile_options() -> list[dict[str, str]]:

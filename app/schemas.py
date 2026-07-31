@@ -5,7 +5,7 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, field_validator
 
-from .model_profiles import SUPPORTED_DURATION_OPTIONS
+from .model_profiles import MAX_DURATION_SECONDS
 
 
 class RouteInput(BaseModel):
@@ -22,7 +22,7 @@ class RouteInput(BaseModel):
         "grok-auto",
         "grok-fast",
     ] = "default"
-    durations: list[int] = Field(default_factory=list, max_length=len(SUPPORTED_DURATION_OPTIONS))
+    durations: list[int] = Field(default_factory=list, max_length=MAX_DURATION_SECONDS)
     image_count: int | None = Field(default=None, ge=0, le=20)
     supports_image: bool = True
     supports_video: bool = True
@@ -37,8 +37,8 @@ class RouteInput(BaseModel):
     @field_validator("durations")
     @classmethod
     def validate_durations(cls, value: list[int]) -> list[int]:
-        if any(duration not in SUPPORTED_DURATION_OPTIONS for duration in value):
-            raise ValueError("durations contains an unsupported value")
+        if any(duration < 1 or duration > MAX_DURATION_SECONDS for duration in value):
+            raise ValueError(f"durations must be between 1 and {MAX_DURATION_SECONDS} seconds")
         return sorted(set(value))
 
 

@@ -465,7 +465,7 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(captured["payload"]["model"], "manxue-900-10s")
         self.assertEqual(captured["payload"]["seconds"], 10)
 
-    def test_route_supports_multiple_hardcoded_durations(self):
+    def test_route_supports_multiple_custom_durations(self):
         upstream = database.save_upstream(
             {
                 "name": "duration-options",
@@ -479,18 +479,18 @@ class CoreTests(unittest.TestCase):
                         "upstream_model": "duration-options-upstream",
                         "protocol": "videos",
                         "profile": "default",
-                        "durations": [4, 5, 8, 10, 12, 15],
+                        "durations": [4, 6, 30],
                     }
                 ],
             }
         )
         try:
             route = database.get_upstream(upstream["id"])["routes"][0]
-            self.assertEqual(route["durations"], [4, 5, 8, 10, 12, 15])
+            self.assertEqual(route["durations"], [4, 6, 30])
             capabilities = next(
                 item for item in database.list_model_capabilities() if item["id"] == "duration-options-model"
             )
-            self.assertEqual(capabilities["capabilities"]["durations"], [4, 5, 8, 10, 12, 15])
+            self.assertEqual(capabilities["capabilities"]["durations"], [4, 6, 30])
         finally:
             database.delete_upstream(upstream["id"])
 

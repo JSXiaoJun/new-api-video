@@ -11,7 +11,7 @@ const auditVideo = document.querySelector('#audit-video')
 const auditEvent = document.querySelector('#audit-event')
 const auditJson = document.querySelector('#audit-json')
 const copyAuditJsonButton = document.querySelector('#copy-audit-json')
-const DURATION_OPTIONS = [4, 5, 8, 10, 12, 15]
+const MAX_DURATION_SECONDS = 60
 const publicLinkForm = document.querySelector('#public-link-form')
 const publicLinkBaseUrl = document.querySelector('#public-link-base-url')
 let dashboard = { upstreams: [], tasks: [], stats: {} }
@@ -250,7 +250,9 @@ function routeDurations(route) {
   const values = Array.isArray(route.durations)
     ? route.durations
     : (route.duration_override ? [route.duration_override] : [])
-  return DURATION_OPTIONS.filter((duration) => values.includes(duration))
+  return [...new Set(values.map(Number))]
+    .filter((duration) => Number.isInteger(duration) && duration >= 1 && duration <= MAX_DURATION_SECONDS)
+    .sort((a, b) => a - b)
 }
 
 function updateDurationSummary(row) {
@@ -268,9 +270,12 @@ function openDurationMenu(row, trigger) {
   closeDurationMenu()
   const menu = document.createElement('div')
   menu.className = 'duration-menu'
-  const selected = JSON.parse(row.dataset.durations || '[]')
-  menu.innerHTML = DURATION_OPTIONS.map((duration) => `
-    <label><input data-menu-duration type="checkbox" value="${duration}"${selected.includes(duration) ? ' checked' : ''}>${duration}s</label>`).join('')
+  menu.innerHTML = `
+    <div class="duration-input-row">
+      <input data-duration-input type="number" min="1" max="${MAX_DURATION_SECONDS}" step="1" placeholder="秒数" aria-label="输入支持时长">
+      <button data-duration-add type="button">添加</button>
+    </div>
+    <div data-duration-values class="duration-values"></div>`
   dialog.appendChild(menu)
   const rect = trigger.getBoundingClientRect()
   const menuRect = menu.getBoundingClientRect()
@@ -282,12 +287,44 @@ function openDurationMenu(row, trigger) {
   menu.style.left = `${left}px`
   menu.style.top = `${top}px`
   activeDurationMenu = { menu, row }
-  menu.addEventListener('change', (event) => {
-    if (!event.target.matches('[data-menu-duration]')) return
-    const durations = [...menu.querySelectorAll('[data-menu-duration]:checked')].map((input) => Number(input.value))
+  const renderValues = () => {
+    const durations = routeDurations({ durations: JSON.parse(row.dataset.durations || '[]') })
     row.dataset.durations = JSON.stringify(durations)
+    menu.querySelector('[data-duration-values]').innerHTML = durations.length
+      ? durations.map((duration) => `<span class="duration-value"><span>${duration}s</span><button data-duration-remove="${duration}" type="button" aria-label="移除 ${duration} 秒">×</button></span>`).join('')
+      : '<span class="duration-empty">未添加，使用工作台默认</span>'
     updateDurationSummary(row)
+  }
+  const addDuration = () => {
+    const input = menu.querySelector('[data-duration-input]')
+    const duration = Number(input.value)
+    if (!Number.isInteger(duration) || duration < 1 || duration > MAX_DURATION_SECONDS) {
+      showToast(`请输入 1-${MAX_DURATION_SECONDS} 之间的整数秒数`, 'error')
+      input.focus()
+      return
+    }
+    const durations = routeDurations({ durations: JSON.parse(row.dataset.durations || '[]') })
+    row.dataset.durations = JSON.stringify([...durations, duration])
+    input.value = ''
+    renderValues()
+    input.focus()
+  }
+  menu.querySelector('[data-duration-add]').addEventListener('click', addDuration)
+  menu.querySelector('[data-duration-input]').addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      addDuration()
+    }
   })
+  menu.addEventListener('click', (event) => {
+    const removeButton = event.target.closest('[data-duration-remove]')
+    if (!removeButton) return
+    const removed = Number(removeButton.dataset.durationRemove)
+    const durations = JSON.parse(row.dataset.durations || '[]').filter((duration) => duration !== removed)
+    row.dataset.durations = JSON.stringify(durations)
+    renderValues()
+  })
+  renderValues()
 }
 
 function addRouteRow(route = {}) {
