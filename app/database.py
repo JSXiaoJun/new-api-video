@@ -597,11 +597,8 @@ def get_audit_request(relay_request_id: str) -> dict[str, Any] | None:
     result = dict(row)
     result["request_payload"] = _decrypt_json(result.pop("request_payload_encrypted"))
     result["source_video_url"] = _decrypt_text(result.pop("source_video_url_encrypted"))
-    public_link_base_url = get_public_link_base_url()
     if result["status"] == "completed" and result["public_task_id"]:
-        result["sanitized_video_url"] = (
-            f"{public_link_base_url}/v1/videos/{result['public_task_id']}/content"
-        )
+        result["sanitized_video_url"] = public_video_url(result["public_task_id"])
     else:
         result["sanitized_video_url"] = None
     result["events"] = []
@@ -643,6 +640,10 @@ def get_public_link_base_url() -> str:
     if row is None or row["value"] not in PUBLIC_LINK_BASE_URLS:
         return DEFAULT_PUBLIC_LINK_BASE_URL
     return row["value"]
+
+
+def public_video_url(task_id: str) -> str:
+    return f"{get_public_link_base_url()}/v1/videos/{task_id}/content"
 
 
 def set_public_link_base_url(value: str) -> str:

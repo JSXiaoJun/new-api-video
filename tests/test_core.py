@@ -25,7 +25,7 @@ from app import database
 from app.config import settings
 from app.main import app, normalize_discovered_models
 from app.model_profiles import capabilities_for, transform_create_payload
-from app.proxy import create_video, normalize_status, normalize_task_payload, upstream_error
+from app.proxy import create_video, fetch_task, normalize_status, normalize_task_payload, upstream_error
 from app.security import SESSION_COOKIE, create_session, csrf_token, read_session, secret_box
 from fastapi.testclient import TestClient
 
@@ -183,6 +183,44 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(detail["sanitized_video_url"], expected)
             for field in ("url", "video_url", "result_url", "download_url"):
                 self.assertEqual(detail["events"][0]["sanitized_body"][field], expected)
+        finally:
+            database.set_public_link_base_url(original)
+
+    def test_completed_task_query_returns_selected_public_video_url(self):
+        task_id = "query-domain-task"
+        relay_request_id = database.start_audit_request(
+            self.upstream["id"],
+            "audit-model",
+            "videos",
+            {"model": "audit-model", "prompt": "query domain"},
+        )
+        database.create_task(task_id, self.upstream["id"], relay_request_id, "audit-model", "videos", "queued")
+        response = httpx.Response(
+            200,
+            request=httpx.Request("GET", "https://private-upstream.example/v1/videos/query-domain-task"),
+            json={"status": "completed", "progress": 100},
+        )
+
+        class MockAsyncClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_):
+                return None
+
+            async def get(self, *_args, **_kwargs):
+                return response
+
+        original = database.get_public_link_base_url()
+        try:
+            database.set_public_link_base_url("https://www.yyapi.cloud")
+            with patch("app.proxy.httpx.AsyncClient", return_value=MockAsyncClient()):
+                result = asyncio.run(fetch_task(task_id))
+            payload = json.loads(result.body)
+            self.assertEqual(
+                payload["video_url"],
+                "https://www.yyapi.cloud/v1/videos/query-domain-task/content",
+            )
         finally:
             database.set_public_link_base_url(original)
 

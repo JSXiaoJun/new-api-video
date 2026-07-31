@@ -205,6 +205,8 @@ async def fetch_task(task_id: str) -> JSONResponse:
     result, video_url = normalize_task_payload(task, payload)
     error = result["error"]["message"] if result.get("error") else None
     database.update_task(task_id, result["status"], video_url, error)
+    if result["status"] == "completed":
+        result["video_url"] = database.public_video_url(task_id)
     if relay_request_id:
         database.record_audit_event(relay_request_id, "poll", response.status_code, response.text, result)
     return JSONResponse(result, headers=response_headers)
