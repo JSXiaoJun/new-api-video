@@ -1,6 +1,7 @@
 services:
   video-relay:
-    build: .
+    image: ghcr.io/jsxiaojun/new-api-video:latest
+    pull_policy: always
     restart: unless-stopped
     env_file: .env
     ports:

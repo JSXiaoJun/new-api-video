@@ -57,13 +57,31 @@ disappeared upstream. `WORKBENCH_ORIGIN` controls which browser origin may read 
 
 ## Docker
 
-Set `DATA_DIR=./data` in `.env`, then run:
+Pushes to `main` automatically build the `linux/amd64` image and publish both `latest` and `sha-<commit>` tags to:
 
-```bash
-docker compose up -d --build
+```text
+ghcr.io/jsxiaojun/new-api-video
 ```
 
+Set `DATA_DIR=./data` in `.env`, then deploy:
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+For later updates, back up the database first and run the same two commands:
+
+```bash
+cp data/adapter.db "data/adapter.db.$(date +%Y%m%d-%H%M%S).bak"
+docker compose pull
+docker compose up -d
+```
+
+The `./data:/app/data` volume keeps the database outside the image, so replacing the container does not remove it.
 Compose exposes port `8787` on all interfaces. To bind only to localhost, change the mapping to `127.0.0.1:8787:8787`. Set `PUBLIC_BASE_URL` and the port mapping according to the network where New API runs.
+
+To roll back, replace `latest` in `docker-compose.yml` with a previously published `sha-<commit>` tag, then run `docker compose pull` and `docker compose up -d` again.
 
 ## API
 
