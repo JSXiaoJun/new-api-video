@@ -11,6 +11,8 @@ const auditVideo = document.querySelector('#audit-video')
 const auditEvent = document.querySelector('#audit-event')
 const auditJson = document.querySelector('#audit-json')
 const copyAuditJsonButton = document.querySelector('#copy-audit-json')
+const publicLinkForm = document.querySelector('#public-link-form')
+const publicLinkBaseUrl = document.querySelector('#public-link-base-url')
 let dashboard = { upstreams: [], tasks: [], stats: {} }
 let activeAudit = null
 let activeAuditView = 'request'
@@ -93,6 +95,11 @@ function render() {
     const node = document.querySelector(`#stat-${key}`)
     if (node) node.textContent = value
   }
+
+  publicLinkBaseUrl.innerHTML = (dashboard.public_link_base_url_options || [])
+    .map((url) => `<option value="${escapeHtml(url)}">${escapeHtml(url)}</option>`)
+    .join('')
+  publicLinkBaseUrl.value = dashboard.public_link_base_url || 'https://zl.yyapi.cloud'
 
   const upstreamRows = document.querySelector('#upstream-rows')
   upstreamRows.innerHTML = dashboard.upstreams.map((upstream) => `
@@ -342,6 +349,7 @@ discoverModelsButton.addEventListener('click', async () => {
     discoverModelsButton.disabled = false
     discoverModelsButton.textContent = '同步上游模型'
   }
+
 })
 
 addRouteButton.addEventListener('click', () => addRouteRow())
@@ -357,6 +365,24 @@ document.querySelector('#cancel-dialog').addEventListener('click', closeDialog)
 document.querySelector('#refresh-button').addEventListener('click', async () => {
   await loadDashboard()
   showToast('数据已刷新')
+})
+publicLinkForm.addEventListener('submit', async (event) => {
+  event.preventDefault()
+  const button = publicLinkForm.querySelector('button[type="submit"]')
+  button.disabled = true
+  try {
+    const result = await api('/admin/api/settings/public-link', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ public_base_url: publicLinkBaseUrl.value }),
+    })
+    dashboard.public_link_base_url = result.public_link_base_url
+    showToast('返回域名已保存')
+  } catch (error) {
+    showToast(error.message, 'error')
+  } finally {
+    button.disabled = false
+  }
 })
 document.querySelector('#task-filter').addEventListener('submit', async (event) => {
   event.preventDefault()

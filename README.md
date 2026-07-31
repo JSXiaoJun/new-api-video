@@ -106,11 +106,15 @@ public task ID returned by New API when the task is created and download through
 
 ## Task Audit
 
-Set the public New API address in `.env`:
+Set the initial public New API address in `.env`:
 
 ```env
 NEW_API_PUBLIC_BASE_URL=https://zl.yyapi.cloud
 ```
+
+After the first startup, the admin page can switch the returned sanitized link domain between
+`https://www.yyapi.cloud` and `https://zl.yyapi.cloud`. The selection is stored in `data/adapter.db`; the environment
+variable is only used as the initial value when the setting has not been created yet.
 
 The adapter returns `X-Oneapi-Request-Id: vrq_...` on create and poll responses. New API `v1.0.0-rc.22`
 records this value as `upstream_request_id` without any New API code changes. Search that value in the adapter's

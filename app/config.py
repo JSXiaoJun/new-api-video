@@ -6,6 +6,11 @@ from pathlib import Path
 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
+PUBLIC_LINK_BASE_URLS = (
+    "https://www.yyapi.cloud",
+    "https://zl.yyapi.cloud",
+)
+DEFAULT_PUBLIC_LINK_BASE_URL = "https://zl.yyapi.cloud"
 
 
 def load_dotenv(path: Path) -> None:
@@ -85,7 +90,10 @@ def load_settings() -> Settings:
         host=os.getenv("HOST", "0.0.0.0"),
         port=int(os.getenv("PORT", "8787")),
         public_base_url=os.getenv("PUBLIC_BASE_URL", "http://127.0.0.1:8787").rstrip("/"),
-        new_api_public_base_url=os.getenv("NEW_API_PUBLIC_BASE_URL", "").rstrip("/"),
+        new_api_public_base_url=os.getenv(
+            "NEW_API_PUBLIC_BASE_URL",
+            DEFAULT_PUBLIC_LINK_BASE_URL,
+        ).rstrip("/"),
         workbench_origin=os.getenv("WORKBENCH_ORIGIN", "https://image.yyapi.cloud").rstrip("/"),
         cookie_secure=env_bool("COOKIE_SECURE"),
         session_ttl_seconds=session_ttl_days * 24 * 60 * 60,

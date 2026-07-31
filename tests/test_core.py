@@ -95,6 +95,87 @@ class CoreTests(unittest.TestCase):
             422,
         )
 
+    def test_public_link_settings_are_validated_and_persisted(self):
+        client = TestClient(app)
+        self.assertEqual(
+            client.put(
+                "/admin/api/settings/public-link",
+                json={"public_base_url": "https://untrusted.example"},
+            ).status_code,
+            401,
+        )
+
+        session = create_session("admin")
+        client.cookies.set(SESSION_COOKIE, session)
+        headers = {"X-CSRF-Token": csrf_token(session)}
+        self.assertEqual(
+            client.put(
+                "/admin/api/settings/public-link",
+                json={"public_base_url": "https://untrusted.example"},
+                headers=headers,
+            ).status_code,
+            422,
+        )
+
+        original = database.get_public_link_base_url()
+        try:
+            response = client.put(
+                "/admin/api/settings/public-link",
+                json={"public_base_url": "https://www.yyapi.cloud"},
+                headers=headers,
+            )
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["public_link_base_url"], "https://www.yyapi.cloud")
+            dashboard = client.get("/admin/api/dashboard").json()
+            self.assertEqual(dashboard["public_link_base_url"], "https://www.yyapi.cloud")
+            self.assertEqual(
+                dashboard["public_link_base_url_options"],
+                ["https://www.yyapi.cloud", "https://zl.yyapi.cloud"],
+            )
+        finally:
+            database.set_public_link_base_url(original)
+
+    def test_public_link_setting_changes_sanitized_urls(self):
+        relay_request_id = database.start_audit_request(
+            self.upstream["id"],
+            "audit-model",
+            "videos",
+            {"model": "audit-model", "prompt": "domain selection"},
+        )
+        database.create_task(
+            "upstream-domain-task",
+            self.upstream["id"],
+            relay_request_id,
+            "audit-model",
+            "videos",
+            "queued",
+        )
+        database.record_audit_event(
+            relay_request_id,
+            "poll",
+            200,
+            '{"video_url":"https://private-upstream.example/domain.mp4"}',
+            {"status": "completed"},
+        )
+        database.update_task(
+            "upstream-domain-task",
+            "completed",
+            "https://private-upstream.example/domain.mp4",
+            None,
+        )
+        database.set_public_task_id(relay_request_id, "task_domain_selection")
+
+        original = database.get_public_link_base_url()
+        try:
+            database.set_public_link_base_url("https://www.yyapi.cloud")
+            detail = database.get_audit_request(relay_request_id)
+            expected = "https://www.yyapi.cloud/v1/videos/task_domain_selection/content"
+            self.assertEqual(detail["sanitized_video_url"], expected)
+            for field in ("url", "video_url", "result_url", "download_url"):
+                self.assertEqual(detail["events"][0]["sanitized_body"][field], expected)
+        finally:
+            database.set_public_link_base_url(original)
+
     def test_initialize_migrates_legacy_tasks_without_data_loss(self):
         with tempfile.TemporaryDirectory() as data_dir:
             legacy_path = Path(data_dir) / "adapter.db"

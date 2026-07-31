@@ -7,7 +7,7 @@ import uuid
 from contextlib import contextmanager
 from typing import Any, Iterator
 
-from .config import settings
+from .config import DEFAULT_PUBLIC_LINK_BASE_URL, PUBLIC_LINK_BASE_URLS, settings
 from .model_profiles import capabilities_for, suggest_profile
 from .security import secret_box
 
@@ -121,7 +121,21 @@ def initialize() -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_audit_events_request
                 ON audit_events(relay_request_id, id DESC);
+            CREATE TABLE IF NOT EXISTS app_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
             """
+        )
+        default_public_link_base_url = (
+            settings.new_api_public_base_url
+            if settings.new_api_public_base_url in PUBLIC_LINK_BASE_URLS
+            else DEFAULT_PUBLIC_LINK_BASE_URL
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO app_settings(key, value, updated_at) VALUES('public_link_base_url', ?, ?)",
+            (default_public_link_base_url, int(time.time())),
         )
         task_columns = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()}
         if "relay_request_id" not in task_columns:
@@ -524,9 +538,10 @@ def get_audit_request(relay_request_id: str) -> dict[str, Any] | None:
     result = dict(row)
     result["request_payload"] = _decrypt_json(result.pop("request_payload_encrypted"))
     result["source_video_url"] = _decrypt_text(result.pop("source_video_url_encrypted"))
-    if result["status"] == "completed" and result["public_task_id"] and settings.new_api_public_base_url:
+    public_link_base_url = get_public_link_base_url()
+    if result["status"] == "completed" and result["public_task_id"]:
         result["sanitized_video_url"] = (
-            f"{settings.new_api_public_base_url.rstrip('/')}/v1/videos/{result['public_task_id']}/content"
+            f"{public_link_base_url}/v1/videos/{result['public_task_id']}/content"
         )
     else:
         result["sanitized_video_url"] = None
@@ -559,6 +574,30 @@ def set_public_task_id(relay_request_id: str, public_task_id: str) -> bool:
             (public_task_id or None, int(time.time()), relay_request_id),
         )
     return cursor.rowcount > 0
+
+
+def get_public_link_base_url() -> str:
+    with connection() as conn:
+        row = conn.execute(
+            "SELECT value FROM app_settings WHERE key = 'public_link_base_url'",
+        ).fetchone()
+    if row is None or row["value"] not in PUBLIC_LINK_BASE_URLS:
+        return DEFAULT_PUBLIC_LINK_BASE_URL
+    return row["value"]
+
+
+def set_public_link_base_url(value: str) -> str:
+    if value not in PUBLIC_LINK_BASE_URLS:
+        raise ValueError("Unsupported public link base URL")
+    with connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO app_settings(key, value, updated_at) VALUES('public_link_base_url', ?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+            """,
+            (value, int(time.time())),
+        )
+    return value
 
 
 def get_task_by_relay_request_id(relay_request_id: str) -> dict[str, Any] | None:

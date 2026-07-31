@@ -12,9 +12,9 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from . import database, proxy
-from .config import ROOT_DIR, settings
+from .config import PUBLIC_LINK_BASE_URLS, ROOT_DIR, settings
 from .model_profiles import profile_options, suggest_duration_override, suggest_profile
-from .schemas import LoginInput, ModelDiscoveryInput, PublicTaskInput, UpstreamInput
+from .schemas import LoginInput, ModelDiscoveryInput, PublicLinkSettingsInput, PublicTaskInput, UpstreamInput
 from .security import (
     SESSION_COOKIE,
     create_session,
@@ -186,7 +186,17 @@ def dashboard(request: Request, session: str | None = Cookie(default=None, alias
 
 @app.get("/admin/api/dashboard")
 def dashboard_api(_: tuple[str, dict] = Depends(admin_session)):
-    return {**database.dashboard_data(), "profiles": profile_options()}
+    return {
+        **database.dashboard_data(),
+        "profiles": profile_options(),
+        "public_link_base_url": database.get_public_link_base_url(),
+        "public_link_base_url_options": PUBLIC_LINK_BASE_URLS,
+    }
+
+
+@app.put("/admin/api/settings/public-link")
+def update_public_link_settings(payload: PublicLinkSettingsInput, _: dict = Depends(admin_mutation)):
+    return {"public_link_base_url": database.set_public_link_base_url(payload.public_base_url)}
 
 
 @app.get("/admin/api/tasks")

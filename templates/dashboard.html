@@ -6,7 +6,7 @@
     <meta name="csrf-token" content="{{ csrf_token }}">
     <link rel="icon" href="data:,">
     <title>Video Relay Console</title>
-    <link rel="stylesheet" href="/static/admin.css?v=20260731-2">
+    <link rel="stylesheet" href="/static/admin.css?v=20260731-3">
   </head>
   <body>
     <header class="app-header">
@@ -35,6 +35,17 @@
         <div><span>已启用</span><strong id="stat-enabled">0</strong></div>
         <div><span>模型</span><strong id="stat-models">0</strong></div>
         <div><span>任务</span><strong id="stat-tasks">0</strong></div>
+      </section>
+
+      <section class="public-link-settings" aria-labelledby="public-link-heading">
+        <div>
+          <p class="eyebrow">PUBLIC LINK</p>
+          <h2 id="public-link-heading">用户返回域名</h2>
+        </div>
+        <form id="public-link-form">
+          <label><span>脱敏链接域名</span><select id="public-link-base-url" required></select></label>
+          <button class="primary-button compact" type="submit">保存</button>
+        </form>
       </section>
 
       <section class="table-section">
@@ -168,6 +179,6 @@
       </div>
     </dialog>
     <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
-    <script src="/static/admin.js?v=20260731-2" defer></script>
+    <script src="/static/admin.js?v=20260731-3" defer></script>
   </body>
 </html>

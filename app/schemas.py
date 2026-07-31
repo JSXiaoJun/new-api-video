@@ -92,3 +92,10 @@ class PublicTaskInput(BaseModel):
         if normalized and not normalized.startswith("task_"):
             raise ValueError("public_task_id must start with task_")
         return normalized
+
+
+class PublicLinkSettingsInput(BaseModel):
+    public_base_url: Literal[
+        "https://www.yyapi.cloud",
+        "https://zl.yyapi.cloud",
+    ]
