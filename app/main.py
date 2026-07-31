@@ -106,6 +106,7 @@ def normalize_discovered_models(payload: Any) -> list[dict[str, Any]]:
         protocol = "seedance" if "seedance" in model_id.lower() else "videos"
         result.append({
             "model": model_id,
+            "upstream_model": "",
             "protocol": protocol,
             "profile": suggest_profile(model_id, protocol),
             "duration_override": suggest_duration_override(model_id),

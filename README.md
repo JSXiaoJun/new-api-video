@@ -41,19 +41,19 @@ Base URL: http://adapter-host:8787
 Key: ADAPTER_API_KEY from .env
 ```
 
-Add the PIDOI upstream in the admin page. Its base URL is `https://pidoi.com`. Model routes use one route per line:
+Add the PIDOI upstream in the admin page. Its base URL is `https://pidoi.com`. Model routes are edited as table rows:
 
 ```text
-sora2 | videos | sora2
-gemini-omni-flash | videos | gemini-omni
-veo31-fast | videos | veo31-fast
-manxue-900-10s | videos | manxue-933 | 10
-seedance-2.0-fast | seedance | default
+Public model        Request   Upstream model       Workbench profile   Duration
+sora2               videos    (empty)              sora2               (default)
+video-pro-10s       videos    manxue-900-10s       manxue-933          10
+seedance-public     seedance  seedance-2.0-fast    default              (default)
 ```
 
-The columns are `model | protocol | capability profile | optional fixed duration`. The model discovery picker keeps
-existing routes selected, lets you add new models and profiles, and removes disappeared models when you apply the
-selection. `WORKBENCH_ORIGIN` controls which browser origin may read the public model capability endpoint.
+The public model name is returned by `/v1/models` and accepted by `/v1/videos`. The optional upstream model name is
+substituted only when forwarding the request. Leaving it empty uses the public model name upstream. Synchronizing
+models preserves existing aliases by upstream model name, adds newly discovered models, and removes models that have
+disappeared upstream. `WORKBENCH_ORIGIN` controls which browser origin may read the public model capability endpoint.
 
 ## Docker
 

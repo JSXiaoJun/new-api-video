@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field, field_validator
 
 class RouteInput(BaseModel):
     model: str = Field(min_length=1, max_length=160)
+    upstream_model: str = Field(default="", max_length=160)
     protocol: Literal["videos", "seedance"] = "videos"
     profile: Literal[
         "default",
@@ -21,7 +22,7 @@ class RouteInput(BaseModel):
     ] = "default"
     duration_override: int | None = Field(default=None, ge=1, le=60)
 
-    @field_validator("model")
+    @field_validator("model", "upstream_model")
     @classmethod
     def normalize_model(cls, value: str) -> str:
         return value.strip()
@@ -55,6 +56,9 @@ class UpstreamInput(BaseModel):
         models = [route.model for route in routes]
         if len(models) != len(set(models)):
             raise ValueError("model routes must be unique")
+        upstream_models = [route.upstream_model or route.model for route in routes]
+        if len(upstream_models) != len(set(upstream_models)):
+            raise ValueError("upstream model mappings must be unique")
         return routes
 
 

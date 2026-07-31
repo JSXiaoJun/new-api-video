@@ -77,7 +77,10 @@ async def create_video(payload: dict[str, Any], incoming_idempotency_key: str | 
 
     protocol = upstream["protocol"]
     relay_request_id = database.start_audit_request(upstream["id"], model, protocol, payload)
-    upstream_payload = transform_create_payload(payload, upstream["profile"])
+    upstream_payload = transform_create_payload(
+        {**payload, "model": upstream["upstream_model"]},
+        upstream["profile"],
+    )
     response_headers = {REQUEST_ID_HEADER: relay_request_id}
     endpoint = "/v1/video/generations" if protocol == "seedance" else "/v1/videos"
     headers = {

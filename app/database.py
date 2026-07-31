@@ -70,6 +70,7 @@ def initialize() -> None:
                 id INTEGER PRIMARY KEY,
                 upstream_id INTEGER NOT NULL REFERENCES upstreams(id) ON DELETE CASCADE,
                 model TEXT NOT NULL,
+                upstream_model TEXT NOT NULL,
                 protocol TEXT NOT NULL CHECK(protocol IN ('videos', 'seedance')),
                 profile TEXT NOT NULL DEFAULT 'default',
                 duration_override INTEGER,
@@ -128,11 +129,17 @@ def initialize() -> None:
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_relay_request_id ON tasks(relay_request_id)")
 
         route_columns = {row["name"] for row in conn.execute("PRAGMA table_info(model_routes)").fetchall()}
+        if "upstream_model" not in route_columns:
+            conn.execute("ALTER TABLE model_routes ADD COLUMN upstream_model TEXT")
+            conn.execute("UPDATE model_routes SET upstream_model = model WHERE upstream_model IS NULL OR upstream_model = ''")
         profile_added = "profile" not in route_columns
         if profile_added:
             conn.execute("ALTER TABLE model_routes ADD COLUMN profile TEXT NOT NULL DEFAULT 'default'")
         if "duration_override" not in route_columns:
             conn.execute("ALTER TABLE model_routes ADD COLUMN duration_override INTEGER")
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_model_routes_upstream_model ON model_routes(upstream_id, upstream_model)"
+        )
         if profile_added:
             for model in (
                 "gemini-omni-flash",
@@ -182,10 +189,18 @@ def initialize() -> None:
 
 def _route_rows(conn: sqlite3.Connection, upstream_id: int) -> list[dict[str, Any]]:
     rows = conn.execute(
-        "SELECT model, protocol, profile, duration_override FROM model_routes WHERE upstream_id = ? ORDER BY model",
+        """
+        SELECT model, upstream_model, protocol, profile, duration_override
+        FROM model_routes WHERE upstream_id = ? ORDER BY model
+        """,
         (upstream_id,),
     ).fetchall()
-    return [dict(row) for row in rows]
+    result = []
+    for row in rows:
+        item = dict(row)
+        item["mapped_upstream_model"] = "" if item["model"] == item["upstream_model"] else item["upstream_model"]
+        result.append(item)
+    return result
 
 
 def list_upstreams(include_keys: bool = False) -> list[dict[str, Any]]:
@@ -268,13 +283,14 @@ def save_upstream(payload: dict[str, Any], upstream_id: int | None = None) -> di
 
         conn.executemany(
             """
-            INSERT INTO model_routes(upstream_id, model, protocol, profile, duration_override)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO model_routes(upstream_id, model, upstream_model, protocol, profile, duration_override)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
             [
                 (
                     upstream_id,
                     route["model"],
+                    route.get("upstream_model") or route["model"],
                     route["protocol"],
                     route.get("profile", "default"),
                     route.get("duration_override"),
@@ -309,7 +325,7 @@ def select_upstream(model: str) -> dict[str, Any] | None:
     with connection() as conn:
         row = conn.execute(
             """
-            SELECT u.*, r.protocol, r.profile, r.duration_override
+            SELECT u.*, r.protocol, r.profile, r.duration_override, r.upstream_model
             FROM upstreams u
             JOIN model_routes r ON r.upstream_id = u.id
             WHERE u.enabled = 1 AND r.model = ?

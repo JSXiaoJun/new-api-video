@@ -3,10 +3,9 @@ const dialog = document.querySelector('#upstream-dialog')
 const form = document.querySelector('#upstream-form')
 const toast = document.querySelector('#toast')
 const discoverModelsButton = document.querySelector('#discover-models')
-const modelPicker = document.querySelector('#model-picker')
-const modelOptions = document.querySelector('#model-options')
-const modelPickerStatus = document.querySelector('#model-picker-status')
-const applyModelsButton = document.querySelector('#apply-models')
+const addRouteButton = document.querySelector('#add-route')
+const routeRows = document.querySelector('#route-rows')
+const routeEmpty = document.querySelector('#route-empty')
 const auditDialog = document.querySelector('#audit-dialog')
 const auditVideo = document.querySelector('#audit-video')
 const auditEvent = document.querySelector('#audit-event')
@@ -37,11 +36,6 @@ function showToast(message, tone = 'default') {
 
 function profileLabel(profile) {
   return dashboard.profiles?.find((item) => item.id === profile)?.label || profile
-}
-
-function formatRoute(route) {
-  const base = `${route.model} | ${route.protocol} | ${route.profile || 'default'}`
-  return route.duration_override ? `${base} | ${route.duration_override}` : base
 }
 
 async function api(url, options = {}) {
@@ -106,7 +100,7 @@ function render() {
       <td><span class="state ${upstream.enabled ? 'enabled' : 'disabled'}">${upstream.enabled ? '启用' : '停用'}</span></td>
       <td><strong>${escapeHtml(upstream.name)}</strong></td>
       <td><code>${escapeHtml(upstream.base_url)}</code></td>
-      <td><div class="route-list">${upstream.routes.map((route) => `<span>${escapeHtml(route.model)}<small>${route.protocol} · ${escapeHtml(profileLabel(route.profile))}${route.duration_override ? ` · ${route.duration_override}s` : ''}</small></span>`).join('')}</div></td>
+      <td><div class="route-list">${upstream.routes.map((route) => `<span>${escapeHtml(route.model)}${route.mapped_upstream_model ? `<b>→ ${escapeHtml(route.upstream_model)}</b>` : ''}<small>${route.protocol} · ${escapeHtml(profileLabel(route.profile))}${route.duration_override ? ` · ${route.duration_override}s` : ''}</small></span>`).join('')}</div></td>
       <td>${upstream.priority}</td>
       <td class="align-right"><button class="table-action" data-edit="${upstream.id}" type="button">编辑</button></td>
     </tr>`).join('')
@@ -118,7 +112,7 @@ function render() {
         <div class="mobile-item-actions"><span class="state ${upstream.enabled ? 'enabled' : 'disabled'}">${upstream.enabled ? '启用' : '停用'}</span><button class="table-action" data-edit="${upstream.id}" type="button">编辑</button></div>
       </div>
       <code class="mobile-url">${escapeHtml(upstream.base_url)}</code>
-      <div class="route-list">${upstream.routes.map((route) => `<span>${escapeHtml(route.model)}<small>${route.protocol} · ${escapeHtml(profileLabel(route.profile))}${route.duration_override ? ` · ${route.duration_override}s` : ''}</small></span>`).join('')}</div>
+      <div class="route-list">${upstream.routes.map((route) => `<span>${escapeHtml(route.model)}${route.mapped_upstream_model ? `<b>→ ${escapeHtml(route.upstream_model)}</b>` : ''}<small>${route.protocol} · ${escapeHtml(profileLabel(route.profile))}${route.duration_override ? ` · ${route.duration_override}s` : ''}</small></span>`).join('')}</div>
     </article>`).join('')
 
   const taskRows = document.querySelector('#task-rows')
@@ -239,20 +233,59 @@ function closeAuditDialog() {
   auditDialog.close()
 }
 
-function parseRoutes(value) {
-  const routes = value.split('\n').map((line) => line.trim()).filter(Boolean).map((line) => {
-    const [modelPart, protocolPart, profilePart, durationPart] = line.split('|').map((part) => part.trim())
-    const protocol = protocolPart || (modelPart === 'seedance-2.0-fast' ? 'seedance' : 'videos')
-    if (!['videos', 'seedance'].includes(protocol)) throw new Error(`未知协议：${protocol}`)
-    const profile = profilePart || 'default'
-    if (!dashboard.profiles.some((item) => item.id === profile)) throw new Error(`未知能力模板：${profile}`)
-    const durationOverride = durationPart ? Number(durationPart) : null
-    if (durationPart && (!Number.isInteger(durationOverride) || durationOverride < 1 || durationOverride > 60)) {
-      throw new Error(`固定时长必须是 1–60 的整数：${durationPart}`)
+function updateRouteEmpty() {
+  routeEmpty.hidden = routeRows.children.length > 0
+}
+
+function addRouteRow(route = {}) {
+  const row = document.createElement('div')
+  row.className = 'route-editor-row'
+  const mappedUpstreamModel = route.mapped_upstream_model ?? route.upstream_model ?? ''
+  row.innerHTML = `
+    <input data-route-field="model" maxlength="160" value="${escapeHtml(route.model || '')}" placeholder="对外模型名" aria-label="对外模型名">
+    <select data-route-field="protocol" aria-label="请求类型">
+      <option value="videos"${route.protocol !== 'seedance' ? ' selected' : ''}>videos</option>
+      <option value="seedance"${route.protocol === 'seedance' ? ' selected' : ''}>seedance</option>
+    </select>
+    <input data-route-field="upstream_model" maxlength="160" value="${escapeHtml(mappedUpstreamModel)}" placeholder="留空则与对外名称相同" aria-label="映射上游模型名">
+    <select data-route-field="profile" aria-label="工作台类型">
+      ${dashboard.profiles.map((profile) => `<option value="${profile.id}"${(route.profile || 'default') === profile.id ? ' selected' : ''}>${escapeHtml(profile.label)}</option>`).join('')}
+    </select>
+    <input data-route-field="duration_override" type="number" min="1" max="60" value="${route.duration_override ?? ''}" placeholder="默认" aria-label="固定时长">
+    <button class="route-remove" type="button" title="移除此模型" aria-label="移除此模型">×</button>`
+  routeRows.appendChild(row)
+  updateRouteEmpty()
+}
+
+function setRouteRows(routes) {
+  routeRows.innerHTML = ''
+  for (const route of routes) addRouteRow(route)
+  updateRouteEmpty()
+}
+
+function readRoutes(allowEmpty = false) {
+  const routes = [...routeRows.children].map((row) => {
+    const model = row.querySelector('[data-route-field="model"]').value.trim()
+    const upstreamModel = row.querySelector('[data-route-field="upstream_model"]').value.trim()
+    const durationText = row.querySelector('[data-route-field="duration_override"]').value.trim()
+    const durationOverride = durationText ? Number(durationText) : null
+    if (!model) throw new Error('每一行都必须填写对外模型名')
+    if (durationText && (!Number.isInteger(durationOverride) || durationOverride < 1 || durationOverride > 60)) {
+      throw new Error(`${model} 的固定时长必须是 1–60 的整数`)
     }
-    return { model: modelPart, protocol, profile, duration_override: durationOverride }
+    return {
+      model,
+      upstream_model: upstreamModel,
+      protocol: row.querySelector('[data-route-field="protocol"]').value,
+      profile: row.querySelector('[data-route-field="profile"]').value,
+      duration_override: durationOverride,
+    }
   })
-  if (!routes.length || routes.some((route) => !route.model)) throw new Error('至少需要一个模型路由')
+  if (!routes.length && !allowEmpty) throw new Error('至少需要一个模型路由')
+  const publicModels = routes.map((route) => route.model)
+  if (new Set(publicModels).size !== publicModels.length) throw new Error('对外模型名不能重复')
+  const upstreamModels = routes.map((route) => route.upstream_model || route.model)
+  if (new Set(upstreamModels).size !== upstreamModels.length) throw new Error('同一个上游模型不能重复映射')
   return routes
 }
 
@@ -263,15 +296,10 @@ function openDialog(upstream = null) {
   document.querySelector('#upstream-priority').value = upstream?.priority ?? 100
   document.querySelector('#upstream-base-url').value = upstream?.base_url || 'https://pidoi.com'
   document.querySelector('#upstream-api-key').value = ''
-  document.querySelector('#upstream-routes').value = upstream?.routes.map(formatRoute).join('\n') || ''
+  setRouteRows(upstream?.routes || [])
   document.querySelector('#upstream-enabled').checked = upstream?.enabled ?? true
   document.querySelector('#delete-upstream').hidden = !upstream
   document.querySelector('#form-error').hidden = true
-  modelPicker.hidden = true
-  modelOptions.innerHTML = ''
-  modelPickerStatus.textContent = ''
-  applyModelsButton.disabled = true
-  modelPicker._models = []
   dialog.showModal()
   document.querySelector('#upstream-name').focus()
 }
@@ -279,43 +307,7 @@ function openDialog(upstream = null) {
 function closeDialog() {
   dialog.close()
   form.reset()
-  modelPicker.hidden = true
-  modelOptions.innerHTML = ''
-  modelPicker._models = []
-}
-
-function renderModelOptions(models) {
-  const currentRoutes = new Map()
-  try {
-    const currentText = document.querySelector('#upstream-routes').value.trim()
-    for (const route of (currentText ? parseRoutes(currentText) : [])) currentRoutes.set(route.model, route)
-  } catch (error) {
-    document.querySelector('#form-error').textContent = error.message
-    document.querySelector('#form-error').hidden = false
-    return
-  }
-  modelOptions.innerHTML = models.map((item, index) => `
-    <label class="model-option">
-      <input type="checkbox" data-model-index="${index}"${currentRoutes.has(item.model) ? ' checked' : ''}>
-      <span class="model-option-name">${escapeHtml(item.model)}</span>
-      <select data-protocol-index="${index}" aria-label="${escapeHtml(item.model)} 协议">
-        <option value="videos"${(currentRoutes.get(item.model)?.protocol || item.protocol) === 'videos' ? ' selected' : ''}>videos</option>
-        <option value="seedance"${(currentRoutes.get(item.model)?.protocol || item.protocol) === 'seedance' ? ' selected' : ''}>seedance</option>
-      </select>
-      <select data-profile-index="${index}" aria-label="${escapeHtml(item.model)} 能力模板">
-        ${dashboard.profiles.map((profile) => `<option value="${profile.id}"${(currentRoutes.get(item.model)?.profile || item.profile) === profile.id ? ' selected' : ''}>${escapeHtml(profile.label)}</option>`).join('')}
-      </select>
-      <input type="number" data-duration-index="${index}" min="1" max="60" placeholder="默认时长" value="${currentRoutes.get(item.model)?.duration_override ?? item.duration_override ?? ''}" aria-label="${escapeHtml(item.model)} 固定时长">
-    </label>`).join('')
-  modelPicker.hidden = false
-  modelPickerStatus.textContent = `${models.length} 个模型`
-  applyModelsButton.disabled = !modelOptions.querySelector('input[type="checkbox"]:checked')
-  for (const checkbox of modelOptions.querySelectorAll('input[type="checkbox"]')) {
-    checkbox.addEventListener('change', () => {
-      applyModelsButton.disabled = !modelOptions.querySelector('input[type="checkbox"]:checked')
-    })
-  }
-  modelPicker._models = models
+  setRouteRows([])
 }
 
 discoverModelsButton.addEventListener('click', async () => {
@@ -339,45 +331,24 @@ discoverModelsButton.addEventListener('click', async () => {
         api_key: apiKey,
       }),
     })
-    renderModelOptions(result.models)
-    showToast(`已获取 ${result.models.length} 个上游模型`)
+    const currentRoutes = readRoutes(true)
+    const currentByUpstream = new Map(currentRoutes.map((route) => [route.upstream_model || route.model, route]))
+    setRouteRows(result.models.map((item) => currentByUpstream.get(item.model) || item))
+    showToast(`已同步 ${result.models.length} 个上游模型`)
   } catch (error) {
-    modelPicker.hidden = true
     document.querySelector('#form-error').textContent = error.message
     document.querySelector('#form-error').hidden = false
   } finally {
     discoverModelsButton.disabled = false
-    discoverModelsButton.textContent = '获取上游模型'
+    discoverModelsButton.textContent = '同步上游模型'
   }
 })
 
-applyModelsButton.addEventListener('click', () => {
-  const models = modelPicker._models || []
-  const routes = new Map()
-  try {
-    for (const checkbox of modelOptions.querySelectorAll('input[type="checkbox"]:checked')) {
-      const index = Number(checkbox.dataset.modelIndex)
-      const model = models[index]
-      const durationText = modelOptions.querySelector(`[data-duration-index="${index}"]`).value.trim()
-      const durationOverride = durationText ? Number(durationText) : null
-      if (durationText && (!Number.isInteger(durationOverride) || durationOverride < 1 || durationOverride > 60)) {
-        throw new Error(`${model.model} 的固定时长必须是 1–60 的整数`)
-      }
-      routes.set(model.model, {
-        model: model.model,
-        protocol: modelOptions.querySelector(`[data-protocol-index="${index}"]`).value,
-        profile: modelOptions.querySelector(`[data-profile-index="${index}"]`).value,
-        duration_override: durationOverride,
-      })
-    }
-  } catch (error) {
-    document.querySelector('#form-error').textContent = error.message
-    document.querySelector('#form-error').hidden = false
-    return
-  }
-  document.querySelector('#upstream-routes').value = [...routes.values()].map(formatRoute).join('\n')
-  modelPicker.hidden = true
-  showToast('已按上游列表同步所选模型')
+addRouteButton.addEventListener('click', () => addRouteRow())
+routeRows.addEventListener('click', (event) => {
+  if (!event.target.classList.contains('route-remove')) return
+  event.target.closest('.route-editor-row').remove()
+  updateRouteEmpty()
 })
 
 document.querySelector('#add-upstream').addEventListener('click', () => openDialog())
@@ -470,7 +441,7 @@ form.addEventListener('submit', async (event) => {
       base_url: document.querySelector('#upstream-base-url').value,
       api_key: document.querySelector('#upstream-api-key').value,
       enabled: document.querySelector('#upstream-enabled').checked,
-      routes: parseRoutes(document.querySelector('#upstream-routes').value),
+      routes: readRoutes(),
     }
     await api(id ? `/admin/api/upstreams/${id}` : '/admin/api/upstreams', {
       method: id ? 'PUT' : 'POST',

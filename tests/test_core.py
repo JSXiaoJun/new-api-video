@@ -41,7 +41,16 @@ class CoreTests(unittest.TestCase):
                 "api_key": "private-key",
                 "enabled": True,
                 "priority": 1,
-                "routes": [{"model": "audit-model", "protocol": "videos"}],
+                "routes": [
+                    {"model": "audit-model", "protocol": "videos"},
+                    {
+                        "model": "stable-manxue",
+                        "upstream_model": "manxue-900-10s",
+                        "protocol": "videos",
+                        "profile": "manxue-933",
+                        "duration_override": 10,
+                    },
+                ],
             }
         )
 
@@ -193,11 +202,12 @@ class CoreTests(unittest.TestCase):
                 database.initialize()
                 with database.connection() as migrated:
                     route = migrated.execute(
-                        "SELECT profile, duration_override FROM model_routes WHERE model = 'manxue-933'"
+                        "SELECT profile, duration_override, upstream_model FROM model_routes WHERE model = 'manxue-933'"
                     ).fetchone()
 
             self.assertEqual(route["profile"], "manxue-933")
             self.assertIsNone(route["duration_override"])
+            self.assertEqual(route["upstream_model"], "manxue-933")
 
     def test_status_mapping(self):
         expected = {
@@ -284,11 +294,47 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(
             normalize_discovered_models(payload),
             [
-                {"model": "sora-v3-933-pro", "protocol": "videos", "profile": "default", "duration_override": None},
-                {"model": "seedance-2.0-fast", "protocol": "seedance", "profile": "default", "duration_override": None},
-                {"model": "veo31-fast", "protocol": "videos", "profile": "veo31-fast", "duration_override": None},
+                {"model": "sora-v3-933-pro", "upstream_model": "", "protocol": "videos", "profile": "default", "duration_override": None},
+                {"model": "seedance-2.0-fast", "upstream_model": "", "protocol": "seedance", "profile": "default", "duration_override": None},
+                {"model": "veo31-fast", "upstream_model": "", "protocol": "videos", "profile": "veo31-fast", "duration_override": None},
             ],
         )
+
+    def test_public_model_alias_is_used_without_exposing_upstream_name(self):
+        client = TestClient(app)
+        models = client.get("/v1/models", headers={"Authorization": "Bearer test-adapter-key"})
+        model_ids = [item["id"] for item in models.json()["data"]]
+        self.assertIn("stable-manxue", model_ids)
+        self.assertNotIn("manxue-900-10s", model_ids)
+
+        capabilities = client.get("/v1/model-capabilities").json()["data"]
+        stable = next(item for item in capabilities if item["id"] == "stable-manxue")
+        self.assertEqual(stable["capabilities"]["durations"], [10])
+
+        captured = {}
+        response = httpx.Response(
+            200,
+            request=httpx.Request("POST", "https://private-upstream.example/v1/videos"),
+            json={"task_id": "alias-upstream-task", "status": "queued"},
+        )
+
+        class MockAsyncClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_):
+                return None
+
+            async def post(self, *_args, **kwargs):
+                captured["payload"] = kwargs["json"]
+                return response
+
+        with patch("app.proxy.httpx.AsyncClient", return_value=MockAsyncClient()):
+            result = asyncio.run(create_video({"model": "stable-manxue", "prompt": "test", "duration": 10}, None))
+
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(captured["payload"]["model"], "manxue-900-10s")
+        self.assertEqual(captured["payload"]["seconds"], 10)
 
     def test_manxue_profile_transforms_canonical_payload(self):
         payload = transform_create_payload(

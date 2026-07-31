@@ -6,7 +6,7 @@
     <meta name="csrf-token" content="{{ csrf_token }}">
     <link rel="icon" href="data:,">
     <title>Video Relay Console</title>
-    <link rel="stylesheet" href="/static/admin.css?v=20260731-1">
+    <link rel="stylesheet" href="/static/admin.css?v=20260731-2">
   </head>
   <body>
     <header class="app-header">
@@ -90,7 +90,22 @@
           <label><span>优先级</span><input id="upstream-priority" type="number" min="0" max="9999" value="100" required></label>
           <label class="span-two"><span>Base URL</span><input id="upstream-base-url" type="url" required placeholder="https://pidoi.com"></label>
           <label class="span-two"><span>API Key</span><input id="upstream-api-key" type="password" autocomplete="off" placeholder="编辑时留空可保留原密钥"></label>
-          <div class="span-two form-field"><div class="field-heading"><label for="upstream-routes">模型路由</label><button id="discover-models" class="quiet-button compact" type="button">获取上游模型</button></div><textarea id="upstream-routes" rows="7" required aria-label="模型路由" placeholder="sora2 | videos | sora2&#10;manxue-900-10s | videos | manxue-933 | 10&#10;seedance-2.0-fast | seedance | default"></textarea><div id="model-picker" class="model-picker" hidden><div class="model-picker-heading"><strong>选择要同步的模型</strong><span id="model-picker-status"></span></div><div id="model-options" class="model-options"></div><div class="model-picker-actions"><button id="apply-models" class="quiet-button compact" type="button" disabled>同步所选模型</button></div></div></div>
+          <div class="span-two form-field">
+            <div class="field-heading">
+              <span>模型路由</span>
+              <div class="field-actions">
+                <button id="add-route" class="quiet-button compact" type="button">添加一行</button>
+                <button id="discover-models" class="quiet-button compact" type="button">同步上游模型</button>
+              </div>
+            </div>
+            <div class="route-editor">
+              <div class="route-editor-header" aria-hidden="true">
+                <span>对外模型名</span><span>请求类型</span><span>映射上游模型名</span><span>工作台类型</span><span>固定时长</span><span></span>
+              </div>
+              <div id="route-rows" class="route-editor-rows"></div>
+              <div id="route-empty" class="route-editor-empty">尚未添加模型</div>
+            </div>
+          </div>
         </div>
         <label class="toggle-row"><input id="upstream-enabled" type="checkbox" checked><span>启用此上游</span></label>
         <p id="form-error" class="form-error" role="alert" hidden></p>
@@ -153,6 +168,6 @@
       </div>
     </dialog>
     <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
-    <script src="/static/admin.js?v=20260731-1" defer></script>
+    <script src="/static/admin.js?v=20260731-2" defer></script>
   </body>
 </html>
