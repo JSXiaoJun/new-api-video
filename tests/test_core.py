@@ -21,9 +21,10 @@ os.environ.setdefault("NEW_API_PUBLIC_BASE_URL", "https://zl.yyapi.cloud")
 TEST_DATA_DIR = tempfile.TemporaryDirectory()
 os.environ["DATA_DIR"] = TEST_DATA_DIR.name
 
-from app import database
+from app import database, image_database
 from app.config import settings
 from app.main import app, normalize_discovered_models
+from app.image_proxy import classify_health_outcome, forward_json
 from app.model_profiles import capabilities_for, transform_create_payload
 from app.proxy import create_video, fetch_task, normalize_status, normalize_task_payload, upstream_error
 from app.security import SESSION_COOKIE, create_session, csrf_token, read_session, secret_box
@@ -34,6 +35,7 @@ class CoreTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         database.initialize()
+        image_database.initialize()
         cls.upstream = database.save_upstream(
             {
                 "name": "audit-upstream",
@@ -65,6 +67,153 @@ class CoreTests(unittest.TestCase):
         response = client.get("/admin")
         self.assertEqual(response.status_code, 200)
         self.assertIn('id="copy-audit-json"', response.text)
+
+    def test_image_admin_page_and_api_require_admin_session(self):
+        client = TestClient(app)
+        self.assertEqual(client.get("/admin/images", follow_redirects=False).status_code, 302)
+        self.assertEqual(client.get("/admin/api/images/dashboard").status_code, 401)
+        client.cookies.set(SESSION_COOKIE, create_session("admin"))
+        response = client.get("/admin/images")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('id="image-upstream-rows"', response.text)
+
+    def test_image_router_prefers_health_adjusted_low_cost_route(self):
+        model = f"image-route-{time.time_ns()}"
+        cheap = image_database.save_upstream(
+            {
+                "name": "cheap-image",
+                "base_url": "https://cheap-image.example",
+                "api_key": "cheap-key",
+                "enabled": True,
+                "priority": 1,
+                "routes": [{
+                    "public_model": model,
+                    "upstream_model": "cheap-native",
+                    "sizes": ["1k"],
+                    "qualities": ["medium"],
+                    "operations": ["generation"],
+                    "cost_per_request": 0.04,
+                }],
+            }
+        )
+        image_database.save_upstream(
+            {
+                "name": "reliable-image",
+                "base_url": "https://reliable-image.example",
+                "api_key": "reliable-key",
+                "enabled": True,
+                "priority": 1,
+                "routes": [{
+                    "public_model": model,
+                    "upstream_model": "reliable-native",
+                    "sizes": ["1k"],
+                    "qualities": ["medium"],
+                    "operations": ["generation"],
+                    "cost_per_request": 0.11,
+                }],
+            }
+        )
+        selected = image_database.select_route(model, "1024x1024", "medium", "generation")
+        self.assertEqual(selected["upstream_id"], cheap["id"])
+        for _ in range(3):
+            image_database.record_request(
+                selected, "generation", model, "1k", "medium", False, 503, 10, "failure"
+            )
+        self.assertEqual(
+            image_database.select_route(model, "1024x1024", "medium", "generation")["upstream_model"],
+            "reliable-native",
+        )
+        self.assertEqual(classify_health_outcome(400, "内容审核未通过"), "neutral")
+        self.assertEqual(classify_health_outcome(503), "failure")
+
+    def test_image_proxy_rewrites_model_and_anonymizes_url(self):
+        model = f"image-proxy-{time.time_ns()}"
+        image_database.save_upstream(
+            {
+                "name": "proxy-image",
+                "base_url": "https://proxy-image.example/v1",
+                "api_key": "proxy-key",
+                "enabled": True,
+                "priority": 1,
+                "routes": [{
+                    "public_model": model,
+                    "upstream_model": "native-image-model",
+                    "sizes": ["*"],
+                    "qualities": ["*"],
+                    "operations": ["generation"],
+                    "cost_per_request": 0.08,
+                }],
+            }
+        )
+        captured = {}
+        upstream_response = httpx.Response(
+            200,
+            request=httpx.Request("POST", "https://proxy-image.example/v1/images/generations"),
+            json={"data": [{"url": "https://cdn.example/image.png"}]},
+        )
+
+        class MockAsyncClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_):
+                return None
+
+            async def post(self, url, **kwargs):
+                captured["url"] = url
+                captured["payload"] = kwargs["json"]
+                return upstream_response
+
+        with patch("app.image_proxy.httpx.AsyncClient", return_value=MockAsyncClient()):
+            result = asyncio.run(forward_json({"model": model, "prompt": "test"}, "generation"))
+
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(captured["payload"]["model"], "native-image-model")
+        public_url = json.loads(result.body)["data"][0]["url"]
+        self.assertTrue(public_url.startswith(f"{settings.public_base_url}/v1/images/assets/img_"))
+        self.assertNotIn("cdn.example", public_url)
+
+    def test_image_proxy_sanitizes_upstream_error_details(self):
+        model = f"image-error-{time.time_ns()}"
+        image_database.save_upstream(
+            {
+                "name": "error-image",
+                "base_url": "https://error-image.example",
+                "api_key": "error-key",
+                "enabled": True,
+                "priority": 1,
+                "routes": [{
+                    "public_model": model,
+                    "upstream_model": "error-native",
+                    "sizes": ["*"],
+                    "qualities": ["*"],
+                    "operations": ["generation"],
+                    "cost_per_request": 0.05,
+                }],
+            }
+        )
+        upstream_response = httpx.Response(
+            400,
+            request=httpx.Request("POST", "https://error-image.example/v1/images/generations"),
+            json={"error": {"message": "error-image.example private upstream message"}},
+        )
+
+        class MockAsyncClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_):
+                return None
+
+            async def post(self, *_args, **_kwargs):
+                return upstream_response
+
+        with patch("app.image_proxy.httpx.AsyncClient", return_value=MockAsyncClient()):
+            result = asyncio.run(forward_json({"model": model, "prompt": "test"}, "generation"))
+
+        self.assertEqual(result.status_code, 400)
+        self.assertNotIn("error-image.example", result.body.decode())
+        self.assertEqual(image_database.list_requests(model)[0]["health_outcome"], "neutral")
 
     def test_admin_can_download_integration_document(self):
         client = TestClient(app)

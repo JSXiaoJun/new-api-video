@@ -52,6 +52,7 @@ class Settings:
     cookie_secure: bool
     session_ttl_seconds: int
     upstream_timeout_seconds: float
+    image_upstream_timeout_seconds: float
     data_dir: Path
 
 
@@ -98,6 +99,7 @@ def load_settings() -> Settings:
         cookie_secure=env_bool("COOKIE_SECURE"),
         session_ttl_seconds=session_ttl_days * 24 * 60 * 60,
         upstream_timeout_seconds=float(os.getenv("UPSTREAM_TIMEOUT_SECONDS", "60")),
+        image_upstream_timeout_seconds=float(os.getenv("IMAGE_UPSTREAM_TIMEOUT_SECONDS", "360")),
         data_dir=data_dir,
     )
 

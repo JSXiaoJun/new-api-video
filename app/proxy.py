@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urljoin
 
 import httpx
@@ -212,6 +212,79 @@ async def fetch_task(task_id: str) -> JSONResponse:
     return JSONResponse(result, headers=response_headers)
 
 
+async def stream_upstream_content(
+    source_url: str,
+    request: Request,
+    headers: dict[str, str] | None = None,
+    timeout: float | None = None,
+    default_media_type: str = "application/octet-stream",
+    error_message: str = "Upstream download failed",
+    source_url_validator: Callable[[str], bool] | None = None,
+) -> StreamingResponse:
+    request_headers = dict(headers or {})
+    if request.headers.get("range"):
+        request_headers["Range"] = request.headers["range"]
+    if source_url_validator is not None and not source_url_validator(source_url):
+        raise HTTPException(status_code=502, detail=error_message)
+    client = httpx.AsyncClient(
+        timeout=timeout,
+        follow_redirects=source_url_validator is None,
+    )
+    current_url = source_url
+    for _ in range(6):
+        try:
+            upstream_response = await client.send(
+                client.build_request("GET", current_url, headers=request_headers), stream=True
+            )
+        except httpx.RequestError as exc:
+            await client.aclose()
+            logger.warning("%s: %s", error_message, exc)
+            raise HTTPException(status_code=502, detail=error_message) from exc
+        if source_url_validator is None or not upstream_response.is_redirect:
+            break
+        redirect_url = urljoin(current_url, upstream_response.headers.get("location", ""))
+        await upstream_response.aclose()
+        if not upstream_response.headers.get("location") or not source_url_validator(redirect_url):
+            await client.aclose()
+            raise HTTPException(status_code=502, detail=error_message)
+        current_url = redirect_url
+    else:
+        await client.aclose()
+        raise HTTPException(status_code=502, detail=error_message)
+    if upstream_response.status_code not in {200, 206}:
+        await upstream_response.aclose()
+        await client.aclose()
+        logger.warning("%s: upstream returned HTTP %s", error_message, upstream_response.status_code)
+        raise HTTPException(status_code=502, detail=error_message)
+
+    async def iterator():
+        try:
+            async for chunk in upstream_response.aiter_bytes(1024 * 256):
+                yield chunk
+        finally:
+            await upstream_response.aclose()
+            await client.aclose()
+
+    response_headers = {}
+    for key in (
+        "content-length",
+        "content-range",
+        "accept-ranges",
+        "content-disposition",
+        "etag",
+        "last-modified",
+        "cache-control",
+    ):
+        if key in upstream_response.headers:
+            response_headers[key] = upstream_response.headers[key]
+    return StreamingResponse(
+        iterator(),
+        status_code=upstream_response.status_code,
+        media_type=upstream_response.headers.get("content-type", default_media_type),
+        headers=response_headers,
+    )
+
+
 async def stream_content(task_id: str, request: Request) -> StreamingResponse:
     task = database.get_task(task_id)
     if task is None:
@@ -235,46 +308,10 @@ async def stream_content(task_id: str, request: Request) -> StreamingResponse:
     else:
         source_url = f"{task['base_url']}/v1/videos/{task_id}/content"
 
-    headers = {"Authorization": f"Bearer {task['api_key']}"}
-    if request.headers.get("range"):
-        headers["Range"] = request.headers["range"]
-
-    client = httpx.AsyncClient(timeout=None, follow_redirects=True)
-    try:
-        upstream_response = await client.send(client.build_request("GET", source_url, headers=headers), stream=True)
-    except httpx.RequestError as exc:
-        await client.aclose()
-        logger.warning("Video upstream content request failed: %s", exc)
-        raise HTTPException(status_code=502, detail="Video upstream download failed") from exc
-    if upstream_response.status_code not in {200, 206}:
-        body = await upstream_response.aread()
-        await upstream_response.aclose()
-        await client.aclose()
-        logger.warning(
-            "Video upstream content returned HTTP %s: %s",
-            upstream_response.status_code,
-            body[:2000].decode(errors="replace"),
-        )
-        raise HTTPException(
-            status_code=502,
-            detail="Video upstream download failed",
-        )
-
-    async def iterator():
-        try:
-            async for chunk in upstream_response.aiter_bytes(1024 * 256):
-                yield chunk
-        finally:
-            await upstream_response.aclose()
-            await client.aclose()
-
-    response_headers = {}
-    for key in ("content-length", "content-range", "accept-ranges", "content-disposition", "etag", "last-modified"):
-        if key in upstream_response.headers:
-            response_headers[key] = upstream_response.headers[key]
-    return StreamingResponse(
-        iterator(),
-        status_code=upstream_response.status_code,
-        media_type=upstream_response.headers.get("content-type", "video/mp4"),
-        headers=response_headers,
+    return await stream_upstream_content(
+        source_url,
+        request,
+        headers={"Authorization": f"Bearer {task['api_key']}"},
+        default_media_type="video/mp4",
+        error_message="Video upstream download failed",
     )

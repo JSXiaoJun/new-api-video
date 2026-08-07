@@ -93,7 +93,7 @@ To roll back, replace `latest` in `docker-compose.yml` with a previously publish
 
 ## API
 
-Video creation, polling, content, and `/v1/models` require:
+Model discovery, video, and image-generation requests require:
 
 ```http
 Authorization: Bearer <ADAPTER_API_KEY>

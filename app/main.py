@@ -11,11 +11,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import database, proxy
+from . import database, image_database, image_proxy, proxy
 from .config import DEFAULT_PUBLIC_LINK_BASE_URL, PUBLIC_LINK_BASE_URLS, ROOT_DIR, settings
 from .integration_doc import build_integration_document
 from .model_profiles import profile_options, suggest_duration_override, suggest_profile
-from .schemas import LoginInput, ModelDiscoveryInput, PublicLinkSettingsInput, PublicTaskInput, UpstreamInput
+from .schemas import (
+    ImageUpstreamInput,
+    LoginInput,
+    ModelDiscoveryInput,
+    PublicLinkSettingsInput,
+    PublicTaskInput,
+    UpstreamInput,
+)
 from .security import (
     SESSION_COOKIE,
     create_session,
@@ -42,6 +49,7 @@ templates = Jinja2Templates(directory=ROOT_DIR / "templates")
 @app.on_event("startup")
 def startup() -> None:
     database.initialize()
+    image_database.initialize()
 
 
 @app.middleware("http")
@@ -185,6 +193,22 @@ def dashboard(request: Request, session: str | None = Cookie(default=None, alias
     )
 
 
+@app.get("/admin/images", response_class=HTMLResponse)
+def image_dashboard(request: Request, session: str | None = Cookie(default=None, alias=SESSION_COOKIE)):
+    session_payload = read_session(session)
+    if session_payload is None or session is None:
+        return RedirectResponse("/admin/login", status_code=302)
+    return templates.TemplateResponse(
+        request=request,
+        name="image_dashboard.html",
+        context={
+            "username": session_payload["username"],
+            "csrf_token": csrf_token(session),
+            "version": settings.app_version,
+        },
+    )
+
+
 @app.get("/admin/api/dashboard")
 def dashboard_api(_: tuple[str, dict] = Depends(admin_session)):
     return {
@@ -311,13 +335,115 @@ def remove_upstream(upstream_id: int, _: dict = Depends(admin_mutation)):
     return {"ok": True}
 
 
+@app.get("/admin/api/images/dashboard")
+def image_dashboard_api(_: tuple[str, dict] = Depends(admin_session)):
+    return image_database.dashboard_data()
+
+
+@app.get("/admin/api/images/requests")
+def image_requests(
+    q: str = Query(default="", max_length=191),
+    outcome: str = Query(default="", pattern="^(|success|failed)$"),
+    _: tuple[str, dict] = Depends(admin_session),
+):
+    return {"requests": image_database.list_requests(q.strip(), outcome)}
+
+
+@app.post("/admin/api/images/upstreams/models")
+async def discover_image_upstream_models(payload: ModelDiscoveryInput, _: dict = Depends(admin_mutation)):
+    api_key = payload.api_key.strip()
+    if payload.upstream_id and not api_key:
+        existing = image_database.get_upstream(payload.upstream_id, include_key=True)
+        if existing is None:
+            raise HTTPException(status_code=404, detail="Image upstream not found")
+        api_key = existing["api_key"]
+    headers = {"Accept": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    try:
+        async with httpx.AsyncClient(timeout=min(settings.upstream_timeout_seconds, 30), follow_redirects=True) as client:
+            response = await client.get(
+                image_proxy.upstream_api_url(payload.base_url, "/v1/models"), headers=headers
+            )
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=502, detail=f"上游模型请求失败: {exc}") from exc
+    if not 200 <= response.status_code < 300:
+        raise HTTPException(status_code=502, detail=f"上游模型接口返回 HTTP {response.status_code}")
+    try:
+        upstream_payload = response.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail="上游模型接口返回的不是有效 JSON") from exc
+    models = normalize_discovered_models(upstream_payload)
+    if not models:
+        raise HTTPException(status_code=422, detail="上游没有返回可用模型")
+    return {"models": [item["upstream_model"] for item in models]}
+
+
+@app.post("/admin/api/images/upstreams")
+def create_image_upstream(payload: ImageUpstreamInput, _: dict = Depends(admin_mutation)):
+    if not payload.api_key:
+        raise HTTPException(status_code=422, detail="api_key is required")
+    return image_database.save_upstream(payload.model_dump())
+
+
+@app.put("/admin/api/images/upstreams/{upstream_id}")
+def update_image_upstream(
+    upstream_id: int, payload: ImageUpstreamInput, _: dict = Depends(admin_mutation)
+):
+    try:
+        return image_database.save_upstream(payload.model_dump(), upstream_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Image upstream not found") from exc
+
+
+@app.delete("/admin/api/images/upstreams/{upstream_id}")
+def remove_image_upstream(upstream_id: int, _: dict = Depends(admin_mutation)):
+    try:
+        image_database.delete_upstream(upstream_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Image upstream not found") from exc
+    return {"ok": True}
+
+
 @app.get("/v1/models", dependencies=[Depends(adapter_auth)])
 def models():
     now = int(time.time())
+    models = sorted(set(database.list_models()) | set(image_database.list_models()))
     return {
         "object": "list",
-        "data": [{"id": model, "object": "model", "created": now, "owned_by": "video-relay"} for model in database.list_models()],
+        "data": [{"id": model, "object": "model", "created": now, "owned_by": "relay"} for model in models],
     }
+
+
+@app.get("/v1/images/assets/{asset_id}", include_in_schema=False)
+async def image_asset(asset_id: str, request: Request):
+    return await image_proxy.stream_image_asset(asset_id, request)
+
+
+@app.post("/v1/images/generations", dependencies=[Depends(adapter_auth)])
+async def create_image(
+    request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+):
+    if not request.headers.get("content-type", "").lower().startswith("application/json"):
+        raise HTTPException(status_code=415, detail="Content-Type must be application/json")
+    try:
+        payload = await request.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid JSON") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="JSON body must be an object")
+    return await image_proxy.forward_json(payload, "generation", idempotency_key)
+
+
+@app.post("/v1/images/edits", dependencies=[Depends(adapter_auth)])
+async def edit_image(
+    request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+):
+    if not request.headers.get("content-type", "").lower().startswith("multipart/form-data"):
+        raise HTTPException(status_code=415, detail="Content-Type must be multipart/form-data")
+    return await image_proxy.forward_edit(request, idempotency_key)
 
 
 @app.post("/v1/videos", dependencies=[Depends(adapter_auth)])

@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="csrf-token" content="{{ csrf_token }}">
+    <link rel="icon" href="data:,">
+    <title>Image Relay Console</title>
+    <link rel="stylesheet" href="/static/admin.css?v=20260807-3">
+  </head>
+  <body>
+    <header class="app-header">
+      <a class="app-brand" href="/admin/images">
+        <span class="brand-mark brand-mark-small">VR</span>
+        <span>Video Relay Console</span>
+        <span class="app-version">{{ version }}</span>
+      </a>
+      <nav class="primary-nav" aria-label="功能切换">
+        <a href="/admin">视频</a>
+        <a class="active" href="/admin/images" aria-current="page">画图</a>
+      </nav>
+      <div class="header-actions">
+        <span class="operator"><span class="status-dot"></span>{{ username }}</span>
+        <button id="logout-button" class="quiet-button" type="button">退出</button>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <section class="workspace-heading">
+        <div>
+          <p class="eyebrow">IMAGE ROUTING</p>
+          <h1>画图智能路由</h1>
+        </div>
+        <button id="add-image-upstream" class="primary-button compact" type="button">添加画图上游</button>
+      </section>
+
+      <section class="stats-band" aria-label="画图路由概览">
+        <div><span>上游</span><strong id="stat-image-upstreams">0</strong></div>
+        <div><span>已启用</span><strong id="stat-image-enabled">0</strong></div>
+        <div><span>路由</span><strong id="stat-image-routes">0</strong></div>
+        <div><span>24 小时请求</span><strong id="stat-image-requests">0</strong></div>
+      </section>
+
+      <section class="table-section">
+        <div class="section-heading">
+          <h2>画图上游</h2>
+          <button id="refresh-image-button" class="quiet-button" type="button">刷新</button>
+        </div>
+        <div class="table-wrap">
+          <table class="image-upstream-table">
+            <thead><tr><th>状态</th><th>健康</th><th>名称</th><th>地址</th><th>参数路由</th><th>优先级</th><th class="align-right">操作</th></tr></thead>
+            <tbody id="image-upstream-rows"></tbody>
+          </table>
+          <div id="image-upstream-empty" class="empty-state" hidden>尚未配置画图上游</div>
+        </div>
+        <div id="image-upstream-cards" class="mobile-list" aria-label="画图上游列表"></div>
+      </section>
+
+      <section class="table-section task-section">
+        <div class="section-heading task-heading">
+          <div><h2>使用日志</h2><span>最近 50 条</span></div>
+          <form id="image-log-filter" class="task-filter" role="search">
+            <input id="image-log-search" type="search" maxlength="191" placeholder="请求 ID、模型或上游" aria-label="搜索使用日志">
+            <select id="image-log-outcome" aria-label="请求结果">
+              <option value="">全部结果</option>
+              <option value="success">成功</option>
+              <option value="failed">失败</option>
+            </select>
+            <button class="quiet-button compact" type="submit">搜索</button>
+          </form>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>请求 ID</th><th>公开模型</th><th>实际模型 / 上游</th><th>参数</th><th>成本</th><th>结果</th><th>耗时</th><th>时间</th></tr></thead>
+            <tbody id="image-log-rows"></tbody>
+          </table>
+          <div id="image-log-empty" class="empty-state" hidden>暂无画图请求</div>
+        </div>
+        <div id="image-log-cards" class="mobile-list" aria-label="画图使用日志"></div>
+      </section>
+    </main>
+
+    <dialog id="image-upstream-dialog" class="image-upstream-dialog">
+      <form id="image-upstream-form" class="dialog-form">
+        <div class="dialog-heading">
+          <div><p class="eyebrow">IMAGE CONFIGURATION</p><h2 id="image-dialog-title">添加画图上游</h2></div>
+          <button id="close-image-dialog" class="close-button" type="button" aria-label="关闭">×</button>
+        </div>
+        <input id="image-upstream-id" type="hidden">
+        <div class="form-grid">
+          <label><span>名称</span><input id="image-upstream-name" required maxlength="80" placeholder="原生低价节点"></label>
+          <label><span>优先级</span><input id="image-upstream-priority" type="number" min="0" max="9999" value="100" required></label>
+          <label class="span-two"><span>Base URL</span><input id="image-upstream-base-url" type="url" required placeholder="https://api.example.com"></label>
+          <label class="span-two"><span>API Key</span><input id="image-upstream-api-key" type="password" autocomplete="off" placeholder="编辑时留空可保留原密钥"></label>
+        </div>
+
+        <section class="route-editor">
+          <div class="field-heading">
+            <div><strong>参数路由</strong></div>
+            <div class="route-editor-actions">
+              <button id="discover-image-models" class="quiet-button compact" type="button">获取模型</button>
+              <button id="add-image-route" class="quiet-button compact" type="button">添加路由</button>
+            </div>
+          </div>
+          <div class="route-grid route-grid-heading" aria-hidden="true">
+            <span>公开模型</span><span>上游模型</span><span>尺寸</span><span>质量</span><span>接口</span><span>成本 / 次</span><span></span>
+          </div>
+          <div id="image-route-rows" class="image-route-rows"></div>
+          <datalist id="image-model-suggestions"></datalist>
+        </section>
+
+        <label class="toggle-row"><input id="image-upstream-enabled" type="checkbox" checked><span>启用此画图上游</span></label>
+        <p id="image-form-error" class="form-error" role="alert" hidden></p>
+        <div class="dialog-actions">
+          <button id="delete-image-upstream" class="danger-button" type="button" hidden>删除</button>
+          <span class="action-spacer"></span>
+          <button id="cancel-image-dialog" class="quiet-button" type="button">取消</button>
+          <button class="primary-button compact" type="submit">保存</button>
+        </div>
+      </form>
+    </dialog>
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+    <script src="/static/image_admin.js?v=20260807-2" defer></script>
+  </body>
+</html>
