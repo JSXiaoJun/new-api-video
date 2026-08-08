@@ -28,6 +28,7 @@ from app.image_proxy import classify_health_outcome, forward_json
 from app.model_profiles import capabilities_for, transform_create_payload
 from app.proxy import create_video, fetch_task, normalize_status, normalize_task_payload, upstream_error
 from app.security import SESSION_COOKIE, create_session, csrf_token, read_session, secret_box
+from fastapi.responses import Response
 from fastapi.testclient import TestClient
 
 
@@ -124,7 +125,60 @@ class CoreTests(unittest.TestCase):
             "reliable-native",
         )
         self.assertEqual(classify_health_outcome(400, "内容审核未通过"), "neutral")
+        self.assertEqual(classify_health_outcome(401), "failure")
+        self.assertEqual(classify_health_outcome(402), "failure")
+        self.assertEqual(classify_health_outcome(403, "content policy rejected"), "neutral")
+        self.assertEqual(classify_health_outcome(403, "service unavailable"), "failure")
         self.assertEqual(classify_health_outcome(503), "failure")
+
+    def test_image_router_tracks_generation_and_edit_health_separately(self):
+        model = f"image-operation-health-{time.time_ns()}"
+        preferred = image_database.save_upstream(
+            {
+                "name": "preferred-both-operations",
+                "base_url": "https://preferred-both.example",
+                "api_key": "preferred-key",
+                "enabled": True,
+                "priority": 1,
+                "routes": [{
+                    "public_model": model,
+                    "upstream_model": "preferred-native",
+                    "sizes": ["1k"],
+                    "qualities": ["medium"],
+                    "operations": ["generation", "edit"],
+                    "cost_per_request": 0.04,
+                }],
+            }
+        )
+        image_database.save_upstream(
+            {
+                "name": "generation-fallback",
+                "base_url": "https://generation-fallback.example",
+                "api_key": "fallback-key",
+                "enabled": True,
+                "priority": 1,
+                "routes": [{
+                    "public_model": model,
+                    "upstream_model": "fallback-native",
+                    "sizes": ["1k"],
+                    "qualities": ["medium"],
+                    "operations": ["generation"],
+                    "cost_per_request": 0.11,
+                }],
+            }
+        )
+
+        selected = image_database.select_route(model, "1024x1024", "medium", "edit")
+        self.assertEqual(selected["upstream_id"], preferred["id"])
+        for _ in range(3):
+            image_database.record_request(
+                selected, "edit", model, "1k", "medium", False, 503, 10, "failure"
+            )
+
+        generation_route = image_database.select_route(
+            model, "1024x1024", "medium", "generation"
+        )
+        self.assertEqual(generation_route["upstream_model"], "preferred-native")
 
     def test_image_proxy_rewrites_model_and_anonymizes_url(self):
         model = f"image-proxy-{time.time_ns()}"
@@ -214,6 +268,199 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(result.status_code, 400)
         self.assertNotIn("error-image.example", result.body.decode())
         self.assertEqual(image_database.list_requests(model)[0]["health_outcome"], "neutral")
+
+    def test_image_edit_forwards_multipart_fields_and_file(self):
+        model = f"image-edit-{time.time_ns()}"
+        image_database.save_upstream(
+            {
+                "name": "edit-image",
+                "base_url": "https://edit-image.example/v1",
+                "api_key": "edit-key",
+                "enabled": True,
+                "priority": 1,
+                "routes": [{
+                    "public_model": model,
+                    "upstream_model": "native-edit-model",
+                    "sizes": ["1k"],
+                    "qualities": ["high"],
+                    "operations": ["edit"],
+                    "cost_per_request": 0.08,
+                }],
+            }
+        )
+        captured = {}
+        upstream_response = httpx.Response(
+            200,
+            request=httpx.Request("POST", "https://edit-image.example/v1/images/edits"),
+            json={"created": 123, "data": [{"b64_json": "aW1hZ2U="}]},
+        )
+
+        class MockAsyncClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_):
+                return None
+
+            async def post(self, url, **kwargs):
+                captured["url"] = url
+                captured["headers"] = kwargs["headers"]
+                for name, part in kwargs["files"]:
+                    if name == "model":
+                        captured["model"] = part[1]
+                    elif name == "image":
+                        captured["filename"] = part[0]
+                        captured["image"] = part[1].read()
+                        captured["content_type"] = part[2]
+                return upstream_response
+
+        client = TestClient(app)
+        with patch("app.image_proxy.httpx.AsyncClient", return_value=MockAsyncClient()):
+            response = client.post(
+                "/v1/images/edits",
+                headers={
+                    "Authorization": "Bearer test-adapter-key",
+                    "Idempotency-Key": "edit-idempotency-key",
+                },
+                data={"model": model, "prompt": "edit prompt", "size": "1024x1024", "quality": "high"},
+                files={"image": ("source.png", b"image-bytes", "image/png")},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(captured["url"], "https://edit-image.example/v1/images/edits")
+        self.assertEqual(captured["headers"]["Authorization"], "Bearer edit-key")
+        self.assertEqual(captured["headers"]["Idempotency-Key"], "edit-idempotency-key")
+        self.assertEqual(captured["model"], "native-edit-model")
+        self.assertEqual(captured["filename"], "source.png")
+        self.assertEqual(captured["image"], b"image-bytes")
+        self.assertEqual(captured["content_type"], "image/png")
+        self.assertEqual(response.json()["data"][0]["b64_json"], "aW1hZ2U=")
+        self.assertTrue(response.headers["X-Oneapi-Request-Id"].startswith("irq_"))
+        self.assertEqual(image_database.list_requests(model)[0]["operation"], "edit")
+
+    def test_image_asset_endpoint_uses_saved_source_url(self):
+        source_url = "https://cdn.example/generated/image.png"
+        asset_id = image_database.create_image_asset(source_url)
+        captured = {}
+
+        async def mock_stream(url, request, **kwargs):
+            captured["url"] = url
+            captured["timeout"] = kwargs["timeout"]
+            captured["validator"] = kwargs["source_url_validator"]
+            return Response(content=b"png-bytes", media_type="image/png")
+
+        with patch("app.image_proxy.proxy.stream_upstream_content", new=mock_stream):
+            response = TestClient(app).get(f"/v1/images/assets/{asset_id}")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, b"png-bytes")
+        self.assertEqual(response.headers["content-type"], "image/png")
+        self.assertEqual(captured["url"], source_url)
+        self.assertEqual(captured["timeout"], settings.image_upstream_timeout_seconds)
+        self.assertTrue(captured["validator"](source_url))
+
+    def test_image_admin_upstream_crud_preserves_existing_api_key(self):
+        client = TestClient(app)
+        session = create_session("admin")
+        client.cookies.set(SESSION_COOKIE, session)
+        headers = {"X-CSRF-Token": csrf_token(session)}
+        model = f"image-admin-{time.time_ns()}"
+        payload = {
+            "name": "admin-image",
+            "base_url": "https://admin-image.example",
+            "api_key": "original-image-key",
+            "enabled": True,
+            "priority": 7,
+            "routes": [{
+                "public_model": model,
+                "upstream_model": "admin-native",
+                "sizes": ["1k"],
+                "qualities": ["medium"],
+                "operations": ["generation"],
+                "cost_per_request": 0.05,
+            }],
+        }
+
+        created = client.post("/admin/api/images/upstreams", json=payload, headers=headers)
+        self.assertEqual(created.status_code, 200)
+        upstream_id = created.json()["id"]
+        self.assertNotIn("api_key", created.json())
+
+        payload["name"] = "admin-image-updated"
+        payload["api_key"] = ""
+        updated = client.put(
+            f"/admin/api/images/upstreams/{upstream_id}", json=payload, headers=headers
+        )
+        self.assertEqual(updated.status_code, 200)
+        self.assertEqual(updated.json()["name"], "admin-image-updated")
+        self.assertEqual(
+            image_database.get_upstream(upstream_id, include_key=True)["api_key"],
+            "original-image-key",
+        )
+
+        deleted = client.delete(f"/admin/api/images/upstreams/{upstream_id}", headers=headers)
+        self.assertEqual(deleted.status_code, 200)
+        self.assertIsNone(image_database.get_upstream(upstream_id))
+
+    def test_image_model_discovery_uses_saved_key_and_normalizes_v1_url(self):
+        upstream = image_database.save_upstream(
+            {
+                "name": "discover-image",
+                "base_url": "https://discover-image.example/v1",
+                "api_key": "saved-discovery-key",
+                "enabled": True,
+                "priority": 1,
+                "routes": [{
+                    "public_model": f"discover-placeholder-{time.time_ns()}",
+                    "upstream_model": "discover-placeholder-native",
+                    "sizes": ["*"],
+                    "qualities": ["*"],
+                    "operations": ["generation"],
+                    "cost_per_request": 0.01,
+                }],
+            }
+        )
+        captured = {}
+        upstream_response = httpx.Response(
+            200,
+            request=httpx.Request("GET", "https://discover-image.example/v1/models"),
+            json={"data": [{"id": "image-alpha"}, {"id": "image-beta"}]},
+        )
+
+        class MockAsyncClient:
+            def __init__(self, **_kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_):
+                return None
+
+            async def get(self, url, **kwargs):
+                captured["url"] = url
+                captured["headers"] = kwargs["headers"]
+                return upstream_response
+
+        client = TestClient(app)
+        session = create_session("admin")
+        client.cookies.set(SESSION_COOKIE, session)
+        with patch("app.main.httpx.AsyncClient", MockAsyncClient):
+            response = client.post(
+                "/admin/api/images/upstreams/models",
+                headers={"X-CSRF-Token": csrf_token(session)},
+                json={
+                    "upstream_id": upstream["id"],
+                    "base_url": "https://discover-image.example/v1",
+                    "api_key": "",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["models"], ["image-alpha", "image-beta"])
+        self.assertEqual(captured["url"], "https://discover-image.example/v1/models")
+        self.assertEqual(captured["headers"]["Authorization"], "Bearer saved-discovery-key")
+        image_database.delete_upstream(upstream["id"])
 
     def test_admin_can_download_integration_document(self):
         client = TestClient(app)

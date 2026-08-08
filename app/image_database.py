@@ -72,6 +72,10 @@ def initialize() -> None:
                 ON image_request_logs(route_id, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_image_request_logs_upstream_model_created
                 ON image_request_logs(upstream_id, public_model, upstream_model, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_image_request_logs_health
+                ON image_request_logs(
+                    upstream_id, public_model, upstream_model, operation, created_at DESC
+                );
             CREATE INDEX IF NOT EXISTS idx_image_request_logs_created
                 ON image_request_logs(created_at DESC);
             CREATE TABLE IF NOT EXISTS image_assets (
@@ -280,7 +284,12 @@ def _matches_size(value: str, constraints: list[str]) -> bool:
     return tier in constraints
 
 
-def _health_for_route(conn, route: dict[str, Any], now: int | None = None) -> dict[str, Any]:
+def _health_for_route(
+    conn,
+    route: dict[str, Any],
+    now: int | None = None,
+    operation: str | None = None,
+) -> dict[str, Any]:
     current_time = int(time.time()) if now is None else now
     rows = conn.execute(
         """
@@ -289,6 +298,7 @@ def _health_for_route(conn, route: dict[str, Any], now: int | None = None) -> di
         WHERE upstream_id = ?
           AND public_model = ?
           AND upstream_model = ?
+          AND (? IS NULL OR operation = ?)
           AND created_at >= ?
           AND health_outcome IN ('success', 'failure')
         ORDER BY created_at DESC, rowid DESC LIMIT ?
@@ -297,6 +307,8 @@ def _health_for_route(conn, route: dict[str, Any], now: int | None = None) -> di
             route["upstream_id"],
             route["public_model"],
             route["upstream_model"],
+            operation,
+            operation,
             current_time - HEALTH_LONG_WINDOW_SECONDS,
             HEALTH_LONG_SAMPLE_LIMIT,
         ),
@@ -361,7 +373,7 @@ def select_route(public_model: str, size: str, quality: str, operation: str) -> 
             operations = json.loads(item["operations_json"])
             if operation not in operations or not _matches_size(size, sizes) or not _matches(quality, qualities):
                 continue
-            health = _health_for_route(conn, item, now)
+            health = _health_for_route(conn, item, now, operation)
             item["health"] = health
             item["health_adjusted_cost"] = item["cost_micros"] / math.pow(
                 health["score"], HEALTH_COST_EXPONENT

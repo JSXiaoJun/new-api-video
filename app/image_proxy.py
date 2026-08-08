@@ -145,7 +145,7 @@ def _upstream_error_response(
 def classify_health_outcome(http_status: int, response_body: str = "") -> str:
     if 200 <= http_status < 300:
         return "success"
-    if http_status >= 500 or http_status in {408, 425, 429}:
+    if http_status >= 500 or http_status in {401, 402, 408, 425, 429}:
         return "failure"
     normalized_body = response_body[:4000].lower()
     availability_markers = (
