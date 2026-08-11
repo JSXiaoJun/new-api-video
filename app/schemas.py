@@ -111,6 +111,7 @@ class PublicTaskInput(BaseModel):
 
 class PublicLinkSettingsInput(BaseModel):
     public_base_url: Literal[
+        "https://media.yyapi.cloud",
         "https://www.yyapi.cloud",
         "https://zl.yyapi.cloud",
     ]

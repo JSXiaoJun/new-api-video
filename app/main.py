@@ -474,7 +474,9 @@ async def public_video_content(public_task_id: str, request: Request):
         if reservation != "reserved":
             raise HTTPException(status_code=404, detail="Public video not found")
     try:
-        return await proxy.stream_content(task["task_id"], request)
+        response = await proxy.stream_content(task["task_id"], request)
+        response.headers["Cache-Control"] = "private, no-store"
+        return response
     except Exception:
         if counted:
             database.release_public_video_download(public_task_id)
@@ -508,7 +510,16 @@ async def edit_image(
 
 
 @app.post("/v1/videos", dependencies=[Depends(adapter_auth)])
-async def create_video(request: Request, idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")):
+async def create_video(
+    request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    public_task_id: str | None = Header(
+        default=None,
+        alias="X-Public-Task-ID",
+        max_length=191,
+        pattern=r"^task_[A-Za-z0-9_-]+$",
+    ),
+):
     if not request.headers.get("content-type", "").lower().startswith("application/json"):
         raise HTTPException(status_code=415, detail="Content-Type must be application/json")
     try:
@@ -517,7 +528,7 @@ async def create_video(request: Request, idempotency_key: str | None = Header(de
         raise HTTPException(status_code=400, detail="Invalid JSON") from exc
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="JSON body must be an object")
-    return await proxy.create_video(payload, idempotency_key)
+    return await proxy.create_video(payload, idempotency_key, public_task_id)
 
 
 @app.get("/v1/videos/{task_id}", dependencies=[Depends(adapter_auth)])

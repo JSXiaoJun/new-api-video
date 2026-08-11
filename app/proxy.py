@@ -63,7 +63,11 @@ def upstream_error(
     return JSONResponse(payload, status_code=response.status_code, headers=headers)
 
 
-async def create_video(payload: dict[str, Any], incoming_idempotency_key: str | None) -> JSONResponse:
+async def create_video(
+    payload: dict[str, Any],
+    incoming_idempotency_key: str | None,
+    public_task_id: str | None = None,
+) -> JSONResponse:
     model = str(payload.get("model", "")).strip()
     prompt = str(payload.get("prompt", "")).strip()
     if not model:
@@ -134,6 +138,11 @@ async def create_video(payload: dict[str, Any], incoming_idempotency_key: str | 
         "created_at": int(time.time()),
     }
     database.create_task(task_id, upstream["id"], relay_request_id, model, protocol, status)
+    if public_task_id:
+        try:
+            database.set_public_task_id(relay_request_id, public_task_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail="Public task ID is already in use") from exc
     database.record_audit_event(relay_request_id, "create", response.status_code, response.text, result)
     return JSONResponse(result, headers=response_headers)
 
@@ -205,8 +214,8 @@ async def fetch_task(task_id: str) -> JSONResponse:
     result, video_url = normalize_task_payload(task, payload)
     error = result["error"]["message"] if result.get("error") else None
     database.update_task(task_id, result["status"], video_url, error)
-    if result["status"] == "completed":
-        result["video_url"] = database.public_video_url(task_id)
+    if result["status"] == "completed" and task.get("public_task_id"):
+        result["video_url"] = database.public_video_url(task["public_task_id"])
     if relay_request_id:
         database.record_audit_event(relay_request_id, "poll", response.status_code, response.text, result)
     return JSONResponse(result, headers=response_headers)

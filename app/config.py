@@ -7,6 +7,7 @@ from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 PUBLIC_LINK_BASE_URLS = (
+    "https://media.yyapi.cloud",
     "https://www.yyapi.cloud",
     "https://zl.yyapi.cloud",
 )

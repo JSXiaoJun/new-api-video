@@ -532,8 +532,9 @@ def get_task(task_id: str) -> dict[str, Any] | None:
     with connection() as conn:
         row = conn.execute(
             """
-            SELECT t.*, u.name AS upstream_name, u.base_url, u.api_key_encrypted
+            SELECT t.*, a.public_task_id, u.name AS upstream_name, u.base_url, u.api_key_encrypted
             FROM tasks t JOIN upstreams u ON u.id = t.upstream_id
+            LEFT JOIN audit_requests a ON a.relay_request_id = t.relay_request_id
             WHERE t.task_id = ?
             """,
             (task_id,),

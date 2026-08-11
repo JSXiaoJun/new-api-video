@@ -115,30 +115,31 @@ Image generation and editing responses replace upstream image URLs with
 `/public/images/assets/{asset_id}` links. These links do not require the adapter API key and are retained for 7
 days; `b64_json` response data is returned unchanged.
 
-Task polling responses intentionally omit upstream `id`, `task_id`, and `video_url` fields. Clients must keep the
-public task ID returned by New API when the task is created and download through
-`/public/videos/{public_task_id}/content` on the New API domain. This public link is valid for 24 hours and allows up to
-The default is 50 download starts per video; this limit can be changed from the admin page (1-10,000). New API must
-proxy this path to the adapter's unauthenticated public-video route.
+Task polling responses intentionally omit upstream `id`, `task_id`, and raw `video_url` fields. New API sends its
+opaque task ID to the adapter in `X-Public-Task-ID` when creating a video. The adapter binds that ID after successful
+creation and returns `/public/videos/{public_task_id}/content` on the selected public media domain. This public link is
+valid for 24 hours and defaults to 50 download starts per video; the limit can be changed from the admin page
+(1-10,000). Video bytes are served directly by the adapter and do not pass through New API.
 
 ## Task Audit
 
 Set the initial public New API address in `.env`:
 
 ```env
-NEW_API_PUBLIC_BASE_URL=https://zl.yyapi.cloud
+NEW_API_PUBLIC_BASE_URL=https://media.yyapi.cloud
 ```
 
 After the first startup, the admin page can switch the returned sanitized link domain between
-`https://www.yyapi.cloud` and `https://zl.yyapi.cloud`. The selection is stored in `data/adapter.db`; the environment
-variable is only used as the initial value when the setting has not been created yet.
+`https://media.yyapi.cloud`, `https://www.yyapi.cloud`, and `https://zl.yyapi.cloud`. Use the dedicated media domain for
+new deployments. The selection is stored in `data/adapter.db`; the environment variable is only used as the initial
+value when the setting has not been created yet.
 
 The adapter returns `X-Oneapi-Request-Id: vrq_...` on create and poll responses. New API `v1.0.0-rc.22`
 records this value as `upstream_request_id` without any New API code changes. Search that value in the adapter's
 admin task audit page to inspect the encrypted request history, upstream task ID, original responses, sanitized
 responses, and the real video source URL.
 
-New API's public `task_...` ID is generated outside the adapter, so paste it into the matching audit detail when a
-public `https://zl.yyapi.cloud/public/videos/{task_id}/content` link is needed. For completed tasks, the audit view
-adds that public URL to `url`, `video_url`, `result_url`, and `download_url` in the sanitized response. Audit payloads
-and source URLs are stored encrypted with `ENCRYPTION_KEY`; keep that key and `data/adapter.db` backed up together.
+Updated New API versions pass the public `task_...` ID automatically. The audit page still supports manual binding for
+legacy tasks. For completed tasks, the audit view adds the public media URL to `url`, `video_url`, `result_url`, and
+`download_url` in the sanitized response. Audit payloads and source URLs are stored encrypted with `ENCRYPTION_KEY`;
+keep that key and `data/adapter.db` backed up together.

@@ -555,16 +555,20 @@ class CoreTests(unittest.TestCase):
         try:
             response = client.put(
                 "/admin/api/settings/public-link",
-                json={"public_base_url": "https://www.yyapi.cloud"},
+                json={"public_base_url": "https://media.yyapi.cloud"},
                 headers=headers,
             )
             self.assertEqual(response.status_code, 200)
-            self.assertEqual(response.json()["public_link_base_url"], "https://www.yyapi.cloud")
+            self.assertEqual(response.json()["public_link_base_url"], "https://media.yyapi.cloud")
             dashboard = client.get("/admin/api/dashboard").json()
-            self.assertEqual(dashboard["public_link_base_url"], "https://www.yyapi.cloud")
+            self.assertEqual(dashboard["public_link_base_url"], "https://media.yyapi.cloud")
             self.assertEqual(
                 dashboard["public_link_base_url_options"],
-                ["https://www.yyapi.cloud", "https://zl.yyapi.cloud"],
+                [
+                    "https://media.yyapi.cloud",
+                    "https://www.yyapi.cloud",
+                    "https://zl.yyapi.cloud",
+                ],
             )
         finally:
             database.set_public_link_base_url(original)
@@ -619,6 +623,7 @@ class CoreTests(unittest.TestCase):
             {"model": "audit-model", "prompt": "query domain"},
         )
         database.create_task(task_id, self.upstream["id"], relay_request_id, "audit-model", "videos", "queued")
+        database.set_public_task_id(relay_request_id, "task_query_domain")
         response = httpx.Response(
             200,
             request=httpx.Request("GET", "https://private-upstream.example/v1/videos/query-domain-task"),
@@ -643,7 +648,7 @@ class CoreTests(unittest.TestCase):
             payload = json.loads(result.body)
             self.assertEqual(
                 payload["video_url"],
-                "https://www.yyapi.cloud/public/videos/query-domain-task/content",
+                "https://www.yyapi.cloud/public/videos/task_query_domain/content",
             )
         finally:
             database.set_public_link_base_url(original)
@@ -719,6 +724,7 @@ class CoreTests(unittest.TestCase):
                 limited = client.get(f"/public/videos/{public_task_id}/content")
 
             self.assertEqual(first.status_code, 200)
+            self.assertEqual(first.headers["cache-control"], "private, no-store")
             self.assertEqual(range_request.status_code, 200)
             self.assertEqual(second.status_code, 200)
             self.assertEqual(limited.status_code, 429)
@@ -1205,7 +1211,13 @@ class CoreTests(unittest.TestCase):
                 return response
 
         with patch("app.proxy.httpx.AsyncClient", return_value=MockAsyncClient()):
-            result = asyncio.run(create_video({"model": "audit-model", "prompt": "test"}, None))
+            result = asyncio.run(
+                create_video(
+                    {"model": "audit-model", "prompt": "test"},
+                    None,
+                    "task_public_create",
+                )
+            )
 
         relay_request_id = result.headers["X-Oneapi-Request-Id"]
         body = result.body.decode()
@@ -1214,6 +1226,8 @@ class CoreTests(unittest.TestCase):
         self.assertNotIn("pixellelabs", body)
         detail = database.get_audit_request(relay_request_id)
         self.assertEqual(detail["upstream_task_id"], "upstream-create-task")
+        self.assertEqual(detail["public_task_id"], "task_public_create")
+        self.assertIsNotNone(detail["public_download_expires_at"])
         self.assertIn("pixellelabs", detail["events"][0]["upstream_body"])
 
 
