@@ -224,7 +224,7 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(result.status_code, 200)
         self.assertEqual(captured["payload"]["model"], "native-image-model")
         public_url = json.loads(result.body)["data"][0]["url"]
-        self.assertTrue(public_url.startswith(f"{settings.public_base_url}/public/images/assets/img_"))
+        self.assertTrue(public_url.startswith(f"{database.get_public_link_base_url()}/public/images/assets/img_"))
         self.assertNotIn("/v1/images/assets/", public_url)
         self.assertNotIn("cdn.example", public_url)
 
@@ -489,6 +489,9 @@ class CoreTests(unittest.TestCase):
         self.assertIn("/v1/images/generations", response.text)
         self.assertIn("/public/images/assets/{asset_id}", response.text)
         self.assertNotIn("/v1/images/assets/{asset_id}", response.text)
+        self.assertNotIn("适配器", response.text)
+        self.assertNotIn("上游", response.text)
+        self.assertNotIn("ADAPTER_API_KEY", response.text)
 
     def test_adapter_endpoint_requires_channel_key(self):
         response = TestClient(app).get("/v1/models")

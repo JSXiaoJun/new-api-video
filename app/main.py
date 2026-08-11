@@ -251,7 +251,7 @@ def integration_document(_: tuple[str, dict] = Depends(admin_session)):
 @app.get("/admin/api/image-integration-document")
 def image_integration_document(_: tuple[str, dict] = Depends(admin_session)):
     content = build_image_integration_document(
-        settings.public_base_url,
+        database.get_public_link_base_url(),
         image_database.dashboard_data()["upstreams"],
     )
     return Response(
