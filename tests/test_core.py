@@ -471,6 +471,8 @@ class CoreTests(unittest.TestCase):
         self.assertIn("stable-manxue", response.text)
         self.assertNotIn("manxue-900-10s", response.text)
         self.assertIn("/v1/videos", response.text)
+        self.assertIn("/public/videos/task_xxx/content", response.text)
+        self.assertNotIn("/v1/videos/task_xxx/content", response.text)
 
     def test_adapter_endpoint_requires_channel_key(self):
         response = TestClient(app).get("/v1/models")
