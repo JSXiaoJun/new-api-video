@@ -486,6 +486,7 @@ class CoreTests(unittest.TestCase):
         response = client.get("/admin/api/image-integration-document")
         self.assertEqual(response.status_code, 200)
         self.assertIn("attachment; filename=\"image-api-integration.md\"", response.headers["content-disposition"])
+        self.assertIn("Base URL：`https://zl.yyapi.cloud`", response.text)
         self.assertIn("/v1/images/generations", response.text)
         self.assertIn("/public/images/assets/{asset_id}", response.text)
         self.assertNotIn("/v1/images/assets/{asset_id}", response.text)
