@@ -14,6 +14,7 @@ from fastapi.templating import Jinja2Templates
 from . import database, image_database, image_proxy, proxy
 from .config import DEFAULT_PUBLIC_LINK_BASE_URL, PUBLIC_LINK_BASE_URLS, ROOT_DIR, settings
 from .integration_doc import build_integration_document
+from .image_integration_doc import build_image_integration_document
 from .model_profiles import profile_options, suggest_duration_override, suggest_profile
 from .schemas import (
     ImageUpstreamInput,
@@ -247,6 +248,19 @@ def integration_document(_: tuple[str, dict] = Depends(admin_session)):
     )
 
 
+@app.get("/admin/api/image-integration-document")
+def image_integration_document(_: tuple[str, dict] = Depends(admin_session)):
+    content = build_image_integration_document(
+        settings.public_base_url,
+        image_database.dashboard_data()["upstreams"],
+    )
+    return Response(
+        content=content,
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="image-api-integration.md"'},
+    )
+
+
 @app.get("/admin/api/tasks")
 def audit_tasks(
     q: str = Query(default="", max_length=191),
@@ -431,6 +445,11 @@ def models():
 
 @app.get("/v1/images/assets/{asset_id}", include_in_schema=False)
 async def image_asset(asset_id: str, request: Request):
+    return await image_proxy.stream_image_asset(asset_id, request)
+
+
+@app.get("/public/images/assets/{asset_id}", include_in_schema=False)
+async def public_image_asset(asset_id: str, request: Request):
     return await image_proxy.stream_image_asset(asset_id, request)
 
 

@@ -124,7 +124,7 @@ def _anonymize_image_urls(upstream_response: httpx.Response) -> dict[str, Any] |
         if not is_safe_image_source_url(source_url):
             raise ValueError("invalid_image_url")
         asset_id = image_database.create_image_asset(source_url)
-        item["url"] = f"{settings.public_base_url}/v1/images/assets/{asset_id}"
+        item["url"] = f"{settings.public_base_url}/public/images/assets/{asset_id}"
         changed = True
     return payload if changed else None
 

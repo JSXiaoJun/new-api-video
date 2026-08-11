@@ -224,7 +224,8 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(result.status_code, 200)
         self.assertEqual(captured["payload"]["model"], "native-image-model")
         public_url = json.loads(result.body)["data"][0]["url"]
-        self.assertTrue(public_url.startswith(f"{settings.public_base_url}/v1/images/assets/img_"))
+        self.assertTrue(public_url.startswith(f"{settings.public_base_url}/public/images/assets/img_"))
+        self.assertNotIn("/v1/images/assets/", public_url)
         self.assertNotIn("cdn.example", public_url)
 
     def test_image_proxy_sanitizes_upstream_error_details(self):
@@ -350,10 +351,14 @@ class CoreTests(unittest.TestCase):
             return Response(content=b"png-bytes", media_type="image/png")
 
         with patch("app.image_proxy.proxy.stream_upstream_content", new=mock_stream):
-            response = TestClient(app).get(f"/v1/images/assets/{asset_id}")
+            client = TestClient(app)
+            response = client.get(f"/v1/images/assets/{asset_id}")
+            public_response = client.get(f"/public/images/assets/{asset_id}")
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.content, b"png-bytes")
+        self.assertEqual(public_response.status_code, 200)
+        self.assertEqual(public_response.content, b"png-bytes")
         self.assertEqual(response.headers["content-type"], "image/png")
         self.assertEqual(captured["url"], source_url)
         self.assertEqual(captured["timeout"], settings.image_upstream_timeout_seconds)
@@ -473,6 +478,17 @@ class CoreTests(unittest.TestCase):
         self.assertIn("/v1/videos", response.text)
         self.assertIn("/public/videos/task_xxx/content", response.text)
         self.assertNotIn("/v1/videos/task_xxx/content", response.text)
+
+    def test_admin_can_download_image_integration_document(self):
+        client = TestClient(app)
+        self.assertEqual(client.get("/admin/api/image-integration-document").status_code, 401)
+        client.cookies.set(SESSION_COOKIE, create_session("admin"))
+        response = client.get("/admin/api/image-integration-document")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("attachment; filename=\"image-api-integration.md\"", response.headers["content-disposition"])
+        self.assertIn("/v1/images/generations", response.text)
+        self.assertIn("/public/images/assets/{asset_id}", response.text)
+        self.assertNotIn("/v1/images/assets/{asset_id}", response.text)
 
     def test_adapter_endpoint_requires_channel_key(self):
         response = TestClient(app).get("/v1/models")

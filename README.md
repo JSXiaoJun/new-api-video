@@ -60,8 +60,8 @@ empty uses that upstream name as the public name when saving. Supported fixed du
 `12s`, and `15s`, and multiple values can be selected for one model. `工作台类型` remains a single selection because
 it determines the upstream request format.
 
-Use `生成对接文档` in the admin page to download a Markdown document generated from the currently enabled public
-models and their configured capabilities.
+Use `生成对接文档` in the video or image admin page to download a Markdown document generated from the currently
+enabled public models and their configured capabilities.
 
 ## Docker
 
@@ -105,8 +105,15 @@ GET  /v1/model-capabilities  (public capability metadata)
 POST /v1/videos
 GET  /v1/videos/{task_id}
 GET  /v1/videos/{task_id}/content
+POST /v1/images/generations
+POST /v1/images/edits
+GET  /public/images/assets/{asset_id}  (public image asset, no adapter key)
 GET  /healthz
 ```
+
+Image generation and editing responses replace upstream image URLs with
+`/public/images/assets/{asset_id}` links. These links do not require the adapter API key and are retained for 7
+days; `b64_json` response data is returned unchanged.
 
 Task polling responses intentionally omit upstream `id`, `task_id`, and `video_url` fields. Clients must keep the
 public task ID returned by New API when the task is created and download through
