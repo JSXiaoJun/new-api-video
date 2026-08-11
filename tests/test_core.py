@@ -620,7 +620,40 @@ class CoreTests(unittest.TestCase):
         finally:
             database.set_public_link_base_url(original)
 
-    def test_public_video_route_counts_download_starts_and_allows_range_requests(self):
+    def test_public_video_download_limit_setting_is_admin_only_and_persisted(self):
+        client = TestClient(app)
+        self.assertEqual(
+            client.put("/admin/api/settings/public-video", json={"download_limit": 2}).status_code,
+            401,
+        )
+
+        session = create_session("admin")
+        client.cookies.set(SESSION_COOKIE, session)
+        headers = {"X-CSRF-Token": csrf_token(session)}
+        for invalid_limit in (0, 10001):
+            self.assertEqual(
+                client.put(
+                    "/admin/api/settings/public-video",
+                    json={"download_limit": invalid_limit},
+                    headers=headers,
+                ).status_code,
+                422,
+            )
+
+        original = database.get_public_video_download_limit()
+        try:
+            response = client.put(
+                "/admin/api/settings/public-video",
+                json={"download_limit": 2},
+                headers=headers,
+            )
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["public_video_download_limit"], 2)
+            self.assertEqual(client.get("/admin/api/dashboard").json()["public_video_download_limit"], 2)
+        finally:
+            database.set_public_video_download_limit(original)
+
+    def test_public_video_route_uses_configured_limit_and_allows_range_requests(self):
         relay_request_id = database.start_audit_request(
             self.upstream["id"],
             "audit-model",
@@ -644,29 +677,31 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(selected_task_id, task_id)
             return Response(content=b"video", media_type="video/mp4")
 
-        client = TestClient(app)
-        with patch("app.main.proxy.stream_content", new=mock_stream):
-            first = client.get(f"/public/videos/{public_task_id}/content")
-            range_request = client.get(
-                f"/public/videos/{public_task_id}/content",
-                headers={"Range": "bytes=100-200"},
-            )
-            for _ in range(49):
-                self.assertEqual(
-                    client.get(f"/public/videos/{public_task_id}/content").status_code,
-                    200,
+        original_limit = database.get_public_video_download_limit()
+        try:
+            database.set_public_video_download_limit(2)
+            client = TestClient(app)
+            with patch("app.main.proxy.stream_content", new=mock_stream):
+                first = client.get(f"/public/videos/{public_task_id}/content")
+                range_request = client.get(
+                    f"/public/videos/{public_task_id}/content",
+                    headers={"Range": "bytes=100-200"},
                 )
-            limited = client.get(f"/public/videos/{public_task_id}/content")
+                second = client.get(f"/public/videos/{public_task_id}/content")
+                limited = client.get(f"/public/videos/{public_task_id}/content")
 
-        self.assertEqual(first.status_code, 200)
-        self.assertEqual(range_request.status_code, 200)
-        self.assertEqual(limited.status_code, 429)
-        with database.connection() as conn:
-            count = conn.execute(
-                "SELECT public_download_count FROM audit_requests WHERE relay_request_id = ?",
-                (relay_request_id,),
-            ).fetchone()["public_download_count"]
-        self.assertEqual(count, 50)
+            self.assertEqual(first.status_code, 200)
+            self.assertEqual(range_request.status_code, 200)
+            self.assertEqual(second.status_code, 200)
+            self.assertEqual(limited.status_code, 429)
+            with database.connection() as conn:
+                count = conn.execute(
+                    "SELECT public_download_count FROM audit_requests WHERE relay_request_id = ?",
+                    (relay_request_id,),
+                ).fetchone()["public_download_count"]
+            self.assertEqual(count, 2)
+        finally:
+            database.set_public_video_download_limit(original_limit)
 
     def test_public_video_route_releases_count_when_stream_setup_fails(self):
         relay_request_id = database.start_audit_request(

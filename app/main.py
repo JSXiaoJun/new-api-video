@@ -20,6 +20,7 @@ from .schemas import (
     LoginInput,
     ModelDiscoveryInput,
     PublicLinkSettingsInput,
+    PublicVideoDownloadSettingsInput,
     PublicTaskInput,
     UpstreamInput,
 )
@@ -216,12 +217,21 @@ def dashboard_api(_: tuple[str, dict] = Depends(admin_session)):
         "profiles": profile_options(),
         "public_link_base_url": database.get_public_link_base_url(),
         "public_link_base_url_options": PUBLIC_LINK_BASE_URLS,
+        "public_video_download_limit": database.get_public_video_download_limit(),
     }
 
 
 @app.put("/admin/api/settings/public-link")
 def update_public_link_settings(payload: PublicLinkSettingsInput, _: dict = Depends(admin_mutation)):
     return {"public_link_base_url": database.set_public_link_base_url(payload.public_base_url)}
+
+
+@app.put("/admin/api/settings/public-video")
+def update_public_video_settings(
+    payload: PublicVideoDownloadSettingsInput,
+    _: dict = Depends(admin_mutation),
+):
+    return {"public_video_download_limit": database.set_public_video_download_limit(payload.download_limit)}
 
 
 @app.get("/admin/api/integration-document")

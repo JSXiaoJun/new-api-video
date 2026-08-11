@@ -116,6 +116,10 @@ class PublicLinkSettingsInput(BaseModel):
     ]
 
 
+class PublicVideoDownloadSettingsInput(BaseModel):
+    download_limit: int = Field(ge=1, le=10000)
+
+
 class ImageRouteInput(BaseModel):
     public_model: str = Field(min_length=1, max_length=160)
     upstream_model: str = Field(min_length=1, max_length=160)

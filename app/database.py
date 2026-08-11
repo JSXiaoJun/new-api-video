@@ -13,6 +13,8 @@ from .security import secret_box
 
 
 PUBLIC_VIDEO_DOWNLOAD_LIMIT = 50
+PUBLIC_VIDEO_DOWNLOAD_LIMIT_MIN = 1
+PUBLIC_VIDEO_DOWNLOAD_LIMIT_MAX = 10_000
 PUBLIC_VIDEO_LINK_TTL_SECONDS = 24 * 60 * 60
 
 
@@ -142,6 +144,10 @@ def initialize() -> None:
         conn.execute(
             "INSERT OR IGNORE INTO app_settings(key, value, updated_at) VALUES('public_link_base_url', ?, ?)",
             (default_public_link_base_url, int(time.time())),
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO app_settings(key, value, updated_at) VALUES('public_video_download_limit', ?, ?)",
+            (str(PUBLIC_VIDEO_DOWNLOAD_LIMIT), int(time.time())),
         )
         task_columns = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()}
         if "relay_request_id" not in task_columns:
@@ -696,6 +702,40 @@ def public_video_url(task_id: str) -> str:
     return f"{get_public_link_base_url()}/public/videos/{task_id}/content"
 
 
+def get_public_video_download_limit() -> int:
+    with connection() as conn:
+        row = conn.execute(
+            "SELECT value FROM app_settings WHERE key = 'public_video_download_limit'",
+        ).fetchone()
+    if row is None:
+        return PUBLIC_VIDEO_DOWNLOAD_LIMIT
+    try:
+        value = int(row["value"])
+    except (TypeError, ValueError):
+        return PUBLIC_VIDEO_DOWNLOAD_LIMIT
+    if not PUBLIC_VIDEO_DOWNLOAD_LIMIT_MIN <= value <= PUBLIC_VIDEO_DOWNLOAD_LIMIT_MAX:
+        return PUBLIC_VIDEO_DOWNLOAD_LIMIT
+    return value
+
+
+def set_public_video_download_limit(value: int) -> int:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not PUBLIC_VIDEO_DOWNLOAD_LIMIT_MIN <= value <= PUBLIC_VIDEO_DOWNLOAD_LIMIT_MAX
+    ):
+        raise ValueError("public_video_download_limit_out_of_range")
+    with connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO app_settings(key, value, updated_at) VALUES('public_video_download_limit', ?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+            """,
+            (str(value), int(time.time())),
+        )
+    return value
+
+
 def get_task_by_public_task_id(public_task_id: str) -> dict[str, Any] | None:
     with connection() as conn:
         row = conn.execute(
@@ -718,6 +758,15 @@ def get_task_by_public_task_id(public_task_id: str) -> dict[str, Any] | None:
 def reserve_public_video_download(public_task_id: str, now: int | None = None) -> str:
     current_time = int(time.time()) if now is None else now
     with connection() as conn:
+        setting = conn.execute(
+            "SELECT value FROM app_settings WHERE key = 'public_video_download_limit'",
+        ).fetchone()
+        try:
+            download_limit = int(setting["value"]) if setting is not None else PUBLIC_VIDEO_DOWNLOAD_LIMIT
+        except (TypeError, ValueError):
+            download_limit = PUBLIC_VIDEO_DOWNLOAD_LIMIT
+        if not PUBLIC_VIDEO_DOWNLOAD_LIMIT_MIN <= download_limit <= PUBLIC_VIDEO_DOWNLOAD_LIMIT_MAX:
+            download_limit = PUBLIC_VIDEO_DOWNLOAD_LIMIT
         cursor = conn.execute(
             """
             UPDATE audit_requests
@@ -727,7 +776,7 @@ def reserve_public_video_download(public_task_id: str, now: int | None = None) -
               AND public_download_expires_at > ?
               AND public_download_count < ?
             """,
-            (public_task_id, current_time, PUBLIC_VIDEO_DOWNLOAD_LIMIT),
+            (public_task_id, current_time, download_limit),
         )
         if cursor.rowcount > 0:
             return "reserved"
@@ -744,7 +793,7 @@ def reserve_public_video_download(public_task_id: str, now: int | None = None) -
         return "not_completed"
     if row["public_download_expires_at"] is None or row["public_download_expires_at"] <= current_time:
         return "expired"
-    if row["public_download_count"] >= PUBLIC_VIDEO_DOWNLOAD_LIMIT:
+    if row["public_download_count"] >= download_limit:
         return "limit_reached"
     return "unavailable"
 

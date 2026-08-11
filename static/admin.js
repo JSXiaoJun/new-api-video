@@ -14,6 +14,8 @@ const copyAuditJsonButton = document.querySelector('#copy-audit-json')
 const MAX_DURATION_SECONDS = 60
 const publicLinkForm = document.querySelector('#public-link-form')
 const publicLinkBaseUrl = document.querySelector('#public-link-base-url')
+const publicVideoSettingsForm = document.querySelector('#public-video-settings-form')
+const publicVideoDownloadLimit = document.querySelector('#public-video-download-limit')
 let dashboard = { upstreams: [], tasks: [], stats: {} }
 let activeAudit = null
 let activeAuditView = 'request'
@@ -102,6 +104,7 @@ function render() {
     .map((url) => `<option value="${escapeHtml(url)}">${escapeHtml(url)}</option>`)
     .join('')
   publicLinkBaseUrl.value = dashboard.public_link_base_url || 'https://zl.yyapi.cloud'
+  publicVideoDownloadLimit.value = dashboard.public_video_download_limit || 50
 
   const upstreamRows = document.querySelector('#upstream-rows')
   upstreamRows.innerHTML = dashboard.upstreams.map((upstream) => `
@@ -488,6 +491,25 @@ publicLinkForm.addEventListener('submit', async (event) => {
     })
     dashboard.public_link_base_url = result.public_link_base_url
     showToast('返回域名已保存')
+  } catch (error) {
+    showToast(error.message, 'error')
+  } finally {
+    button.disabled = false
+  }
+})
+publicVideoSettingsForm.addEventListener('submit', async (event) => {
+  event.preventDefault()
+  const button = publicVideoSettingsForm.querySelector('button[type="submit"]')
+  button.disabled = true
+  try {
+    const result = await api('/admin/api/settings/public-video', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ download_limit: Number(publicVideoDownloadLimit.value) }),
+    })
+    dashboard.public_video_download_limit = result.public_video_download_limit
+    publicVideoDownloadLimit.value = result.public_video_download_limit
+    showToast('下载上限已保存')
   } catch (error) {
     showToast(error.message, 'error')
   } finally {

@@ -111,7 +111,8 @@ GET  /healthz
 Task polling responses intentionally omit upstream `id`, `task_id`, and `video_url` fields. Clients must keep the
 public task ID returned by New API when the task is created and download through
 `/public/videos/{public_task_id}/content` on the New API domain. This public link is valid for 24 hours and allows up to
-50 download starts for the video. New API must proxy this path to the adapter's unauthenticated public-video route.
+The default is 50 download starts per video; this limit can be changed from the admin page (1-10,000). New API must
+proxy this path to the adapter's unauthenticated public-video route.
 
 ## Task Audit
 
