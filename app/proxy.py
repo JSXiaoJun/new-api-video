@@ -4,7 +4,7 @@ import logging
 import time
 import uuid
 from typing import Any, Callable
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 from fastapi import HTTPException, Request
@@ -317,10 +317,33 @@ async def stream_content(task_id: str, request: Request) -> StreamingResponse:
     else:
         source_url = f"{task['base_url']}/v1/videos/{task_id}/content"
 
+    request_headers = {}
+    if same_origin(source_url, task["base_url"]):
+        request_headers["Authorization"] = f"Bearer {task['api_key']}"
+
     return await stream_upstream_content(
         source_url,
         request,
-        headers={"Authorization": f"Bearer {task['api_key']}"},
+        headers=request_headers,
         default_media_type="video/mp4",
         error_message="Video upstream download failed",
+    )
+
+
+def same_origin(left_url: str, right_url: str) -> bool:
+    try:
+        left = urlsplit(left_url)
+        right = urlsplit(right_url)
+        left_port = left.port or (443 if left.scheme.lower() == "https" else 80)
+        right_port = right.port or (443 if right.scheme.lower() == "https" else 80)
+    except ValueError:
+        return False
+    return (
+        left.scheme.lower(),
+        (left.hostname or "").lower(),
+        left_port,
+    ) == (
+        right.scheme.lower(),
+        (right.hostname or "").lower(),
+        right_port,
     )

@@ -26,7 +26,7 @@ from app.config import settings
 from app.main import app, normalize_discovered_models
 from app.image_proxy import classify_health_outcome, forward_json
 from app.model_profiles import capabilities_for, transform_create_payload
-from app.proxy import create_video, fetch_task, normalize_status, normalize_task_payload, upstream_error
+from app.proxy import create_video, fetch_task, normalize_status, normalize_task_payload, stream_content, upstream_error
 from app.security import SESSION_COOKIE, create_session, csrf_token, read_session, secret_box
 from fastapi.responses import Response
 from fastapi.testclient import TestClient
@@ -771,6 +771,68 @@ class CoreTests(unittest.TestCase):
                 (relay_request_id,),
             ).fetchone()["public_download_count"]
         self.assertEqual(count, 0)
+
+    def test_video_stream_does_not_send_api_key_to_cross_origin_signed_url(self):
+        relay_request_id = database.start_audit_request(
+            self.upstream["id"],
+            "audit-model",
+            "videos",
+            {"model": "audit-model", "prompt": "signed video"},
+        )
+        task_id = f"signed-video-{time.time_ns()}"
+        database.create_task(
+            task_id,
+            self.upstream["id"],
+            relay_request_id,
+            "audit-model",
+            "videos",
+            "completed",
+        )
+        signed_url = "https://asset.ai666.live/video.mp4?X-Amz-Algorithm=AWS4-HMAC-SHA256"
+        database.update_task(task_id, "completed", signed_url, None)
+        captured = {}
+
+        async def mock_stream(source_url, _request, headers=None, **_kwargs):
+            captured["source_url"] = source_url
+            captured["headers"] = headers
+            return Response(content=b"video", media_type="video/mp4")
+
+        request = httpx.Request("GET", "https://media.yyapi.cloud/public/videos/task_public/content")
+        with patch("app.proxy.stream_upstream_content", new=mock_stream):
+            asyncio.run(stream_content(task_id, request))
+
+        self.assertEqual(captured["source_url"], signed_url)
+        self.assertNotIn("Authorization", captured["headers"])
+
+    def test_video_stream_keeps_api_key_for_same_origin_content(self):
+        relay_request_id = database.start_audit_request(
+            self.upstream["id"],
+            "audit-model",
+            "videos",
+            {"model": "audit-model", "prompt": "same-origin video"},
+        )
+        task_id = f"same-origin-video-{time.time_ns()}"
+        database.create_task(
+            task_id,
+            self.upstream["id"],
+            relay_request_id,
+            "audit-model",
+            "videos",
+            "completed",
+        )
+        content_url = "https://private-upstream.example/v1/videos/source/content"
+        database.update_task(task_id, "completed", content_url, None)
+        captured = {}
+
+        async def mock_stream(_source_url, _request, headers=None, **_kwargs):
+            captured["headers"] = headers
+            return Response(content=b"video", media_type="video/mp4")
+
+        request = httpx.Request("GET", "https://media.yyapi.cloud/public/videos/task_public/content")
+        with patch("app.proxy.stream_upstream_content", new=mock_stream):
+            asyncio.run(stream_content(task_id, request))
+
+        self.assertEqual(captured["headers"]["Authorization"], "Bearer private-key")
 
     def test_initialize_migrates_legacy_tasks_without_data_loss(self):
         with tempfile.TemporaryDirectory() as data_dir:
