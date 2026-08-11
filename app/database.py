@@ -12,6 +12,10 @@ from .model_profiles import MAX_DURATION_SECONDS, capabilities_for, suggest_prof
 from .security import secret_box
 
 
+PUBLIC_VIDEO_DOWNLOAD_LIMIT = 50
+PUBLIC_VIDEO_LINK_TTL_SECONDS = 24 * 60 * 60
+
+
 settings.data_dir.mkdir(parents=True, exist_ok=True)
 DB_PATH = settings.data_dir / "adapter.db"
 
@@ -101,6 +105,8 @@ def initialize() -> None:
                 request_payload_encrypted TEXT,
                 source_video_url_encrypted TEXT,
                 error TEXT,
+                public_download_count INTEGER NOT NULL DEFAULT 0,
+                public_download_expires_at INTEGER,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL
             );
@@ -141,6 +147,22 @@ def initialize() -> None:
         if "relay_request_id" not in task_columns:
             conn.execute("ALTER TABLE tasks ADD COLUMN relay_request_id TEXT")
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_relay_request_id ON tasks(relay_request_id)")
+
+        audit_columns = {row["name"] for row in conn.execute("PRAGMA table_info(audit_requests)").fetchall()}
+        if "public_download_count" not in audit_columns:
+            conn.execute(
+                "ALTER TABLE audit_requests ADD COLUMN public_download_count INTEGER NOT NULL DEFAULT 0"
+            )
+        if "public_download_expires_at" not in audit_columns:
+            conn.execute("ALTER TABLE audit_requests ADD COLUMN public_download_expires_at INTEGER")
+        conn.execute(
+            """
+            UPDATE audit_requests
+            SET public_download_expires_at = updated_at + ?
+            WHERE public_task_id IS NOT NULL AND public_download_expires_at IS NULL
+            """,
+            (PUBLIC_VIDEO_LINK_TTL_SECONDS,),
+        )
 
         route_columns = {row["name"] for row in conn.execute("PRAGMA table_info(model_routes)").fetchall()}
         if "upstream_model" not in route_columns:
@@ -624,10 +646,38 @@ def get_audit_request(relay_request_id: str) -> dict[str, Any] | None:
 
 
 def set_public_task_id(relay_request_id: str, public_task_id: str) -> bool:
+    normalized_public_task_id = public_task_id or None
+    now = int(time.time())
     with connection() as conn:
+        existing = conn.execute(
+            "SELECT public_task_id FROM audit_requests WHERE relay_request_id = ?",
+            (relay_request_id,),
+        ).fetchone()
+        if existing is None:
+            return False
+        if normalized_public_task_id:
+            conflict = conn.execute(
+                """
+                SELECT relay_request_id FROM audit_requests
+                WHERE public_task_id = ? AND relay_request_id != ?
+                """,
+                (normalized_public_task_id, relay_request_id),
+            ).fetchone()
+            if conflict is not None:
+                raise ValueError("public_task_id_in_use")
         cursor = conn.execute(
-            "UPDATE audit_requests SET public_task_id = ?, updated_at = ? WHERE relay_request_id = ?",
-            (public_task_id or None, int(time.time()), relay_request_id),
+            """
+            UPDATE audit_requests
+            SET public_task_id = ?, public_download_count = 0,
+                public_download_expires_at = ?, updated_at = ?
+            WHERE relay_request_id = ?
+            """,
+            (
+                normalized_public_task_id,
+                now + PUBLIC_VIDEO_LINK_TTL_SECONDS if normalized_public_task_id else None,
+                now,
+                relay_request_id,
+            ),
         )
     return cursor.rowcount > 0
 
@@ -643,7 +693,72 @@ def get_public_link_base_url() -> str:
 
 
 def public_video_url(task_id: str) -> str:
-    return f"{get_public_link_base_url()}/v1/videos/{task_id}/content"
+    return f"{get_public_link_base_url()}/public/videos/{task_id}/content"
+
+
+def get_task_by_public_task_id(public_task_id: str) -> dict[str, Any] | None:
+    with connection() as conn:
+        row = conn.execute(
+            """
+            SELECT t.task_id
+            FROM tasks t
+            JOIN audit_requests a ON a.relay_request_id = t.relay_request_id
+            WHERE a.public_task_id = ?
+              AND a.status = 'completed'
+              AND t.status = 'completed'
+            LIMIT 1
+            """,
+            (public_task_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    return get_task(row["task_id"])
+
+
+def reserve_public_video_download(public_task_id: str, now: int | None = None) -> str:
+    current_time = int(time.time()) if now is None else now
+    with connection() as conn:
+        cursor = conn.execute(
+            """
+            UPDATE audit_requests
+            SET public_download_count = public_download_count + 1
+            WHERE public_task_id = ?
+              AND status = 'completed'
+              AND public_download_expires_at > ?
+              AND public_download_count < ?
+            """,
+            (public_task_id, current_time, PUBLIC_VIDEO_DOWNLOAD_LIMIT),
+        )
+        if cursor.rowcount > 0:
+            return "reserved"
+        row = conn.execute(
+            """
+            SELECT status, public_download_expires_at, public_download_count
+            FROM audit_requests WHERE public_task_id = ?
+            """,
+            (public_task_id,),
+        ).fetchone()
+    if row is None:
+        return "not_found"
+    if row["status"] != "completed":
+        return "not_completed"
+    if row["public_download_expires_at"] is None or row["public_download_expires_at"] <= current_time:
+        return "expired"
+    if row["public_download_count"] >= PUBLIC_VIDEO_DOWNLOAD_LIMIT:
+        return "limit_reached"
+    return "unavailable"
+
+
+def release_public_video_download(public_task_id: str) -> None:
+    with connection() as conn:
+        conn.execute(
+            """
+            UPDATE audit_requests
+            SET public_download_count = public_download_count - 1
+            WHERE public_task_id = ? AND public_download_count > 0
+            """,
+            (public_task_id,),
+        )
 
 
 def set_public_link_base_url(value: str) -> str:

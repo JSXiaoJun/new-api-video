@@ -575,7 +575,7 @@ class CoreTests(unittest.TestCase):
         try:
             database.set_public_link_base_url("https://www.yyapi.cloud")
             detail = database.get_audit_request(relay_request_id)
-            expected = "https://www.yyapi.cloud/v1/videos/task_domain_selection/content"
+            expected = "https://www.yyapi.cloud/public/videos/task_domain_selection/content"
             self.assertEqual(detail["sanitized_video_url"], expected)
             for field in ("url", "video_url", "result_url", "download_url"):
                 self.assertEqual(detail["events"][0]["sanitized_body"][field], expected)
@@ -615,10 +615,93 @@ class CoreTests(unittest.TestCase):
             payload = json.loads(result.body)
             self.assertEqual(
                 payload["video_url"],
-                "https://www.yyapi.cloud/v1/videos/query-domain-task/content",
+                "https://www.yyapi.cloud/public/videos/query-domain-task/content",
             )
         finally:
             database.set_public_link_base_url(original)
+
+    def test_public_video_route_counts_download_starts_and_allows_range_requests(self):
+        relay_request_id = database.start_audit_request(
+            self.upstream["id"],
+            "audit-model",
+            "videos",
+            {"model": "audit-model", "prompt": "public download"},
+        )
+        task_id = f"public-download-{time.time_ns()}"
+        public_task_id = f"task_public_download_{time.time_ns()}"
+        database.create_task(
+            task_id,
+            self.upstream["id"],
+            relay_request_id,
+            "audit-model",
+            "videos",
+            "queued",
+        )
+        database.update_task(task_id, "completed", "https://cdn.example/public.mp4", None)
+        self.assertTrue(database.set_public_task_id(relay_request_id, public_task_id))
+
+        async def mock_stream(selected_task_id, request):
+            self.assertEqual(selected_task_id, task_id)
+            return Response(content=b"video", media_type="video/mp4")
+
+        client = TestClient(app)
+        with patch("app.main.proxy.stream_content", new=mock_stream):
+            first = client.get(f"/public/videos/{public_task_id}/content")
+            range_request = client.get(
+                f"/public/videos/{public_task_id}/content",
+                headers={"Range": "bytes=100-200"},
+            )
+            for _ in range(49):
+                self.assertEqual(
+                    client.get(f"/public/videos/{public_task_id}/content").status_code,
+                    200,
+                )
+            limited = client.get(f"/public/videos/{public_task_id}/content")
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(range_request.status_code, 200)
+        self.assertEqual(limited.status_code, 429)
+        with database.connection() as conn:
+            count = conn.execute(
+                "SELECT public_download_count FROM audit_requests WHERE relay_request_id = ?",
+                (relay_request_id,),
+            ).fetchone()["public_download_count"]
+        self.assertEqual(count, 50)
+
+    def test_public_video_route_releases_count_when_stream_setup_fails(self):
+        relay_request_id = database.start_audit_request(
+            self.upstream["id"],
+            "audit-model",
+            "videos",
+            {"model": "audit-model", "prompt": "public download failure"},
+        )
+        task_id = f"public-download-failure-{time.time_ns()}"
+        public_task_id = f"task_public_download_failure_{time.time_ns()}"
+        database.create_task(
+            task_id,
+            self.upstream["id"],
+            relay_request_id,
+            "audit-model",
+            "videos",
+            "queued",
+        )
+        database.update_task(task_id, "completed", "https://cdn.example/public.mp4", None)
+        self.assertTrue(database.set_public_task_id(relay_request_id, public_task_id))
+
+        async def failed_stream(*_args, **_kwargs):
+            raise RuntimeError("upstream unavailable")
+
+        client = TestClient(app)
+        with patch("app.main.proxy.stream_content", new=failed_stream):
+            with self.assertRaises(RuntimeError):
+                client.get(f"/public/videos/{public_task_id}/content")
+
+        with database.connection() as conn:
+            count = conn.execute(
+                "SELECT public_download_count FROM audit_requests WHERE relay_request_id = ?",
+                (relay_request_id,),
+            ).fetchone()["public_download_count"]
+        self.assertEqual(count, 0)
 
     def test_initialize_migrates_legacy_tasks_without_data_loss(self):
         with tempfile.TemporaryDirectory() as data_dir:
@@ -981,7 +1064,7 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(detail["source_video_url"], "https://api.pixellelabs.com/private.mp4")
         self.assertEqual(
             detail["sanitized_video_url"],
-            "https://zl.yyapi.cloud/v1/videos/task_public_123/content",
+            "https://zl.yyapi.cloud/public/videos/task_public_123/content",
         )
         sanitized = detail["events"][0]["sanitized_body"]
         for field in ("url", "video_url", "result_url", "download_url"):

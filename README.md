@@ -110,7 +110,8 @@ GET  /healthz
 
 Task polling responses intentionally omit upstream `id`, `task_id`, and `video_url` fields. Clients must keep the
 public task ID returned by New API when the task is created and download through
-`/v1/videos/{public_task_id}/content` on the New API domain.
+`/public/videos/{public_task_id}/content` on the New API domain. This public link is valid for 24 hours and allows up to
+50 download starts for the video. New API must proxy this path to the adapter's unauthenticated public-video route.
 
 ## Task Audit
 
@@ -130,6 +131,6 @@ admin task audit page to inspect the encrypted request history, upstream task ID
 responses, and the real video source URL.
 
 New API's public `task_...` ID is generated outside the adapter, so paste it into the matching audit detail when a
-public `https://zl.yyapi.cloud/v1/videos/{task_id}/content` link is needed. For completed tasks, the audit view adds
-that public URL to `url`, `video_url`, `result_url`, and `download_url` in the sanitized response. Audit payloads and
-source URLs are stored encrypted with `ENCRYPTION_KEY`; keep that key and `data/adapter.db` backed up together.
+public `https://zl.yyapi.cloud/public/videos/{task_id}/content` link is needed. For completed tasks, the audit view
+adds that public URL to `url`, `video_url`, `result_url`, and `download_url` in the sanitized response. Audit payloads
+and source URLs are stored encrypted with `ENCRYPTION_KEY`; keep that key and `data/adapter.db` backed up together.

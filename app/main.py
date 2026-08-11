@@ -260,7 +260,11 @@ def update_public_task(
     payload: PublicTaskInput,
     _: dict = Depends(admin_mutation),
 ):
-    if not database.set_public_task_id(relay_request_id, payload.public_task_id):
+    try:
+        updated = database.set_public_task_id(relay_request_id, payload.public_task_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail="Public task ID is already assigned") from exc
+    if not updated:
         raise HTTPException(status_code=404, detail="Task not found")
     task = database.get_audit_request(relay_request_id)
     if task is None:
@@ -418,6 +422,34 @@ def models():
 @app.get("/v1/images/assets/{asset_id}", include_in_schema=False)
 async def image_asset(asset_id: str, request: Request):
     return await image_proxy.stream_image_asset(asset_id, request)
+
+
+def _starts_public_video_download(request: Request) -> bool:
+    range_header = request.headers.get("range", "").strip().lower()
+    return not range_header or range_header.startswith("bytes=0-")
+
+
+@app.get("/public/videos/{public_task_id}/content", include_in_schema=False)
+async def public_video_content(public_task_id: str, request: Request):
+    task = database.get_task_by_public_task_id(public_task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Public video not found")
+
+    counted = _starts_public_video_download(request)
+    if counted:
+        reservation = database.reserve_public_video_download(public_task_id)
+        if reservation == "expired":
+            raise HTTPException(status_code=410, detail="Public video link has expired")
+        if reservation == "limit_reached":
+            raise HTTPException(status_code=429, detail="Public video download limit reached")
+        if reservation != "reserved":
+            raise HTTPException(status_code=404, detail="Public video not found")
+    try:
+        return await proxy.stream_content(task["task_id"], request)
+    except Exception:
+        if counted:
+            database.release_public_video_download(public_task_id)
+        raise
 
 
 @app.post("/v1/images/generations", dependencies=[Depends(adapter_auth)])
