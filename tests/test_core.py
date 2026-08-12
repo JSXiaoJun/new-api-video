@@ -1145,6 +1145,16 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(response.headers["access-control-allow-origin"], "https://image.yyapi.cloud")
         self.assertTrue(any(item["id"] == "audit-model" for item in response.json()["data"]))
 
+    def test_media_cors_exposes_stream_metadata(self):
+        response = TestClient(app).get(
+            "/healthz",
+            headers={"Origin": "https://image.yyapi.cloud"},
+        )
+        self.assertEqual(response.status_code, 200)
+        exposed = response.headers["access-control-expose-headers"].lower()
+        for header in ("content-type", "content-length", "content-disposition", "content-range", "accept-ranges"):
+            self.assertIn(header, exposed)
+
     def test_upstream_error_does_not_expose_provider_details(self):
         request = httpx.Request("POST", "https://private-upstream.example/v1/videos")
         response = httpx.Response(

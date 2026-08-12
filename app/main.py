@@ -43,6 +43,13 @@ app.add_middleware(
     allow_origins=[settings.workbench_origin],
     allow_methods=["GET", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=[
+        "Content-Type",
+        "Content-Length",
+        "Content-Disposition",
+        "Content-Range",
+        "Accept-Ranges",
+    ],
 )
 app.mount("/static", StaticFiles(directory=ROOT_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=ROOT_DIR / "templates")
