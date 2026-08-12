@@ -1397,6 +1397,60 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(response.headers["access-control-allow-origin"], "https://image.yyapi.cloud")
         self.assertTrue(any(item["id"] == "audit-model" for item in response.json()["data"]))
 
+    def test_new_api_video_gateway_preserves_user_auth_body_and_response(self):
+        captured = {}
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            captured["method"] = request.method
+            captured["url"] = str(request.url)
+            captured["authorization"] = request.headers.get("authorization")
+            captured["body"] = json.loads(request.content)
+            return httpx.Response(
+                201,
+                request=request,
+                json={"task_id": "task_public_123", "status": "queued"},
+                headers={"X-Oneapi-Request-Id": "req-123"},
+            )
+
+        transport = httpx.MockTransport(handler)
+        real_async_client = httpx.AsyncClient
+
+        def gateway_client(*args, **kwargs):
+            return real_async_client(transport=transport, follow_redirects=False)
+
+        client = TestClient(app)
+        with patch("app.new_api_gateway.httpx.AsyncClient", side_effect=gateway_client):
+            response = client.post(
+                "/new-api/v1/videos",
+                headers={
+                    "Authorization": "Bearer user-new-api-key",
+                    "Origin": "https://image.yyapi.cloud",
+                },
+                json={"model": "gemini-omni-flash", "prompt": "test"},
+            )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json()["task_id"], "task_public_123")
+        self.assertEqual(response.headers["x-oneapi-request-id"], "req-123")
+        self.assertEqual(response.headers["access-control-allow-origin"], "https://image.yyapi.cloud")
+        self.assertEqual(captured["method"], "POST")
+        self.assertEqual(captured["url"], f"{settings.new_api_gateway_base_url}/v1/videos")
+        self.assertEqual(captured["authorization"], "Bearer user-new-api-key")
+        self.assertEqual(captured["body"]["model"], "gemini-omni-flash")
+
+    def test_new_api_video_gateway_preflight_allows_workbench_post(self):
+        response = TestClient(app).options(
+            "/new-api/v1/videos",
+            headers={
+                "Origin": "https://image.yyapi.cloud",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "authorization,content-type",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["access-control-allow-origin"], "https://image.yyapi.cloud")
+        self.assertIn("POST", response.headers["access-control-allow-methods"])
+
     def test_media_cors_exposes_stream_metadata(self):
         response = TestClient(app).get(
             "/healthz",

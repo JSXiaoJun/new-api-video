@@ -50,11 +50,13 @@ class Settings:
     api_public_base_url: str
     public_base_url: str
     new_api_public_base_url: str
+    new_api_gateway_base_url: str
     workbench_origin: str
     cookie_secure: bool
     session_ttl_seconds: int
     upstream_timeout_seconds: float
     image_upstream_timeout_seconds: float
+    new_api_gateway_timeout_seconds: float
     data_dir: Path
 
 
@@ -98,11 +100,16 @@ def load_settings() -> Settings:
             "NEW_API_PUBLIC_BASE_URL",
             DEFAULT_PUBLIC_LINK_BASE_URL,
         ).rstrip("/"),
+        new_api_gateway_base_url=os.getenv(
+            "NEW_API_GATEWAY_BASE_URL",
+            "https://zl.yyapi.cloud",
+        ).rstrip("/"),
         workbench_origin=os.getenv("WORKBENCH_ORIGIN", "https://image.yyapi.cloud").rstrip("/"),
         cookie_secure=env_bool("COOKIE_SECURE"),
         session_ttl_seconds=session_ttl_days * 24 * 60 * 60,
         upstream_timeout_seconds=float(os.getenv("UPSTREAM_TIMEOUT_SECONDS", "60")),
         image_upstream_timeout_seconds=float(os.getenv("IMAGE_UPSTREAM_TIMEOUT_SECONDS", "360")),
+        new_api_gateway_timeout_seconds=float(os.getenv("NEW_API_GATEWAY_TIMEOUT_SECONDS", "930")),
         data_dir=data_dir,
     )
 

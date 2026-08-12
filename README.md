@@ -71,6 +71,11 @@ domain for downloads. A workbench can use `data[].id` from `/v1/model-capabiliti
 the response locally, and refresh it only after an explicit user action. This request does not use an API key. Set
 `WORKBENCH_ORIGIN` to the exact browser origin that may read the catalog.
 
+The workbench sends authenticated video requests to `/new-api/v1/videos` on this service. The gateway forwards only
+the video create, task query, and content routes to `NEW_API_GATEWAY_BASE_URL`, preserving the user's `Authorization`
+header so New API remains responsible for authentication, quota, and billing. New API then calls the regular
+`/v1/videos` adapter route with `ADAPTER_API_KEY`; keeping the gateway under `/new-api` prevents a proxy loop.
+
 ## Docker
 
 Pushes to `main` automatically build the `linux/amd64` image and publish both `latest` and `sha-<commit>` tags to:
@@ -110,6 +115,9 @@ Authorization: Bearer <ADAPTER_API_KEY>
 ```text
 GET  /v1/models
 GET  /v1/model-capabilities  (public capability metadata)
+POST /new-api/v1/videos  (workbench gateway to New API; user API key)
+GET  /new-api/v1/videos/{task_id}
+GET  /new-api/v1/videos/{task_id}/content
 POST /v1/videos
 GET  /v1/videos/{task_id}
 GET  /v1/videos/{task_id}/content

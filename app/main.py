@@ -5,13 +5,13 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Query, Request, Response
+from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Path as ApiPath, Query, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import database, image_database, image_proxy, proxy
+from . import database, image_database, image_proxy, new_api_gateway, proxy
 from .config import PUBLIC_LINK_BASE_URLS, ROOT_DIR, settings
 from .integration_doc import build_integration_document
 from .image_integration_doc import build_image_integration_document
@@ -41,7 +41,7 @@ app = FastAPI(title="Video Relay Console", docs_url=None, redoc_url=None, openap
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[settings.workbench_origin],
-    allow_methods=["GET", "OPTIONS"],
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
     expose_headers=[
         "Content-Type",
@@ -256,6 +256,27 @@ def integration_document(_: tuple[str, dict] = Depends(admin_session)):
         media_type="text/markdown; charset=utf-8",
         headers={"Content-Disposition": 'attachment; filename="video-api-integration.md"'},
     )
+
+
+@app.post("/new-api/v1/videos")
+async def new_api_create_video(request: Request):
+    return await new_api_gateway.forward(request, "/v1/videos")
+
+
+@app.get("/new-api/v1/videos/{task_id}")
+async def new_api_fetch_video(
+    request: Request,
+    task_id: str = ApiPath(max_length=191, pattern=r"^[A-Za-z0-9_-]+$"),
+):
+    return await new_api_gateway.forward(request, f"/v1/videos/{task_id}")
+
+
+@app.get("/new-api/v1/videos/{task_id}/content")
+async def new_api_video_content(
+    request: Request,
+    task_id: str = ApiPath(max_length=191, pattern=r"^[A-Za-z0-9_-]+$"),
+):
+    return await new_api_gateway.forward(request, f"/v1/videos/{task_id}/content", stream=True)
 
 
 @app.get("/admin/api/image-integration-document")
