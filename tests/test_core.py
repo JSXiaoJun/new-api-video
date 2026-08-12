@@ -489,6 +489,8 @@ class CoreTests(unittest.TestCase):
         self.assertIn(f"Capabilities Base URL：`{settings.public_base_url}`", response.text)
         self.assertIn(f"GET {settings.public_base_url}/v1/model-capabilities", response.text)
         self.assertIn("API Key 只发送到 API Base URL", response.text)
+        self.assertIn("使用 `data[].id` 作为模型列表，无需 API Key", response.text)
+        self.assertIn("仅在用户手动同步时重新请求", response.text)
         self.assertIn("最多 7 次", response.text)
         self.assertIn("https://media.yyapi.cloud/public/videos/task_xxx/content", response.text)
         self.assertNotIn("https://media.yyapi.cloud/v1/videos", response.text)

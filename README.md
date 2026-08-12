@@ -65,10 +65,11 @@ renames a model, update that route's `映射上游模型名` manually, verify it
 Use `生成对接文档` in the video or image admin page to download a Markdown document generated from the currently
 enabled public models and their configured capabilities.
 
-The video document distinguishes three addresses: `API_PUBLIC_BASE_URL` for authenticated model/task requests,
-`PUBLIC_BASE_URL` for the public dynamic capability endpoint, and the admin-selected public media domain for downloads.
-A workbench can load `/v1/models` and `/v1/model-capabilities` in parallel as one synchronization action; send the API
-key only to the first endpoint. Set `WORKBENCH_ORIGIN` to the exact browser origin that may read capabilities.
+The video document distinguishes three addresses: `API_PUBLIC_BASE_URL` for authenticated task requests,
+`PUBLIC_BASE_URL` for the public model catalog and dynamic capability endpoint, and the admin-selected public media
+domain for downloads. A workbench can use `data[].id` from `/v1/model-capabilities` as its complete model list, cache
+the response locally, and refresh it only after an explicit user action. This request does not use an API key. Set
+`WORKBENCH_ORIGIN` to the exact browser origin that may read the catalog.
 
 ## Docker
 
