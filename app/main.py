@@ -244,13 +244,16 @@ def update_public_video_settings(
 
 @app.get("/admin/api/integration-document")
 def integration_document(_: tuple[str, dict] = Depends(admin_session)):
-    content = build_integration_document(
-        f"{settings.public_base_url}/new-api",
-        database.list_model_capabilities(),
-        database.get_public_video_download_limit(),
-        database.get_public_link_base_url(),
-        settings.public_base_url,
-    )
+    try:
+        content = build_integration_document(
+            f"{settings.public_base_url}/new-api",
+            database.list_model_capabilities(),
+            database.get_public_video_download_limit(),
+            database.get_public_link_base_url(),
+            settings.public_base_url,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail=f"Video document public URL configuration is invalid: {exc}") from exc
     return Response(
         content=content,
         media_type="text/markdown; charset=utf-8",

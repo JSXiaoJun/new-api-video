@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import ipaddress
 import json
 from datetime import date
 from typing import Any
+from urllib.parse import urlsplit
 
 
 def _table_text(values: list[Any]) -> str:
@@ -16,6 +18,30 @@ def _table_text(values: list[Any]) -> str:
 
 def _inline_code(value: Any) -> str:
     return str(value).replace("`", "\\`").replace("\r", " ").replace("\n", " ")
+
+
+def _public_https_base_url(value: str, label: str) -> str:
+    normalized = value.strip().rstrip("/")
+    parsed = urlsplit(normalized)
+    hostname = parsed.hostname or ""
+    try:
+        ipaddress.ip_address(hostname)
+    except ValueError:
+        is_ip_address = False
+    else:
+        is_ip_address = True
+    if (
+        parsed.scheme != "https"
+        or not hostname
+        or hostname.lower() == "localhost"
+        or is_ip_address
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError(f"{label} must be a public HTTPS domain URL")
+    return normalized
 
 
 def _request_example(model: dict[str, Any]) -> dict[str, Any]:
@@ -33,7 +59,6 @@ def _request_example(model: dict[str, Any]) -> dict[str, Any]:
         payload["duration"] = durations[0]
     if resolutions and resolutions[0] != "自动":
         payload["resolution"] = resolutions[0]
-    payload["generate_audio"] = True
     if capabilities.get("maxImages", 0):
         payload["image_urls"] = ["https://example.com/reference.png"]
     if capabilities.get("referenceVideo"):
@@ -80,8 +105,12 @@ def build_integration_document(
     public_base_url: str | None = None,
     capabilities_base_url: str | None = None,
 ) -> str:
-    public_base_url = (public_base_url or base_url).rstrip("/")
-    capabilities_base_url = (capabilities_base_url or base_url).rstrip("/")
+    base_url = _public_https_base_url(base_url, "API Base URL")
+    public_base_url = _public_https_base_url(public_base_url or base_url, "Public Media Base URL")
+    capabilities_base_url = _public_https_base_url(
+        capabilities_base_url or base_url,
+        "Capabilities Base URL",
+    )
     example_model = models[0] if models else {"id": "模型名", "capabilities": {}}
     example_capabilities = example_model["capabilities"]
     example_durations = [value for value in example_capabilities.get("durations", []) if value]
@@ -107,7 +136,7 @@ def build_integration_document(
         "4. 每 10-15 秒查询任务状态。",
         "5. 状态变为 `completed` 后下载视频。",
         "",
-        "API Base URL 的模型列表、创建和查询接口需携带 API Key；Capabilities Base URL 的模型目录和任务完成后的公开下载链接无需鉴权。",
+        "API Base URL 的创建和查询接口需携带 API Key；模型能力接口和 Public Media Base URL 的公开下载链接无需鉴权。",
         "",
         "```http",
         "Authorization: Bearer sk-你的API令牌",
@@ -119,13 +148,12 @@ def build_integration_document(
         "- `model` 和 `prompt` 必填。",
         "- 本接口不接受 `multipart/form-data` 文件上传。",
         "- 参考图片、视频和音频必须是服务端可访问的公网 HTTP/HTTPS URL。",
+        "- 素材 URL 在不带 `Range` 的完整 `GET` 请求下必须返回 `200 OK` 和正确的图片、视频或音频 `Content-Type`；不能要求 Cookie、登录态或临时请求头。",
         "- 时长使用 `duration` 字段，比例使用 `aspect_ratio`，分辨率使用 `resolution`。",
-        "- 参考图片统一使用 `image_urls` 数组；不要同时发送 `images`、`image_url` 或上游私有字段。",
-        "- 客户端只需发送本文档中的公开字段，服务端会按模型路由转换为上游请求格式。",
+        "- 参考图片统一使用 `image_urls` 数组；不要同时发送 `images`、`image_url` 或其他非公开字段。",
+        "- 客户端只需发送本文档中的公开字段。",
         "- `generate_audio` 表示是否生成音频，与上传参考音频不是同一个功能。",
-        "- 视频工作台可直接读取 `/v1/model-capabilities`，使用 `data[].id` 作为模型列表，无需 API Key。",
-        "- 工作台可将模型目录缓存在浏览器本地，仅在用户手动同步时重新请求，不要在页面加载时自动刷新。",
-        "- 浏览器读取模型能力时，部署方必须将工作台 Origin 加入中间件的 `WORKBENCH_ORIGIN`。",
+        "- 从模型能力响应的 `data[].id` 获取可用模型名，不要自行猜测或使用其他模型名称。",
         "",
         "### 提示词限制",
         "",
@@ -170,11 +198,25 @@ def build_integration_document(
         f"| 获取模型能力 | `GET {capabilities_base_url}/v1/model-capabilities`（免鉴权） |",
         f"| 创建视频 | `POST {base_url}/v1/videos` |",
         f"| 查询任务 | `GET {base_url}/v1/videos/{{task_id}}` |",
-        f"| 下载视频 | `GET {public_base_url}/public/videos/{{task_id}}/content`（免鉴权，24 小时有效，最多 {download_limit} 次） |",
+        f"| 下载视频 | `GET {public_base_url}/public/videos/{{task_id}}/content`（免鉴权，自任务创建后约 24 小时有效，最多 {download_limit} 次） |",
+        "",
+        "### 模型能力响应示例",
+        "",
+        "```json",
+        json.dumps(
+            {
+                "data": [example_model],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        "```",
+        "",
+        "`data[].id` 是创建任务时应填写的 `model`；`capabilities` 中的数组和数量限制是该模型当前可用参数。",
         "",
         "## 当前开放模型",
         "",
-        "| 对外模型名 | 画面比例 | 时长 | 分辨率 | 图片数量 | 视频 | 音频 |",
+        "| 对外模型名 | 画面比例 | 时长 | 分辨率 | 图片数量 | 参考视频 | 参考音频 |",
         "| --- | --- | --- | --- | ---: | --- | --- |",
     ]
     if models:
@@ -194,7 +236,7 @@ def build_integration_document(
 
     lines.extend([
         "",
-        "模型目录和能力由中间件后台配置生成，`data[].id` 就是工作台可选模型。前端手动同步时只需请求 Capabilities Base URL，并将结果缓存到浏览器本地；页面加载时读取本地缓存，不自动请求。API Key 只发送到 API Base URL，不要发送到 Capabilities Base URL 或 Public Media Base URL。",
+        "`data[].id` 就是客户端可选模型。API Key 只发送到 API Base URL，不要发送到 Capabilities Base URL 或 Public Media Base URL。",
         "",
         "## 模型请求示例",
     ])
@@ -228,20 +270,55 @@ def build_integration_document(
         "",
         "| 字段 | 类型 | 必填 | 说明 |",
         "| --- | --- | --- | --- |",
-        "| `model` | string | 是 | `/v1/models` 返回的对外模型名 |",
+        "| `model` | string | 是 | `/v1/model-capabilities` 响应中 `data[].id` 的值 |",
         "| `prompt` | string | 是 | 视频提示词，不包含时长、时间码和画面比例 |",
         "| `duration` | integer | 否 | 视频时长（秒），以模型能力为准 |",
         "| `aspect_ratio` | string | 否 | 画面比例，以模型能力为准 |",
         "| `resolution` | string | 否 | 分辨率，以模型能力为准 |",
-        "| `generate_audio` | boolean | 否 | 是否生成音频 |",
+        "| `generate_audio` | boolean | 否 | 是否请求生成音频；不确定模型是否支持时请省略 |",
         "| `image_urls` | string[] | 否 | 按数组顺序编号为 `@图1`、`@图2`；即使只有一张也使用数组 |",
         "| `reference_video` | string | 否 | 一个公开可访问的参考视频 URL |",
         "| `audio_urls` | string[] | 否 | 公开可访问的参考音频 URL 数组 |",
+        "",
+        "创建成功响应示例：",
+        "",
+        "```json",
+        json.dumps(
+            {
+                "task_id": "task_xxx",
+                "id": "task_xxx",
+                "object": "video",
+                "model": example_model["id"],
+                "status": "queued",
+                "progress": 0,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        "```",
+        "",
+        "客户端必须保存 `task_id`；若响应没有 `task_id`，再读取 `id`。",
+        "",
+        "非 2xx 响应通常使用以下结构：",
+        "",
+        "```json",
+        json.dumps(
+            {
+                "error": {
+                    "message": "错误说明",
+                    "type": "error_type",
+                    "code": "error_code",
+                }
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        "```",
     ])
 
     lines.extend([
         "",
-        "素材 URL 必须是服务端可直接访问的公开 HTTP/HTTPS 地址。不使用的素材字段可以删除。",
+        "素材 URL 必须是服务端可直接访问的公开 HTTP/HTTPS 地址。不使用的素材字段可以删除。提交前建议从服务端网络执行一次完整 `GET`，确认状态码为 `200` 且响应不是 HTML 或 JSON 错误页。",
         "",
         "## 查询任务",
         "",
@@ -261,6 +338,23 @@ def build_integration_document(
         "| `processing` / `in_progress` | 继续轮询 |",
         "| `completed` | 下载视频 |",
         "| `failed` / `cancelled` | 停止轮询并记录错误 |",
+        "",
+        "完成响应示例：",
+        "",
+        "```json",
+        json.dumps(
+            {
+                "object": "video",
+                "model": example_model["id"],
+                "status": "completed",
+                "progress": 100,
+                "video_url": f"{public_base_url}/public/videos/task_xxx/content",
+                "error": None,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        "```",
         "",
         "## 下载视频",
         "",
@@ -290,23 +384,24 @@ def build_integration_document(
         f'    "resolution": "{example_resolution}",',
         *(['    "image_urls": ["https://example.com/reference.png"],'] if example_capabilities.get("maxImages", 0) else []),
         "}",
-        'created = requests.post(f"{BASE_URL}/v1/videos", headers={**HEADERS, "Content-Type": "application/json"}, json=payload, timeout=(10, 120))',
+        'created = requests.post(f"{BASE_URL}/v1/videos", headers={**HEADERS, "Content-Type": "application/json"}, json=payload, timeout=(10, 930))',
         "created.raise_for_status()",
         "body = created.json()",
         'task_id = body.get("task_id") or body.get("id")',
         'if not task_id: raise RuntimeError("create response has no task id")',
         "",
-        "for _ in range(5760):",
+        "deadline = time.monotonic() + 2 * 60 * 60",
+        "while time.monotonic() < deadline:",
         '    response = requests.get(f"{BASE_URL}/v1/videos/{task_id}", headers=HEADERS, timeout=(10, 30))',
         "    response.raise_for_status()",
         "    task = response.json()",
         '    if task.get("status") == "completed": break',
         '    if task.get("status") in {"failed", "cancelled"}: raise RuntimeError(task.get("error") or "video generation failed")',
         "    time.sleep(15)",
-        "else:",
-        '    raise TimeoutError("video task did not finish")',
+        'if task.get("status") != "completed": raise TimeoutError("video task did not finish within 2 hours")',
         "",
-        'with requests.get(f"{PUBLIC_BASE_URL}/public/videos/{task_id}/content", stream=True, timeout=(10, 120)) as response:',
+        'video_url = task.get("video_url") or f"{PUBLIC_BASE_URL}/public/videos/{task_id}/content"',
+        'with requests.get(video_url, stream=True, timeout=(10, 300)) as response:',
         "    response.raise_for_status()",
         '    if not response.headers.get("Content-Type", "").lower().startswith("video/"): raise RuntimeError("unexpected content type")',
         '    with Path("result.mp4").open("wb") as output:',
@@ -323,7 +418,7 @@ def build_integration_document(
         "| `404` / `Task not found` | 检查是否使用了创建响应中的任务 ID |",
         "| `409 Video is not completed` | 等状态变为 `completed` 后再下载 |",
         "| `429` | 降低请求频率，稍后重试 |",
-        "| `502` | 检查上游状态并联系服务管理员 |",
+        "| `502` | 稍后重试；持续失败时联系服务管理员 |",
         "",
         "创建请求在结果未知时不要自动重放，避免重复创建任务。",
         "",
