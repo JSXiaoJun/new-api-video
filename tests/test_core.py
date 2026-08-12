@@ -18,6 +18,7 @@ os.environ.setdefault("SESSION_SECRET", "test-session-secret-with-more-than-32-c
 os.environ.setdefault("ADAPTER_API_KEY", "test-adapter-key")
 os.environ.setdefault("ENCRYPTION_KEY", "IougsRYbjtzQcNSrzLV2O-TQ3k1PDP69XcfdR3Lxp3I=")
 os.environ.setdefault("NEW_API_PUBLIC_BASE_URL", "https://zl.yyapi.cloud")
+os.environ.setdefault("PUBLIC_BASE_URL", "https://video-admin.yyapi.cloud")
 TEST_DATA_DIR = tempfile.TemporaryDirectory()
 os.environ["DATA_DIR"] = TEST_DATA_DIR.name
 
@@ -485,9 +486,12 @@ class CoreTests(unittest.TestCase):
         self.assertIn("attachment; filename=\"video-api-integration.md\"", response.headers["content-disposition"])
         self.assertIn("stable-manxue", response.text)
         self.assertNotIn("manxue-900-10s", response.text)
-        self.assertIn("API Base URL：`https://zl.yyapi.cloud`", response.text)
+        self.assertIn("API Base URL：`https://video-admin.yyapi.cloud/new-api`", response.text)
         self.assertIn(f"Capabilities Base URL：`{settings.public_base_url}`", response.text)
         self.assertIn(f"GET {settings.public_base_url}/v1/model-capabilities", response.text)
+        self.assertIn("POST https://video-admin.yyapi.cloud/new-api/v1/videos", response.text)
+        self.assertNotIn(settings.api_public_base_url, response.text)
+        self.assertNotIn(settings.new_api_gateway_base_url, response.text)
         self.assertIn("API Key 只发送到 API Base URL", response.text)
         self.assertIn("使用 `data[].id` 作为模型列表，无需 API Key", response.text)
         self.assertIn("仅在用户手动同步时重新请求", response.text)

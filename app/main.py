@@ -245,7 +245,7 @@ def update_public_video_settings(
 @app.get("/admin/api/integration-document")
 def integration_document(_: tuple[str, dict] = Depends(admin_session)):
     content = build_integration_document(
-        settings.api_public_base_url,
+        f"{settings.public_base_url}/new-api",
         database.list_model_capabilities(),
         database.get_public_video_download_limit(),
         database.get_public_link_base_url(),

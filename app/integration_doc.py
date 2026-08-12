@@ -167,7 +167,6 @@ def build_integration_document(
         "",
         "| 操作 | 方法与地址 |",
         "| --- | --- |",
-        f"| 获取模型 | `GET {base_url}/v1/models` |",
         f"| 获取模型能力 | `GET {capabilities_base_url}/v1/model-capabilities`（免鉴权） |",
         f"| 创建视频 | `POST {base_url}/v1/videos` |",
         f"| 查询任务 | `GET {base_url}/v1/videos/{{task_id}}` |",
