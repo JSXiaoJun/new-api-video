@@ -56,12 +56,19 @@ models preserves existing aliases by upstream model name, adds newly discovered 
 disappeared upstream. `WORKBENCH_ORIGIN` controls which browser origin may read the public model capability endpoint.
 
 The admin page's model route editor keeps the discovered upstream name in `映射上游模型名`; leaving `对外模型名`
-empty uses that upstream name as the public name when saving. Supported fixed durations are `4s`, `5s`, `8s`, `10s`,
-`12s`, and `15s`, and multiple values can be selected for one model. `工作台类型` remains a single selection because
-it determines the upstream request format.
+empty uses that upstream name as the public name when saving. Supported durations can be selected per route. `请求协议`
+controls the upstream endpoint, while `请求格式` independently selects the saved payload transformation profile. Model
+discovery suggests a format only for new rows; editing and later synchronization preserve the saved selection.
+Synchronization is non-destructive: models missing from a later discovery response remain in the editor. If an upstream
+renames a model, update that route's `映射上游模型名` manually, verify its saved `请求格式`, then save the upstream.
 
 Use `生成对接文档` in the video or image admin page to download a Markdown document generated from the currently
 enabled public models and their configured capabilities.
+
+The video document distinguishes three addresses: `API_PUBLIC_BASE_URL` for authenticated model/task requests,
+`PUBLIC_BASE_URL` for the public dynamic capability endpoint, and the admin-selected public media domain for downloads.
+A workbench can load `/v1/models` and `/v1/model-capabilities` in parallel as one synchronization action; send the API
+key only to the first endpoint. Set `WORKBENCH_ORIGIN` to the exact browser origin that may read capabilities.
 
 ## Docker
 

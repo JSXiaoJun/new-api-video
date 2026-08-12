@@ -85,6 +85,7 @@ async def create_video(
         {**payload, "model": upstream["upstream_model"]},
         upstream["profile"],
     )
+    database.record_upstream_request_payload(relay_request_id, upstream_payload)
     response_headers = {REQUEST_ID_HEADER: relay_request_id}
     endpoint = "/v1/video/generations" if protocol == "seedance" else "/v1/videos"
     headers = {

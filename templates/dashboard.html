@@ -6,7 +6,7 @@
     <meta name="csrf-token" content="{{ csrf_token }}">
     <link rel="icon" href="data:,">
     <title>Video Relay Console</title>
-    <link rel="stylesheet" href="/static/admin.css?v=20260807-3">
+    <link rel="stylesheet" href="/static/admin.css?v=20260812-1">
   </head>
   <body>
     <header class="app-header">
@@ -122,7 +122,7 @@
             </div>
             <div class="route-editor">
               <div class="route-editor-header" aria-hidden="true">
-                <span>对外模型名</span><span>请求类型</span><span>映射上游模型名</span><span>支持时长</span><span>图片数量</span><span>视频</span><span>音频</span><span></span>
+                <span>对外模型名</span><span>请求协议</span><span>请求格式</span><span>映射上游模型名</span><span>支持时长</span><span>图片数量</span><span>视频</span><span>音频</span><span></span>
               </div>
               <div id="route-rows" class="route-editor-rows"></div>
               <div id="route-empty" class="route-editor-empty">尚未添加模型</div>
@@ -173,11 +173,12 @@
 
           <section class="audit-section response-section">
             <div class="audit-section-heading response-heading">
-              <h3>响应审计</h3>
+              <h3>请求与响应审计</h3>
               <select id="audit-event" aria-label="审计事件"></select>
             </div>
             <div class="audit-tabs" role="tablist" aria-label="审计内容">
               <button class="audit-tab active" data-audit-view="request" type="button" role="tab" aria-selected="true">请求参数</button>
+              <button class="audit-tab" data-audit-view="transformed" type="button" role="tab" aria-selected="false">转换后参数</button>
               <button class="audit-tab" data-audit-view="upstream" type="button" role="tab" aria-selected="false">上游原始响应</button>
               <button class="audit-tab" data-audit-view="sanitized" type="button" role="tab" aria-selected="false">脱敏响应</button>
             </div>
@@ -190,6 +191,6 @@
       </div>
     </dialog>
     <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
-    <script src="/static/admin.js?v=20260731-8" defer></script>
+    <script src="/static/admin.js?v=20260812-2" defer></script>
   </body>
 </html>

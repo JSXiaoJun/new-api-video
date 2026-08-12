@@ -73,7 +73,15 @@ def _model_capability_section(model: dict[str, Any]) -> list[str]:
     return lines
 
 
-def build_integration_document(base_url: str, models: list[dict[str, Any]]) -> str:
+def build_integration_document(
+    base_url: str,
+    models: list[dict[str, Any]],
+    download_limit: int = 50,
+    public_base_url: str | None = None,
+    capabilities_base_url: str | None = None,
+) -> str:
+    public_base_url = (public_base_url or base_url).rstrip("/")
+    capabilities_base_url = (capabilities_base_url or base_url).rstrip("/")
     example_model = models[0] if models else {"id": "模型名", "capabilities": {}}
     example_capabilities = example_model["capabilities"]
     example_durations = [value for value in example_capabilities.get("durations", []) if value]
@@ -85,18 +93,21 @@ def build_integration_document(base_url: str, models: list[dict[str, Any]]) -> s
     lines = [
         "# 视频接口接入文档",
         "",
-        f"> Base URL：`{base_url}`  ",
+        f"> API Base URL：`{base_url}`  ",
+        f"> Capabilities Base URL：`{capabilities_base_url}`  ",
+        f"> Public Media Base URL：`{public_base_url}`  ",
         "> 协议：OpenAI Videos 兼容接口  ",
         f"> 生成日期：{date.today().isoformat()}",
         "",
         "## 接入流程",
         "",
-        "1. 使用 API Key 创建视频任务。",
-        "2. 保存创建响应中的 `task_id`。",
-        "3. 每 10-15 秒查询任务状态。",
-        "4. 状态变为 `completed` 后下载视频。",
+        "1. 一次并行读取模型列表和模型能力。",
+        "2. 使用 API Key 创建视频任务。",
+        "3. 保存创建响应中的 `task_id`。",
+        "4. 每 10-15 秒查询任务状态。",
+        "5. 状态变为 `completed` 后下载视频。",
         "",
-        "创建和查询接口需携带 API Key；任务完成后的公开下载链接无需鉴权。",
+        "模型列表、创建和查询接口需携带 API Key；模型能力和任务完成后的公开下载链接无需鉴权。",
         "",
         "```http",
         "Authorization: Bearer sk-你的API令牌",
@@ -109,8 +120,11 @@ def build_integration_document(base_url: str, models: list[dict[str, Any]]) -> s
         "- 本接口不接受 `multipart/form-data` 文件上传。",
         "- 参考图片、视频和音频必须是服务端可访问的公网 HTTP/HTTPS URL。",
         "- 时长使用 `duration` 字段，比例使用 `aspect_ratio`，分辨率使用 `resolution`。",
+        "- 参考图片统一使用 `image_urls` 数组；不要同时发送 `images`、`image_url` 或上游私有字段。",
+        "- 客户端只需发送本文档中的公开字段，服务端会按模型路由转换为上游请求格式。",
         "- `generate_audio` 表示是否生成音频，与上传参考音频不是同一个功能。",
-        "- 客户端应先读取 `/v1/models`，不要永久写死模型列表。",
+        "- 客户端应读取 `/v1/models` 和 `/v1/model-capabilities`，不要永久写死模型列表或能力。",
+        "- 浏览器读取模型能力时，部署方必须将工作台 Origin 加入中间件的 `WORKBENCH_ORIGIN`。",
         "",
         "### 提示词限制",
         "",
@@ -153,9 +167,10 @@ def build_integration_document(base_url: str, models: list[dict[str, Any]]) -> s
         "| 操作 | 方法与地址 |",
         "| --- | --- |",
         f"| 获取模型 | `GET {base_url}/v1/models` |",
+        f"| 获取模型能力 | `GET {capabilities_base_url}/v1/model-capabilities`（免鉴权） |",
         f"| 创建视频 | `POST {base_url}/v1/videos` |",
         f"| 查询任务 | `GET {base_url}/v1/videos/{{task_id}}` |",
-        f"| 下载视频 | `GET {base_url}/public/videos/{{task_id}}/content`（免鉴权，24 小时有效，默认最多 50 次） |",
+        f"| 下载视频 | `GET {public_base_url}/public/videos/{{task_id}}/content`（免鉴权，24 小时有效，最多 {download_limit} 次） |",
         "",
         "## 当前开放模型",
         "",
@@ -179,7 +194,7 @@ def build_integration_document(base_url: str, models: list[dict[str, Any]]) -> s
 
     lines.extend([
         "",
-        "模型列表和能力由后台配置实时生成，请以鉴权后的 `/v1/models` 返回结果为准。",
+        "模型列表和能力由后台配置实时生成。前端可用一次同步操作并行请求两个地址；能力请求失败时可暂用本地回退配置，但模型列表请求失败时应将同步视为失败。API Key 只发送到 API Base URL，不要发送到 Capabilities Base URL 或 Public Media Base URL。",
         "",
         "## 模型请求示例",
     ])
@@ -208,6 +223,20 @@ def build_integration_document(base_url: str, models: list[dict[str, Any]]) -> s
         "Authorization: Bearer sk-你的API令牌",
         "Content-Type: application/json",
         "```",
+        "",
+        "请求字段：",
+        "",
+        "| 字段 | 类型 | 必填 | 说明 |",
+        "| --- | --- | --- | --- |",
+        "| `model` | string | 是 | `/v1/models` 返回的对外模型名 |",
+        "| `prompt` | string | 是 | 视频提示词，不包含时长、时间码和画面比例 |",
+        "| `duration` | integer | 否 | 视频时长（秒），以模型能力为准 |",
+        "| `aspect_ratio` | string | 否 | 画面比例，以模型能力为准 |",
+        "| `resolution` | string | 否 | 分辨率，以模型能力为准 |",
+        "| `generate_audio` | boolean | 否 | 是否生成音频 |",
+        "| `image_urls` | string[] | 否 | 按数组顺序编号为 `@图1`、`@图2`；即使只有一张也使用数组 |",
+        "| `reference_video` | string | 否 | 一个公开可访问的参考视频 URL |",
+        "| `audio_urls` | string[] | 否 | 公开可访问的参考音频 URL 数组 |",
     ])
 
     lines.extend([
@@ -236,7 +265,7 @@ def build_integration_document(base_url: str, models: list[dict[str, Any]]) -> s
         "## 下载视频",
         "",
         "```bash",
-        f"curl -L \"{base_url}/public/videos/task_xxx/content\" \\",
+        f"curl -L \"{public_base_url}/public/videos/task_xxx/content\" \\",
         "  -o output.mp4",
         "```",
         "",
@@ -250,6 +279,7 @@ def build_integration_document(base_url: str, models: list[dict[str, Any]]) -> s
         "import requests",
         "",
         f'BASE_URL = "{base_url}"',
+        f'PUBLIC_BASE_URL = "{public_base_url}"',
         'API_KEY = "sk-你的API令牌"',
         'HEADERS = {"Authorization": f"Bearer {API_KEY}"}',
         "payload = {",
@@ -258,6 +288,7 @@ def build_integration_document(base_url: str, models: list[dict[str, Any]]) -> s
         f'    "duration": {example_duration},',
         f'    "aspect_ratio": "{example_ratio}",',
         f'    "resolution": "{example_resolution}",',
+        *(['    "image_urls": ["https://example.com/reference.png"],'] if example_capabilities.get("maxImages", 0) else []),
         "}",
         'created = requests.post(f"{BASE_URL}/v1/videos", headers={**HEADERS, "Content-Type": "application/json"}, json=payload, timeout=(10, 120))',
         "created.raise_for_status()",
@@ -275,7 +306,7 @@ def build_integration_document(base_url: str, models: list[dict[str, Any]]) -> s
         "else:",
         '    raise TimeoutError("video task did not finish")',
         "",
-        'with requests.get(f"{BASE_URL}/public/videos/{task_id}/content", stream=True, timeout=(10, 120)) as response:',
+        'with requests.get(f"{PUBLIC_BASE_URL}/public/videos/{task_id}/content", stream=True, timeout=(10, 120)) as response:',
         "    response.raise_for_status()",
         '    if not response.headers.get("Content-Type", "").lower().startswith("video/"): raise RuntimeError("unexpected content type")',
         '    with Path("result.mp4").open("wb") as output:',

@@ -23,11 +23,11 @@ PROFILE_DEFINITIONS: dict[str, dict[str, Any]] = {
     },
     'gemini-omni': {
         'label': 'Gemini Omni',
-        'request_format': 'default',
+        'request_format': 'gemini-omni',
         'capabilities': {
             'ratios': ['16:9', '9:16'],
             'durations': [4, 6, 8, 10],
-            'resolutions': ['720p', '1080p'],
+            'resolutions': ['720p'],
             'maxImages': 5,
             'referenceVideo': True,
             'minReferenceVideoDuration': 0,
@@ -121,10 +121,13 @@ def suggest_profile(model: str, protocol: str) -> str:
         return 'default'
     return {
         'gemini-omni-flash': 'gemini-omni',
+        'omni-flash-720p': 'gemini-omni',
         'sora2': 'sora2',
         'veo31-fast': 'veo31-fast',
         'manxue-900': 'manxue-900',
         'manxue-933': 'manxue-933',
+        'sora-v3-933-pro': 'manxue-933',
+        'tejiasd2': 'manxue-933',
         'manxue-900-10s': 'manxue-933',
         'grok-imagine-1.0-video': 'grok-auto',
         'grok-imagine-video-1.5-fast': 'grok-fast',
@@ -214,6 +217,16 @@ def transform_create_payload(payload: dict[str, Any], profile: str) -> dict[str,
 
     if request_format == 'grok':
         return common
+    if request_format == 'gemini-omni':
+        return {
+            **common,
+            **({'aspect_ratio': aspect_ratio} if aspect_ratio else {}),
+            **({'duration': duration} if duration else {}),
+            **({'resolution': resolution} if resolution else {}),
+            **({'images': images} if images else {}),
+            **({'reference_video': reference_video} if reference_video else {}),
+            **({'audio_urls': payload['audio_urls']} if payload.get('audio_urls') else {}),
+        }
     if request_format == 'manxue-900':
         return {
             **common,

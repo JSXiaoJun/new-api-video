@@ -47,6 +47,7 @@ class Settings:
     encryption_key: str
     host: str
     port: int
+    api_public_base_url: str
     public_base_url: str
     new_api_public_base_url: str
     workbench_origin: str
@@ -91,6 +92,7 @@ def load_settings() -> Settings:
         encryption_key=required["ENCRYPTION_KEY"],
         host=os.getenv("HOST", "0.0.0.0"),
         port=int(os.getenv("PORT", "8787")),
+        api_public_base_url=os.getenv("API_PUBLIC_BASE_URL", DEFAULT_PUBLIC_LINK_BASE_URL).rstrip("/"),
         public_base_url=os.getenv("PUBLIC_BASE_URL", "http://127.0.0.1:8787").rstrip("/"),
         new_api_public_base_url=os.getenv(
             "NEW_API_PUBLIC_BASE_URL",

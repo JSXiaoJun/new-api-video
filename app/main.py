@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from . import database, image_database, image_proxy, proxy
-from .config import DEFAULT_PUBLIC_LINK_BASE_URL, PUBLIC_LINK_BASE_URLS, ROOT_DIR, settings
+from .config import PUBLIC_LINK_BASE_URLS, ROOT_DIR, settings
 from .integration_doc import build_integration_document
 from .image_integration_doc import build_image_integration_document
 from .model_profiles import profile_options, suggest_duration_override, suggest_profile
@@ -245,8 +245,11 @@ def update_public_video_settings(
 @app.get("/admin/api/integration-document")
 def integration_document(_: tuple[str, dict] = Depends(admin_session)):
     content = build_integration_document(
-        DEFAULT_PUBLIC_LINK_BASE_URL,
+        settings.api_public_base_url,
         database.list_model_capabilities(),
+        database.get_public_video_download_limit(),
+        database.get_public_link_base_url(),
+        settings.public_base_url,
     )
     return Response(
         content=content,
@@ -258,8 +261,9 @@ def integration_document(_: tuple[str, dict] = Depends(admin_session)):
 @app.get("/admin/api/image-integration-document")
 def image_integration_document(_: tuple[str, dict] = Depends(admin_session)):
     content = build_image_integration_document(
-        DEFAULT_PUBLIC_LINK_BASE_URL,
+        settings.api_public_base_url,
         image_database.dashboard_data()["upstreams"],
+        database.get_public_link_base_url(),
     )
     return Response(
         content=content,

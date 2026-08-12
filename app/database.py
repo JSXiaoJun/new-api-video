@@ -105,6 +105,7 @@ def initialize() -> None:
                 protocol TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'queued',
                 request_payload_encrypted TEXT,
+                upstream_request_payload_encrypted TEXT,
                 source_video_url_encrypted TEXT,
                 error TEXT,
                 public_download_count INTEGER NOT NULL DEFAULT 0,
@@ -161,6 +162,8 @@ def initialize() -> None:
             )
         if "public_download_expires_at" not in audit_columns:
             conn.execute("ALTER TABLE audit_requests ADD COLUMN public_download_expires_at INTEGER")
+        if "upstream_request_payload_encrypted" not in audit_columns:
+            conn.execute("ALTER TABLE audit_requests ADD COLUMN upstream_request_payload_encrypted TEXT")
         conn.execute(
             """
             UPDATE audit_requests
@@ -213,7 +216,6 @@ def initialize() -> None:
                     "UPDATE model_routes SET profile = ? WHERE model = ? AND profile = 'default'",
                     (suggest_profile(model, "videos"), model),
                 )
-
         legacy_tasks = conn.execute(
             """
             SELECT task_id, upstream_id, model, protocol, status, source_video_url, error, created_at, updated_at
@@ -459,6 +461,14 @@ def start_audit_request(upstream_id: int, model: str, protocol: str, request_pay
     return relay_request_id
 
 
+def record_upstream_request_payload(relay_request_id: str, payload: dict[str, Any]) -> None:
+    with connection() as conn:
+        conn.execute(
+            "UPDATE audit_requests SET upstream_request_payload_encrypted = ?, updated_at = ? WHERE relay_request_id = ?",
+            (_encrypt_json(payload), int(time.time()), relay_request_id),
+        )
+
+
 def record_audit_event(
     relay_request_id: str,
     phase: str,
@@ -625,6 +635,7 @@ def get_audit_request(relay_request_id: str) -> dict[str, Any] | None:
 
     result = dict(row)
     result["request_payload"] = _decrypt_json(result.pop("request_payload_encrypted"))
+    result["upstream_request_payload"] = _decrypt_json(result.pop("upstream_request_payload_encrypted"))
     result["source_video_url"] = _decrypt_text(result.pop("source_video_url_encrypted"))
     if result["status"] == "completed" and result["public_task_id"]:
         result["sanitized_video_url"] = public_video_url(result["public_task_id"])

@@ -44,6 +44,12 @@ function profileLabel(profile) {
   return dashboard.profiles?.find((item) => item.id === profile)?.label || profile
 }
 
+function profileOptions(selected) {
+  return (dashboard.profiles || [])
+    .map((profile) => `<option value="${escapeHtml(profile.id)}"${profile.id === selected ? ' selected' : ''}>${escapeHtml(profile.label)}</option>`)
+    .join('')
+}
+
 async function api(url, options = {}) {
   const headers = { ...(options.headers || {}) }
   if (options.method && options.method !== 'GET') headers['X-CSRF-Token'] = csrf
@@ -172,6 +178,8 @@ function renderAuditJson() {
   const event = selectedAuditEvent()
   if (activeAuditView === 'request') {
     auditJson.textContent = formatJson(activeAudit?.request_payload)
+  } else if (activeAuditView === 'transformed') {
+    auditJson.textContent = formatJson(activeAudit?.upstream_request_payload)
   } else if (activeAuditView === 'upstream') {
     auditJson.textContent = formatJson(event?.upstream_body)
   } else {
@@ -335,14 +343,15 @@ function addRouteRow(route = {}) {
   row.className = 'route-editor-row'
   const mappedUpstreamModel = route.upstream_model || route.mapped_upstream_model || ''
   const selectedDurations = routeDurations(route)
+  const selectedProfile = route.profile || 'default'
   row.dataset.durations = JSON.stringify(selectedDurations)
-  row.dataset.profile = route.profile || 'default'
   row.innerHTML = `
     <input data-route-field="model" maxlength="160" value="${escapeHtml(route.model || '')}" placeholder="对外模型名" aria-label="对外模型名">
-    <select data-route-field="protocol" aria-label="请求类型">
+    <select data-route-field="protocol" aria-label="请求协议">
       <option value="videos"${route.protocol !== 'seedance' ? ' selected' : ''}>videos</option>
       <option value="seedance"${route.protocol === 'seedance' ? ' selected' : ''}>seedance</option>
     </select>
+    <select data-route-field="profile" aria-label="请求格式"${route.protocol === 'seedance' ? ' disabled' : ''}>${profileOptions(route.protocol === 'seedance' ? 'default' : selectedProfile)}</select>
     <input data-route-field="upstream_model" maxlength="160" value="${escapeHtml(mappedUpstreamModel)}" placeholder="上游模型名" aria-label="映射上游模型名">
     <button class="duration-picker" data-duration-trigger data-duration-summary type="button">${selectedDurations.length ? selectedDurations.map((duration) => `${duration}s`).join(', ') : '工作台默认'}</button>
     <label class="image-count"><input data-route-field="image_count" type="number" min="0" max="20" value="${route.image_count ?? 1}" aria-label="图片数量"><span>张</span></label>
@@ -372,7 +381,7 @@ function readRoutes(allowEmpty = false, preserveBlankModel = false) {
       model: preserveBlankModel ? model : effectiveModel,
       upstream_model: upstreamModel,
       protocol: row.querySelector('[data-route-field="protocol"]').value,
-      profile: row.dataset.profile || 'default',
+      profile: row.querySelector('[data-route-field="profile"]').value,
       durations,
       duration_override: durations.length === 1 ? durations[0] : null,
       image_count: imageCount,
@@ -434,8 +443,15 @@ discoverModelsButton.addEventListener('click', async () => {
     })
     const currentRoutes = readRoutes(true, true)
     const currentByUpstream = new Map(currentRoutes.map((route) => [route.upstream_model || route.model, route]))
-    setRouteRows(result.models.map((item) => currentByUpstream.get(item.upstream_model) || item))
-    showToast(`已同步 ${result.models.length} 个上游模型`)
+    const discoveredNames = new Set(result.models.map((item) => item.upstream_model))
+    const addedRoutes = result.models.filter((item) => !currentByUpstream.has(item.upstream_model))
+    const retainedRoutes = currentRoutes.filter((route) => !discoveredNames.has(route.upstream_model || route.model))
+    setRouteRows([
+      ...result.models.map((item) => currentByUpstream.get(item.upstream_model) || item),
+      ...retainedRoutes,
+    ])
+    const retainedText = retainedRoutes.length ? `，保留 ${retainedRoutes.length} 条未发现的已有路由` : ''
+    showToast(`发现 ${result.models.length} 个模型，新增 ${addedRoutes.length} 个${retainedText}`)
   } catch (error) {
     document.querySelector('#form-error').textContent = error.message
     document.querySelector('#form-error').hidden = false
@@ -462,7 +478,10 @@ routeRows.addEventListener('change', (event) => {
   const target = event.target instanceof Element ? event.target : null
   if (!target?.matches('[data-route-field="protocol"]')) return
   const row = target.closest('.route-editor-row')
-  if (row && target.value === 'seedance') row.dataset.profile = 'default'
+  const profile = row?.querySelector('[data-route-field="profile"]')
+  if (!profile) return
+  profile.disabled = target.value === 'seedance'
+  if (profile.disabled) profile.value = 'default'
 })
 document.addEventListener('click', (event) => {
   if (!activeDurationMenu) return

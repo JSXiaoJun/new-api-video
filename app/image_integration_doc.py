@@ -52,8 +52,13 @@ def _example_model(models: list[dict[str, Any]]) -> str:
     return models[0]["model"] if models else "PUBLIC_MODEL"
 
 
-def build_image_integration_document(base_url: str, upstreams: list[dict[str, Any]]) -> str:
+def build_image_integration_document(
+    base_url: str,
+    upstreams: list[dict[str, Any]],
+    public_base_url: str | None = None,
+) -> str:
     base_url = base_url.rstrip("/")
+    public_base_url = (public_base_url or base_url).rstrip("/")
     models = _configured_models(upstreams)
     example_model = _example_model(models)
     generation_request = {
@@ -65,7 +70,7 @@ def build_image_integration_document(base_url: str, upstreams: list[dict[str, An
     }
     url_response = {
         "created": 1786400000,
-        "data": [{"url": f"{base_url}/public/images/assets/img_xxx"}],
+        "data": [{"url": f"{public_base_url}/public/images/assets/img_xxx"}],
     }
     base64_response = {
         "created": 1786400000,
@@ -106,7 +111,7 @@ def build_image_integration_document(base_url: str, upstreams: list[dict[str, An
         f"| 获取模型 | `GET {base_url}/v1/models` | 需要 |",
         f"| 生成图片 | `POST {base_url}/v1/images/generations` | 需要 |",
         f"| 编辑图片 | `POST {base_url}/v1/images/edits` | 需要 |",
-        f"| 访问公开图片 | `GET {base_url}/public/images/assets/{{asset_id}}` | 不需要 |",
+        f"| 访问公开图片 | `GET {public_base_url}/public/images/assets/{{asset_id}}` | 不需要 |",
         "",
         "## 图片生成",
         "",
@@ -212,7 +217,7 @@ def build_image_integration_document(base_url: str, upstreams: list[dict[str, An
         "",
         "## 公开图片访问",
         "",
-        f"`GET {base_url}/public/images/assets/{{asset_id}}`",
+        f"`GET {public_base_url}/public/images/assets/{{asset_id}}`",
         "",
         "该接口不需要 API Key，成功时直接返回图片二进制，不返回 JSON。响应 `Content-Type` 通常为 `image/png`、`image/jpeg` 或 `image/webp`。",
         "链接失效或资源不存在时返回 `404`。不要将公开图片接口误写成图片生成接口的 JSON 响应。",

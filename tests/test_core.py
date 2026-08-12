@@ -68,6 +68,8 @@ class CoreTests(unittest.TestCase):
         response = client.get("/admin")
         self.assertEqual(response.status_code, 200)
         self.assertIn('id="copy-audit-json"', response.text)
+        self.assertIn("请求格式", response.text)
+        self.assertIn("转换后参数", response.text)
 
     def test_image_admin_page_and_api_require_admin_session(self):
         client = TestClient(app)
@@ -470,11 +472,28 @@ class CoreTests(unittest.TestCase):
     def test_admin_can_download_integration_document(self):
         client = TestClient(app)
         client.cookies.set(SESSION_COOKIE, create_session("admin"))
-        response = client.get("/admin/api/integration-document")
+        original_base_url = database.get_public_link_base_url()
+        original_limit = database.get_public_video_download_limit()
+        try:
+            database.set_public_link_base_url("https://media.yyapi.cloud")
+            database.set_public_video_download_limit(7)
+            response = client.get("/admin/api/integration-document")
+        finally:
+            database.set_public_link_base_url(original_base_url)
+            database.set_public_video_download_limit(original_limit)
         self.assertEqual(response.status_code, 200)
         self.assertIn("attachment; filename=\"video-api-integration.md\"", response.headers["content-disposition"])
         self.assertIn("stable-manxue", response.text)
         self.assertNotIn("manxue-900-10s", response.text)
+        self.assertIn("API Base URL：`https://zl.yyapi.cloud`", response.text)
+        self.assertIn(f"Capabilities Base URL：`{settings.public_base_url}`", response.text)
+        self.assertIn(f"GET {settings.public_base_url}/v1/model-capabilities", response.text)
+        self.assertIn("API Key 只发送到 API Base URL", response.text)
+        self.assertIn("最多 7 次", response.text)
+        self.assertIn("https://media.yyapi.cloud/public/videos/task_xxx/content", response.text)
+        self.assertNotIn("https://media.yyapi.cloud/v1/videos", response.text)
+        self.assertIn("参考图片统一使用 `image_urls` 数组", response.text)
+        self.assertIn("即使只有一张也使用数组", response.text)
         self.assertIn("/v1/videos", response.text)
         self.assertIn("/public/videos/task_xxx/content", response.text)
         self.assertNotIn("/v1/videos/task_xxx/content", response.text)
@@ -483,10 +502,17 @@ class CoreTests(unittest.TestCase):
         client = TestClient(app)
         self.assertEqual(client.get("/admin/api/image-integration-document").status_code, 401)
         client.cookies.set(SESSION_COOKIE, create_session("admin"))
-        response = client.get("/admin/api/image-integration-document")
+        original_base_url = database.get_public_link_base_url()
+        try:
+            database.set_public_link_base_url("https://media.yyapi.cloud")
+            response = client.get("/admin/api/image-integration-document")
+        finally:
+            database.set_public_link_base_url(original_base_url)
         self.assertEqual(response.status_code, 200)
         self.assertIn("attachment; filename=\"image-api-integration.md\"", response.headers["content-disposition"])
         self.assertIn("Base URL：`https://zl.yyapi.cloud`", response.text)
+        self.assertIn("https://media.yyapi.cloud/public/images/assets/{asset_id}", response.text)
+        self.assertNotIn("https://media.yyapi.cloud/v1/images/generations", response.text)
         self.assertIn("/v1/images/generations", response.text)
         self.assertIn("/public/images/assets/{asset_id}", response.text)
         self.assertNotIn("/v1/images/assets/{asset_id}", response.text)
@@ -948,6 +974,71 @@ class CoreTests(unittest.TestCase):
             self.assertIsNone(route["duration_override"])
             self.assertEqual(route["upstream_model"], "manxue-933")
 
+    def test_initialize_preserves_explicit_profile_for_mapped_omni_route(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            database_path = Path(data_dir) / "adapter.db"
+            with patch.object(database, "DB_PATH", database_path):
+                database.initialize()
+                with database.connection() as conn:
+                    conn.execute(
+                        """
+                        INSERT INTO upstreams(
+                            id, name, base_url, api_key_encrypted, enabled, priority, created_at, updated_at
+                        ) VALUES (1, 'omni', 'https://omni.example', ?, 1, 1, 100, 100)
+                        """,
+                        (secret_box.encrypt("omni-key"),),
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO model_routes(
+                            upstream_id, model, upstream_model, protocol, profile, durations_json
+                        ) VALUES (1, 'gemini-omni-flash', 'omni-flash-720p', 'videos', 'manxue-933', '[]')
+                        """
+                    )
+                database.initialize()
+                with database.connection() as conn:
+                    route = conn.execute(
+                        "SELECT profile FROM model_routes WHERE model = 'gemini-omni-flash'"
+                    ).fetchone()
+
+            self.assertEqual(route["profile"], "manxue-933")
+
+    def test_initialize_preserves_saved_profiles_for_933_upstream_aliases(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            database_path = Path(data_dir) / "adapter.db"
+            with patch.object(database, "DB_PATH", database_path):
+                database.initialize()
+                with database.connection() as conn:
+                    conn.execute(
+                        """
+                        INSERT INTO upstreams(
+                            id, name, base_url, api_key_encrypted, enabled, priority, created_at, updated_at
+                        ) VALUES (1, '933', 'https://933.example', ?, 1, 1, 100, 100)
+                        """,
+                        (secret_box.encrypt("933-key"),),
+                    )
+                    conn.executemany(
+                        """
+                        INSERT INTO model_routes(
+                            upstream_id, model, upstream_model, protocol, profile, durations_json
+                        ) VALUES (1, ?, ?, 'videos', ?, '[]')
+                        """,
+                        [
+                            ("manxue-933", "sora-v3-933-pro", "default"),
+                            ("manxue-900-10s", "tejiasd2", "gemini-omni"),
+                        ],
+                    )
+                database.initialize()
+                with database.connection() as conn:
+                    routes = conn.execute(
+                        "SELECT upstream_model, profile FROM model_routes ORDER BY upstream_model"
+                    ).fetchall()
+
+            self.assertEqual({route["upstream_model"]: route["profile"] for route in routes}, {
+                "sora-v3-933-pro": "default",
+                "tejiasd2": "gemini-omni",
+            })
+
     def test_status_mapping(self):
         expected = {
             "NOT_START": "queued",
@@ -1033,11 +1124,21 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(
             normalize_discovered_models(payload),
             [
-                {"model": "", "upstream_model": "sora-v3-933-pro", "protocol": "videos", "profile": "default", "durations": []},
+                {"model": "", "upstream_model": "sora-v3-933-pro", "protocol": "videos", "profile": "manxue-933", "durations": []},
                 {"model": "", "upstream_model": "seedance-2.0-fast", "protocol": "seedance", "profile": "default", "durations": []},
                 {"model": "", "upstream_model": "veo31-fast", "protocol": "videos", "profile": "veo31-fast", "durations": []},
             ],
         )
+
+    def test_model_discovery_selects_gemini_omni_profile_for_native_alias(self):
+        models = normalize_discovered_models({"data": [{"id": "omni-flash-720p"}]})
+
+        self.assertEqual(models[0]["profile"], "gemini-omni")
+
+    def test_model_discovery_selects_933_profile_for_native_aliases(self):
+        models = normalize_discovered_models({"data": ["sora-v3-933-pro", "tejiasd2"]})
+
+        self.assertEqual([model["profile"] for model in models], ["manxue-933", "manxue-933"])
 
     def test_public_model_alias_is_used_without_exposing_upstream_name(self):
         client = TestClient(app)
@@ -1104,6 +1205,65 @@ class CoreTests(unittest.TestCase):
         finally:
             database.delete_upstream(upstream["id"])
 
+    def test_upstream_model_rename_preserves_selected_profile(self):
+        upstream = database.save_upstream(
+            {
+                "name": "rename-profile",
+                "base_url": "https://rename-profile.example",
+                "api_key": "rename-key",
+                "enabled": True,
+                "priority": 50,
+                "routes": [{
+                    "model": "stable-public-name",
+                    "upstream_model": "old-native-name",
+                    "protocol": "videos",
+                    "profile": "manxue-933",
+                    "durations": [10, 15],
+                    "image_count": 7,
+                    "supports_video": False,
+                    "supports_audio": True,
+                }],
+            }
+        )
+        try:
+            updated = database.save_upstream(
+                {
+                    "name": "rename-profile",
+                    "base_url": "https://rename-profile.example",
+                    "api_key": "",
+                    "enabled": True,
+                    "priority": 50,
+                    "routes": [{
+                        "model": "stable-public-name",
+                        "upstream_model": "new-native-name",
+                        "protocol": "videos",
+                        "profile": "manxue-933",
+                        "durations": [10, 15],
+                        "image_count": 7,
+                        "supports_video": False,
+                        "supports_audio": True,
+                    }],
+                },
+                upstream["id"],
+            )
+
+            self.assertEqual(updated["routes"][0]["upstream_model"], "new-native-name")
+            self.assertEqual(updated["routes"][0]["profile"], "manxue-933")
+            self.assertEqual(updated["routes"][0]["durations"], [10, 15])
+            self.assertEqual(updated["routes"][0]["image_count"], 7)
+            self.assertFalse(updated["routes"][0]["supports_video"])
+            self.assertTrue(updated["routes"][0]["supports_audio"])
+
+            capabilities = next(
+                item for item in database.list_model_capabilities() if item["id"] == "stable-public-name"
+            )["capabilities"]
+            self.assertEqual(capabilities["durations"], [10, 15])
+            self.assertEqual(capabilities["maxImages"], 7)
+            self.assertFalse(capabilities["referenceVideo"])
+            self.assertEqual(capabilities["maxAudios"], 3)
+        finally:
+            database.delete_upstream(upstream["id"])
+
     def test_manxue_profile_transforms_canonical_payload(self):
         payload = transform_create_payload(
             {
@@ -1135,6 +1295,96 @@ class CoreTests(unittest.TestCase):
             },
         )
         self.assertEqual(capabilities_for("manxue-933", 10)["durations"], [10])
+
+    def test_gemini_omni_profile_uses_images_array_for_single_reference(self):
+        payload = transform_create_payload(
+            {
+                "model": "omni-flash-720p",
+                "prompt": "test @图1",
+                "aspect_ratio": "16:9",
+                "duration": 10,
+                "resolution": "720p",
+                "generate_audio": True,
+                "image_urls": ["https://cdn/reference.png"],
+            },
+            "gemini-omni",
+        )
+
+        self.assertEqual(payload["images"], ["https://cdn/reference.png"])
+        self.assertNotIn("image_url", payload)
+        self.assertNotIn("image_urls", payload)
+        self.assertEqual(capabilities_for("gemini-omni")["resolutions"], ["720p"])
+
+    def test_gemini_omni_profile_accepts_upstream_images_input(self):
+        images = ["https://cdn/one.png", "https://cdn/two.png"]
+
+        payload = transform_create_payload(
+            {"model": "omni-flash-720p", "prompt": "test", "images": images},
+            "gemini-omni",
+        )
+
+        self.assertEqual(payload["images"], images)
+
+    def test_gemini_omni_route_forwards_images_array_to_upstream(self):
+        upstream = database.save_upstream(
+            {
+                "name": "omni-upstream",
+                "base_url": "https://omni.example",
+                "api_key": "omni-key",
+                "enabled": True,
+                "priority": 1,
+                "routes": [{
+                    "model": "gemini-omni-flash",
+                    "upstream_model": "omni-flash-720p",
+                    "protocol": "videos",
+                    "profile": "gemini-omni",
+                }],
+            }
+        )
+        captured = {}
+        response = httpx.Response(
+            200,
+            request=httpx.Request("POST", "https://omni.example/v1/videos"),
+            json={"task_id": "omni-task", "status": "queued"},
+        )
+
+        class MockAsyncClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_):
+                return None
+
+            async def post(self, *_args, **kwargs):
+                captured["payload"] = kwargs["json"]
+                return response
+
+        try:
+            with patch("app.proxy.httpx.AsyncClient", return_value=MockAsyncClient()):
+                result = asyncio.run(create_video({
+                    "model": "gemini-omni-flash",
+                    "prompt": "test @图1",
+                    "image_urls": ["https://cdn/reference.png"],
+                }, None))
+            detail = database.get_audit_request(result.headers["X-Oneapi-Request-Id"])
+            with database.connection() as conn:
+                encrypted_payload = conn.execute(
+                    "SELECT upstream_request_payload_encrypted FROM audit_requests WHERE relay_request_id = ?",
+                    (result.headers["X-Oneapi-Request-Id"],),
+                ).fetchone()["upstream_request_payload_encrypted"]
+        finally:
+            with database.connection() as conn:
+                conn.execute("DELETE FROM tasks WHERE upstream_id = ?", (upstream["id"],))
+                conn.execute("DELETE FROM audit_requests WHERE upstream_id = ?", (upstream["id"],))
+            database.delete_upstream(upstream["id"])
+
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(captured["payload"]["model"], "omni-flash-720p")
+        self.assertEqual(captured["payload"]["images"], ["https://cdn/reference.png"])
+        self.assertNotIn("image_url", captured["payload"])
+        self.assertEqual(detail["upstream_request_payload"], captured["payload"])
+        self.assertNotIn("image_urls", detail["upstream_request_payload"])
+        self.assertNotIn("https://cdn/reference.png", encrypted_payload)
 
     def test_model_capabilities_are_public_and_cors_limited(self):
         response = TestClient(app).get(
