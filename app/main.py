@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Path as ApiPath, Query, Request, Response
@@ -243,8 +244,17 @@ def update_public_video_settings(
 
 
 @app.get("/admin/api/integration-document")
-def integration_document(request: Request, _: tuple[str, dict] = Depends(admin_session)):
-    document_public_base_url = f"https://{request.url.hostname}"
+def integration_document(
+    request: Request,
+    document_origin: str | None = Header(default=None, alias="X-Document-Origin"),
+    _: tuple[str, dict] = Depends(admin_session),
+):
+    parsed_origin = urlsplit(document_origin or "")
+    document_public_base_url = (
+        f"{parsed_origin.scheme}://{parsed_origin.netloc}"
+        if parsed_origin.scheme in {"http", "https"} and parsed_origin.netloc
+        else f"https://{request.url.hostname}"
+    )
     content = build_integration_document(
         f"{document_public_base_url}/new-api",
         database.list_model_capabilities(),

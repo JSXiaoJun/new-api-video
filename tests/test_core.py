@@ -480,7 +480,10 @@ class CoreTests(unittest.TestCase):
             database.set_public_video_download_limit(7)
             response = client.get(
                 "/admin/api/integration-document",
-                headers={"Host": "video-admin.yyapi.cloud"},
+                headers={
+                    "Host": "127.0.0.1",
+                    "X-Document-Origin": "https://video-admin.yyapi.cloud",
+                },
             )
         finally:
             database.set_public_link_base_url(original_base_url)
