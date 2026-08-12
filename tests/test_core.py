@@ -26,7 +26,6 @@ from app import database, image_database
 from app.config import settings
 from app.main import app, normalize_discovered_models
 from app.image_proxy import classify_health_outcome, forward_json
-from app.integration_doc import build_integration_document
 from app.model_profiles import capabilities_for, transform_create_payload
 from app.proxy import create_video, fetch_task, normalize_status, normalize_task_payload, stream_content, upstream_error
 from app.security import SESSION_COOKIE, create_session, csrf_token, read_session, secret_box
@@ -479,7 +478,10 @@ class CoreTests(unittest.TestCase):
         try:
             database.set_public_link_base_url("https://media.yyapi.cloud")
             database.set_public_video_download_limit(7)
-            response = client.get("/admin/api/integration-document")
+            response = client.get(
+                "/admin/api/integration-document",
+                headers={"Host": "video-admin.yyapi.cloud"},
+            )
         finally:
             database.set_public_link_base_url(original_base_url)
             database.set_public_video_download_limit(original_limit)
@@ -512,39 +514,6 @@ class CoreTests(unittest.TestCase):
         self.assertIn("/v1/videos", response.text)
         self.assertIn("/public/videos/task_xxx/content", response.text)
         self.assertNotIn("/v1/videos/task_xxx/content", response.text)
-
-    def test_video_document_rejects_ip_and_non_https_public_urls(self):
-        model = [{"id": "public-model", "capabilities": {}}]
-        invalid_urls = [
-            "http://video-admin.example.com/new-api",
-            "https://127.0.0.1/new-api",
-            "https://203.0.113.10/new-api",
-            "https://localhost/new-api",
-            "https://user:password@example.com/new-api",
-        ]
-        for invalid_url in invalid_urls:
-            with self.subTest(invalid_url=invalid_url):
-                with self.assertRaises(ValueError):
-                    build_integration_document(
-                        invalid_url,
-                        model,
-                        public_base_url="https://media.example.com",
-                        capabilities_base_url="https://video-admin.example.com",
-                    )
-        with self.assertRaises(ValueError):
-            build_integration_document(
-                "https://video-admin.example.com/new-api",
-                model,
-                public_base_url="https://10.0.0.8",
-                capabilities_base_url="https://video-admin.example.com",
-            )
-        with self.assertRaises(ValueError):
-            build_integration_document(
-                "https://video-admin.example.com/new-api",
-                model,
-                public_base_url="https://media.example.com",
-                capabilities_base_url="https://192.168.1.10",
-            )
 
     def test_admin_can_download_image_integration_document(self):
         client = TestClient(app)

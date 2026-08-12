@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import ipaddress
 import json
 from datetime import date
 from typing import Any
-from urllib.parse import urlsplit
 
 
 def _table_text(values: list[Any]) -> str:
@@ -18,30 +16,6 @@ def _table_text(values: list[Any]) -> str:
 
 def _inline_code(value: Any) -> str:
     return str(value).replace("`", "\\`").replace("\r", " ").replace("\n", " ")
-
-
-def _public_https_base_url(value: str, label: str) -> str:
-    normalized = value.strip().rstrip("/")
-    parsed = urlsplit(normalized)
-    hostname = parsed.hostname or ""
-    try:
-        ipaddress.ip_address(hostname)
-    except ValueError:
-        is_ip_address = False
-    else:
-        is_ip_address = True
-    if (
-        parsed.scheme != "https"
-        or not hostname
-        or hostname.lower() == "localhost"
-        or is_ip_address
-        or parsed.username
-        or parsed.password
-        or parsed.query
-        or parsed.fragment
-    ):
-        raise ValueError(f"{label} must be a public HTTPS domain URL")
-    return normalized
 
 
 def _request_example(model: dict[str, Any]) -> dict[str, Any]:
@@ -105,12 +79,9 @@ def build_integration_document(
     public_base_url: str | None = None,
     capabilities_base_url: str | None = None,
 ) -> str:
-    base_url = _public_https_base_url(base_url, "API Base URL")
-    public_base_url = _public_https_base_url(public_base_url or base_url, "Public Media Base URL")
-    capabilities_base_url = _public_https_base_url(
-        capabilities_base_url or base_url,
-        "Capabilities Base URL",
-    )
+    base_url = base_url.rstrip("/")
+    public_base_url = (public_base_url or base_url).rstrip("/")
+    capabilities_base_url = (capabilities_base_url or base_url).rstrip("/")
     example_model = models[0] if models else {"id": "模型名", "capabilities": {}}
     example_capabilities = example_model["capabilities"]
     example_durations = [value for value in example_capabilities.get("durations", []) if value]

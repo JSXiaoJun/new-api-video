@@ -16,6 +16,7 @@ const publicLinkForm = document.querySelector('#public-link-form')
 const publicLinkBaseUrl = document.querySelector('#public-link-base-url')
 const publicVideoSettingsForm = document.querySelector('#public-video-settings-form')
 const publicVideoDownloadLimit = document.querySelector('#public-video-download-limit')
+const integrationDocumentButton = document.querySelector('#integration-document-button')
 let dashboard = { upstreams: [], tasks: [], stats: {} }
 let activeAudit = null
 let activeAuditView = 'request'
@@ -42,6 +43,36 @@ function showToast(message, tone = 'default') {
 
 function profileLabel(profile) {
   return dashboard.profiles?.find((item) => item.id === profile)?.label || profile
+}
+
+async function downloadIntegrationDocument(event) {
+  event.preventDefault()
+  integrationDocumentButton.setAttribute('aria-disabled', 'true')
+  try {
+    const response = await fetch(integrationDocumentButton.href)
+    if (response.status === 401) {
+      window.location.assign('/admin/login')
+      return
+    }
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}))
+      throw new Error(payload.detail || `生成失败 (${response.status})`)
+    }
+    const blob = await response.blob()
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = 'video-api-integration.md'
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    URL.revokeObjectURL(url)
+    showToast('对接文档已生成')
+  } catch (error) {
+    showToast(error instanceof Error ? error.message : '生成对接文档失败', 'error')
+  } finally {
+    integrationDocumentButton.removeAttribute('aria-disabled')
+  }
 }
 
 function profileOptions(selected) {
@@ -492,6 +523,7 @@ document.addEventListener('click', (event) => {
 window.addEventListener('resize', closeDurationMenu)
 
 document.querySelector('#add-upstream').addEventListener('click', () => openDialog())
+integrationDocumentButton.addEventListener('click', downloadIntegrationDocument)
 document.querySelector('#close-dialog').addEventListener('click', closeDialog)
 document.querySelector('#cancel-dialog').addEventListener('click', closeDialog)
 document.querySelector('#refresh-button').addEventListener('click', async () => {
