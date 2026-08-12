@@ -49,9 +49,7 @@ async function downloadIntegrationDocument(event) {
   event.preventDefault()
   integrationDocumentButton.setAttribute('aria-disabled', 'true')
   try {
-    const response = await fetch(integrationDocumentButton.href, {
-      headers: { 'X-Document-Origin': window.location.origin },
-    })
+    const response = await fetch(integrationDocumentButton.href)
     if (response.status === 401) {
       window.location.assign('/admin/login')
       return

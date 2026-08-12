@@ -77,11 +77,9 @@ def build_integration_document(
     models: list[dict[str, Any]],
     download_limit: int = 50,
     public_base_url: str | None = None,
-    capabilities_base_url: str | None = None,
 ) -> str:
     base_url = base_url.rstrip("/")
     public_base_url = (public_base_url or base_url).rstrip("/")
-    capabilities_base_url = (capabilities_base_url or base_url).rstrip("/")
     example_model = models[0] if models else {"id": "模型名", "capabilities": {}}
     example_capabilities = example_model["capabilities"]
     example_durations = [value for value in example_capabilities.get("durations", []) if value]
@@ -94,20 +92,19 @@ def build_integration_document(
         "# 视频接口接入文档",
         "",
         f"> API Base URL：`{base_url}`  ",
-        f"> Capabilities Base URL：`{capabilities_base_url}`  ",
         f"> Public Media Base URL：`{public_base_url}`  ",
         "> 协议：OpenAI Videos 兼容接口  ",
         f"> 生成日期：{date.today().isoformat()}",
         "",
         "## 接入流程",
         "",
-        "1. 从公开模型能力接口读取模型目录。",
+        "1. 使用 API Key 从 New API 模型接口读取可用模型。",
         "2. 使用 API Key 创建视频任务。",
         "3. 保存创建响应中的 `task_id`。",
         "4. 每 10-15 秒查询任务状态。",
         "5. 状态变为 `completed` 后下载视频。",
         "",
-        "API Base URL 的创建和查询接口需携带 API Key；模型能力接口和 Public Media Base URL 的公开下载链接无需鉴权。",
+        "API Base URL 的模型、创建和查询接口均需携带 API Key；Public Media Base URL 的公开下载链接无需鉴权。",
         "",
         "```http",
         "Authorization: Bearer sk-你的API令牌",
@@ -124,7 +121,7 @@ def build_integration_document(
         "- 参考图片统一使用 `image_urls` 数组；不要同时发送 `images`、`image_url` 或其他非公开字段。",
         "- 客户端只需发送本文档中的公开字段。",
         "- `generate_audio` 表示是否生成音频，与上传参考音频不是同一个功能。",
-        "- 从模型能力响应的 `data[].id` 获取可用模型名，不要自行猜测或使用其他模型名称。",
+        "- 从 `GET /v1/models` 响应的 `data[].id` 获取可用模型名，不要自行猜测或使用其他模型名称。",
         "",
         "### 提示词限制",
         "",
@@ -166,24 +163,30 @@ def build_integration_document(
         "",
         "| 操作 | 方法与地址 |",
         "| --- | --- |",
-        f"| 获取模型能力 | `GET {capabilities_base_url}/v1/model-capabilities`（免鉴权） |",
+        f"| 获取模型 | `GET {base_url}/v1/models` |",
         f"| 创建视频 | `POST {base_url}/v1/videos` |",
         f"| 查询任务 | `GET {base_url}/v1/videos/{{task_id}}` |",
         f"| 下载视频 | `GET {public_base_url}/public/videos/{{task_id}}/content`（免鉴权，自任务创建后约 24 小时有效，最多 {download_limit} 次） |",
         "",
-        "### 模型能力响应示例",
+        "### 模型响应示例",
         "",
         "```json",
         json.dumps(
             {
-                "data": [example_model],
+                "object": "list",
+                "data": [
+                    {
+                        "id": example_model["id"],
+                        "object": "model",
+                    }
+                ],
             },
             ensure_ascii=False,
             indent=2,
         ),
         "```",
         "",
-        "`data[].id` 是创建任务时应填写的 `model`；`capabilities` 中的数组和数量限制是该模型当前可用参数。",
+        "`data[].id` 是创建任务时应填写的 `model`。当前开放模型和参数范围见下表。",
         "",
         "## 当前开放模型",
         "",
@@ -207,7 +210,7 @@ def build_integration_document(
 
     lines.extend([
         "",
-        "`data[].id` 就是客户端可选模型。API Key 只发送到 API Base URL，不要发送到 Capabilities Base URL 或 Public Media Base URL。",
+        "`data[].id` 就是客户端可选模型。API Key 只发送到 API Base URL，不要发送到 Public Media Base URL。",
         "",
         "## 模型请求示例",
     ])
@@ -241,7 +244,7 @@ def build_integration_document(
         "",
         "| 字段 | 类型 | 必填 | 说明 |",
         "| --- | --- | --- | --- |",
-        "| `model` | string | 是 | `/v1/model-capabilities` 响应中 `data[].id` 的值 |",
+        "| `model` | string | 是 | `/v1/models` 响应中 `data[].id` 的值 |",
         "| `prompt` | string | 是 | 视频提示词，不包含时长、时间码和画面比例 |",
         "| `duration` | integer | 否 | 视频时长（秒），以模型能力为准 |",
         "| `aspect_ratio` | string | 否 | 画面比例，以模型能力为准 |",

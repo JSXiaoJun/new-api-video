@@ -65,9 +65,9 @@ renames a model, update that route's `映射上游模型名` manually, verify it
 Use `生成对接文档` in the video or image admin page to download a Markdown document generated from the currently
 enabled public models and their configured capabilities.
 
-The video document uses `PUBLIC_BASE_URL/new-api` for authenticated task requests, `PUBLIC_BASE_URL` for the public
-model catalog and dynamic capability endpoint, and the admin-selected public media domain for downloads. It never
-includes the internal New API gateway target. A workbench can use `data[].id` from `/v1/model-capabilities` as its complete model list, cache
+The customer-facing video document uses `API_PUBLIC_BASE_URL` for all authenticated New API requests and the
+admin-selected public media domain for downloads. It never includes the middleware admin domain, adapter address, or
+the internal New API gateway target. The workbench separately uses `data[].id` from `/v1/model-capabilities` as its complete model list, cache
 the response locally, and refresh it only after an explicit user action. This request does not use an API key. Set
 `WORKBENCH_ORIGIN` to the exact browser origin that may read the catalog.
 
@@ -100,7 +100,9 @@ docker compose up -d
 ```
 
 The `./data:/app/data` volume keeps the database outside the image, so replacing the container does not remove it.
-Compose exposes port `8787` on all interfaces. To bind only to localhost, change the mapping to `127.0.0.1:8787:8787`. Set `PUBLIC_BASE_URL` and the port mapping according to the network where New API runs.
+Compose exposes port `8787` on all interfaces. To bind only to localhost, change the mapping to `127.0.0.1:8787:8787`.
+Set `API_PUBLIC_BASE_URL` to the customer-facing New API address. `PUBLIC_BASE_URL` is the middleware's own
+admin/workbench address and must not be published as the customer API endpoint.
 
 To roll back, replace `latest` in `docker-compose.yml` with a previously published `sha-<commit>` tag, then run `docker compose pull` and `docker compose up -d` again.
 

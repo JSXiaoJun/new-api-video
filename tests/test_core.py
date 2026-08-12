@@ -478,13 +478,7 @@ class CoreTests(unittest.TestCase):
         try:
             database.set_public_link_base_url("https://media.yyapi.cloud")
             database.set_public_video_download_limit(7)
-            response = client.get(
-                "/admin/api/integration-document",
-                headers={
-                    "Host": "127.0.0.1",
-                    "X-Document-Origin": "https://video-admin.yyapi.cloud",
-                },
-            )
+            response = client.get("/admin/api/integration-document")
         finally:
             database.set_public_link_base_url(original_base_url)
             database.set_public_video_download_limit(original_limit)
@@ -492,21 +486,20 @@ class CoreTests(unittest.TestCase):
         self.assertIn("attachment; filename=\"video-api-integration.md\"", response.headers["content-disposition"])
         self.assertIn("stable-manxue", response.text)
         self.assertNotIn("manxue-900-10s", response.text)
-        self.assertIn("API Base URL：`https://video-admin.yyapi.cloud/new-api`", response.text)
-        self.assertIn(f"Capabilities Base URL：`{settings.public_base_url}`", response.text)
-        self.assertIn(f"GET {settings.public_base_url}/v1/model-capabilities", response.text)
-        self.assertIn("POST https://video-admin.yyapi.cloud/new-api/v1/videos", response.text)
-        self.assertNotIn(settings.api_public_base_url, response.text)
-        self.assertNotIn(settings.new_api_gateway_base_url, response.text)
+        self.assertIn("API Base URL：`https://zl.yyapi.cloud`", response.text)
+        self.assertIn("GET https://zl.yyapi.cloud/v1/models", response.text)
+        self.assertIn("POST https://zl.yyapi.cloud/v1/videos", response.text)
+        self.assertNotIn(settings.public_base_url, response.text)
         self.assertNotRegex(response.text, r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?![\w.])")
         self.assertNotIn("test-adapter-key", response.text)
         self.assertNotIn("private-key", response.text)
         self.assertNotIn("WORKBENCH_ORIGIN", response.text)
         self.assertNotIn("上游", response.text)
-        self.assertNotIn("/v1/models", response.text)
+        self.assertNotIn("/v1/model-capabilities", response.text)
+        self.assertNotIn("/new-api", response.text)
         self.assertIn("API Key 只发送到 API Base URL", response.text)
         self.assertIn("`data[].id` 是创建任务时应填写的 `model`", response.text)
-        self.assertIn("`/v1/model-capabilities` 响应中 `data[].id` 的值", response.text)
+        self.assertIn("`/v1/models` 响应中 `data[].id` 的值", response.text)
         self.assertIn('video_url = task.get("video_url")', response.text)
         self.assertIn('"status": "completed"', response.text)
         self.assertIn("最多 7 次", response.text)
