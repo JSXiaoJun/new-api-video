@@ -1187,7 +1187,7 @@ class CoreTests(unittest.TestCase):
 
         self.assertEqual(result.status_code, 200)
         self.assertEqual(captured["payload"]["model"], "manxue-900-10s")
-        self.assertEqual(captured["payload"]["seconds"], 10)
+        self.assertEqual(captured["payload"]["seconds"], "10")
 
     def test_route_supports_multiple_custom_durations(self):
         upstream = database.save_upstream(
@@ -1298,7 +1298,7 @@ class CoreTests(unittest.TestCase):
                 "model": "manxue-900-10s",
                 "prompt": "test",
                 "aspect_ratio": "16:9",
-                "seconds": 10,
+                "seconds": "10",
                 "resolution": "720p",
                 "generate_audio": True,
                 "image_url": "https://cdn/main.png",

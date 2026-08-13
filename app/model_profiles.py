@@ -241,7 +241,7 @@ def transform_create_payload(payload: dict[str, Any], profile: str) -> dict[str,
         return {
             **common,
             **({'aspect_ratio': aspect_ratio} if aspect_ratio else {}),
-            **({'seconds': duration} if duration else {}),
+            **({'seconds': str(duration)} if duration else {}),
             **({'resolution': resolution} if resolution else {}),
             **({'image_url': images[0]} if images else {}),
             **({'reference_image_urls': images[1:]} if len(images) > 1 else {}),
