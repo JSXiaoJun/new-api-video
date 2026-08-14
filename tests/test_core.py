@@ -502,6 +502,7 @@ class CoreTests(unittest.TestCase):
         self.assertIn("`/v1/models` 响应中 `data[].id` 的值", response.text)
         self.assertIn('video_url = task.get("video_url")', response.text)
         self.assertIn('"status": "completed"', response.text)
+        self.assertIn('"message": "Reference video duration must be between 2 and 15 seconds"', response.text)
         self.assertIn("最多 7 次", response.text)
         self.assertIn("https://media.yyapi.cloud/public/videos/task_xxx/content", response.text)
         self.assertNotIn("https://media.yyapi.cloud/v1/videos", response.text)
@@ -1737,19 +1738,103 @@ class CoreTests(unittest.TestCase):
         for header in ("content-type", "content-length", "content-disposition", "content-range", "accept-ranges"):
             self.assertIn(header, exposed)
 
-    def test_upstream_error_does_not_expose_provider_details(self):
+    def test_upstream_error_exposes_only_sanitized_message(self):
         request = httpx.Request("POST", "https://private-upstream.example/v1/videos")
         response = httpx.Response(
-            502,
+            400,
             request=request,
-            json={"error": {"message": "api.pixellelabs.com internal failure"}},
+            json={
+                "error": {
+                    "message": "Reference video duration must be between 2 and 15 seconds\nSee https://private-upstream.example/docs",
+                    "internal_url": "https://api.pixellelabs.com/private",
+                },
+                "request_id": "upstream-secret-id",
+            },
         )
         result = upstream_error(response)
-        body = result.body.decode()
-        self.assertEqual(result.status_code, 502)
-        self.assertIn("Video upstream request failed", body)
-        self.assertNotIn("pixellelabs", body)
-        self.assertNotIn("private-upstream", body)
+        body = json.loads(result.body)
+        top_level_result = upstream_error(httpx.Response(
+            422,
+            request=request,
+            json={"error": "invalid_request", "message": "The image count exceeds 9"},
+        ))
+        self.assertEqual(result.status_code, 400)
+        self.assertEqual(
+            body["error"]["message"],
+            "Reference video duration must be between 2 and 15 seconds See [redacted URL]",
+        )
+        self.assertNotIn("pixellelabs", json.dumps(body))
+        self.assertNotIn("upstream-secret-id", json.dumps(body))
+        self.assertEqual(
+            json.loads(top_level_result.body)["error"]["message"],
+            "The image count exceeds 9",
+        )
+
+    def test_failed_task_exposes_upstream_message_only_on_failure(self):
+        task = {
+            "task_id": "upstream-task",
+            "model": "public-model",
+            "protocol": "ark-v3",
+            "created_at": 100,
+        }
+        failed, _ = normalize_task_payload(task, {
+            "status": "failed",
+            "error": {
+                "code": "InvalidParameter",
+                "message": "Invalid API key sk-upstreamSecret123 and Bearer private-token",
+                "internal": "do not expose",
+            },
+        })
+        processing, _ = normalize_task_payload(task, {
+            "status": "running",
+            "error": {"message": "transient internal warning"},
+        })
+        top_level_message, _ = normalize_task_payload(task, {
+            "status": "failed",
+            "message": "The selected resolution is not supported",
+        })
+
+        self.assertEqual(
+            failed["error"]["message"],
+            "Invalid API key sk-[redacted] and Bearer [redacted]",
+        )
+        self.assertEqual(failed["error"]["code"], "video_generation_failed")
+        self.assertIsNone(processing["error"])
+        self.assertEqual(
+            top_level_message["error"]["message"],
+            "The selected resolution is not supported",
+        )
+
+    def test_create_response_exposes_message_when_task_immediately_fails(self):
+        response = httpx.Response(
+            200,
+            request=httpx.Request("POST", "https://private-upstream.example/v1/videos"),
+            json={
+                "task_id": "immediate-failure-task",
+                "status": "failed",
+                "error": {"message": "Prompt violates the upstream policy"},
+            },
+        )
+
+        class MockAsyncClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_):
+                return None
+
+            async def post(self, *_args, **_kwargs):
+                return response
+
+        with patch("app.proxy.httpx.AsyncClient", return_value=MockAsyncClient()):
+            result = asyncio.run(create_video({"model": "audit-model", "prompt": "test"}, None))
+
+        body = json.loads(result.body)
+        self.assertEqual(body["status"], "failed")
+        self.assertEqual(body["error"], {
+            "message": "Prompt violates the upstream policy",
+            "code": "video_generation_failed",
+        })
 
     def test_audit_data_is_correlated_and_encrypted(self):
         relay_request_id = database.start_audit_request(

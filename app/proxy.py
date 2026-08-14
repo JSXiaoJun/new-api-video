@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 import uuid
 from typing import Any, Callable
@@ -17,6 +18,7 @@ from .model_profiles import transform_create_payload
 
 logger = logging.getLogger("uvicorn.error")
 REQUEST_ID_HEADER = "X-Oneapi-Request-Id"
+MAX_UPSTREAM_ERROR_MESSAGE_LENGTH = 1000
 
 
 STATUS_MAP = {
@@ -42,6 +44,40 @@ def normalize_status(value: Any) -> str:
     return STATUS_MAP.get(value.strip().upper(), value.strip().lower())
 
 
+def upstream_error_message(value: Any, fallback: str) -> str:
+    candidate = _find_error_message(value)
+    if candidate is None:
+        return fallback
+    message = " ".join(candidate.split())
+    message = re.sub(r"(?i)\bBearer\s+\S+", "Bearer [redacted]", message)
+    message = re.sub(r"\bsk-[A-Za-z0-9_-]{8,}\b", "sk-[redacted]", message)
+    message = re.sub(r"https?://\S+", "[redacted URL]", message, flags=re.IGNORECASE)
+    return message[:MAX_UPSTREAM_ERROR_MESSAGE_LENGTH] or fallback
+
+
+def _find_error_message(value: Any) -> str | None:
+    if isinstance(value, str):
+        return value.strip() or None
+    if not isinstance(value, dict):
+        return None
+    nested_error = value.get("error")
+    if isinstance(nested_error, dict):
+        message = _find_error_message(nested_error)
+        if message:
+            return message
+    for key in ("message", "detail"):
+        candidate = value.get(key)
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+        if isinstance(candidate, dict):
+            message = _find_error_message(candidate)
+            if message:
+                return message
+    if isinstance(nested_error, str) and nested_error.strip():
+        return nested_error.strip()
+    return None
+
+
 def upstream_error(
     response: httpx.Response,
     relay_request_id: str | None = None,
@@ -49,9 +85,14 @@ def upstream_error(
     mark_failed: bool = False,
 ) -> JSONResponse:
     logger.warning("Video upstream returned HTTP %s: %s", response.status_code, response.text[:2000])
+    try:
+        upstream_payload = response.json()
+    except ValueError:
+        upstream_payload = None
+    message = upstream_error_message(upstream_payload, "Video upstream request failed")
     payload = {
         "error": {
-            "message": "Video upstream request failed",
+            "message": message,
             "type": "upstream_error",
             "code": f"upstream_http_{response.status_code}",
         }
@@ -145,6 +186,11 @@ async def create_video(
         "progress": progress,
         "created_at": int(time.time()),
     }
+    if status == "failed":
+        result["error"] = {
+            "message": upstream_error_message(upstream_payload, "Video generation failed"),
+            "code": "video_generation_failed",
+        }
     database.create_task(task_id, upstream["id"], relay_request_id, model, protocol, status)
     if public_task_id:
         try:
@@ -193,8 +239,11 @@ def normalize_task_payload(task: dict[str, Any], payload: dict[str, Any]) -> tup
         "created_at": int(task["created_at"]),
         "updated_at": int(time.time()),
     }
-    if error_value:
-        result["error"] = {"message": "Video generation failed", "code": "video_generation_failed"}
+    if status == "failed":
+        result["error"] = {
+            "message": upstream_error_message(error_value or payload, "Video generation failed"),
+            "code": "video_generation_failed",
+        }
     else:
         result["error"] = None
     return result, video_url
