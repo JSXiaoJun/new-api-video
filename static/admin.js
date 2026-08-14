@@ -641,9 +641,7 @@ document.querySelector('#upstream-rows').addEventListener('click', (event) => {
   const id = Number(event.target.dataset.edit)
   if (id) openDialog(dashboard.upstreams.find((item) => item.id === id))
 })
-dialog.addEventListener('click', (event) => {
-  if (event.target === dialog) closeDialog()
-})
+dialog.addEventListener('cancel', (event) => event.preventDefault())
 document.querySelector('#close-audit').addEventListener('click', closeAuditDialog)
 auditDialog.addEventListener('click', (event) => {
   if (event.target === auditDialog) closeAuditDialog()
