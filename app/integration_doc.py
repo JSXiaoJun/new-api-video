@@ -118,6 +118,7 @@ def build_integration_document(
         "- 参考图片、视频和音频必须是服务端可访问的公网 HTTP/HTTPS URL。",
         "- 素材 URL 在不带 `Range` 的完整 `GET` 请求下必须返回 `200 OK` 和正确的图片、视频或音频 `Content-Type`；不能要求 Cookie、登录态或临时请求头。",
         "- 时长使用 `duration` 字段，比例使用 `aspect_ratio`，分辨率使用 `resolution`。",
+        "- 每个模型支持的分辨率可能不同，请以本文档“当前开放模型”和模型参数表中的动态配置为准。",
         "- 参考图片统一使用 `image_urls` 数组；不要同时发送 `images`、`image_url` 或其他非公开字段。",
         "- 客户端只需发送本文档中的公开字段。",
         "- `generate_audio` 表示是否生成音频，与上传参考音频不是同一个功能。",

@@ -25,6 +25,7 @@ class RouteInput(BaseModel):
         "grok-fast",
     ] = "default"
     durations: list[int] = Field(default_factory=list, max_length=MAX_DURATION_SECONDS)
+    resolutions: list[str] = Field(default_factory=list, max_length=20)
     image_count: int | None = Field(default=None, ge=0, le=20)
     supports_image: bool = True
     supports_video: bool = True
@@ -43,6 +44,20 @@ class RouteInput(BaseModel):
         if any(duration < 1 or duration > MAX_DURATION_SECONDS for duration in value):
             raise ValueError(f"durations must be between 1 and {MAX_DURATION_SECONDS} seconds")
         return sorted(set(value))
+
+    @field_validator("resolutions")
+    @classmethod
+    def normalize_resolutions(cls, value: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for resolution in value:
+            item = resolution.strip()
+            if not item:
+                continue
+            if len(item) > 30:
+                raise ValueError("each resolution must be at most 30 characters")
+            if item not in normalized:
+                normalized.append(item)
+        return normalized
 
 
 class UpstreamInput(BaseModel):

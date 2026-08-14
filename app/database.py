@@ -45,6 +45,7 @@ def _ensure_ark_protocol_constraint(conn: sqlite3.Connection) -> None:
                 profile TEXT NOT NULL DEFAULT 'default',
                 duration_override INTEGER,
                 durations_json TEXT NOT NULL DEFAULT '[]',
+                resolutions_json TEXT NOT NULL DEFAULT '[]',
                 supports_image INTEGER NOT NULL DEFAULT 1,
                 supports_video INTEGER NOT NULL DEFAULT 1,
                 supports_audio INTEGER NOT NULL DEFAULT 1,
@@ -54,12 +55,12 @@ def _ensure_ark_protocol_constraint(conn: sqlite3.Connection) -> None:
             );
             INSERT INTO model_routes(
                 id, upstream_id, model, upstream_model, protocol, profile, duration_override,
-                durations_json, supports_image, supports_video, supports_audio, image_count,
+                durations_json, resolutions_json, supports_image, supports_video, supports_audio, image_count,
                 forward_resolution
             )
             SELECT
                 id, upstream_id, model, upstream_model, protocol, profile, duration_override,
-                durations_json, supports_image, supports_video, supports_audio, image_count,
+                durations_json, resolutions_json, supports_image, supports_video, supports_audio, image_count,
                 forward_resolution
             FROM model_routes_before_ark_v3;
             DROP TABLE model_routes_before_ark_v3;
@@ -130,6 +131,7 @@ def initialize() -> None:
                 protocol TEXT NOT NULL CHECK(protocol IN ('videos', 'seedance', 'ark-v3')),
                 profile TEXT NOT NULL DEFAULT 'default',
                 duration_override INTEGER,
+                resolutions_json TEXT NOT NULL DEFAULT '[]',
                 forward_resolution INTEGER NOT NULL DEFAULT 1,
                 UNIQUE(upstream_id, model)
             );
@@ -244,6 +246,8 @@ def initialize() -> None:
                         "UPDATE model_routes SET durations_json = ? WHERE id = ?",
                         (json.dumps([route["duration_override"]]), route["id"]),
                     )
+        if "resolutions_json" not in route_columns:
+            conn.execute("ALTER TABLE model_routes ADD COLUMN resolutions_json TEXT NOT NULL DEFAULT '[]'")
         for column in ("supports_image", "supports_video", "supports_audio"):
             if column not in route_columns:
                 conn.execute(f"ALTER TABLE model_routes ADD COLUMN {column} INTEGER NOT NULL DEFAULT 1")
@@ -305,7 +309,8 @@ def _route_rows(conn: sqlite3.Connection, upstream_id: int) -> list[dict[str, An
     rows = conn.execute(
         """
         SELECT model, upstream_model, protocol, profile, duration_override, durations_json,
-               image_count, supports_image, supports_video, supports_audio, forward_resolution
+               resolutions_json, image_count, supports_image, supports_video, supports_audio,
+               forward_resolution
         FROM model_routes WHERE upstream_id = ? ORDER BY model
         """,
         (upstream_id,),
@@ -314,6 +319,7 @@ def _route_rows(conn: sqlite3.Connection, upstream_id: int) -> list[dict[str, An
     for row in rows:
         item = dict(row)
         item["durations"] = _decode_durations(item.pop("durations_json"), item["duration_override"])
+        item["resolutions"] = _decode_resolutions(item.pop("resolutions_json"))
         if item["image_count"] is None:
             item["image_count"] = capabilities_for(
                 item["profile"],
@@ -344,6 +350,23 @@ def _decode_durations(value: str | None, legacy_duration: int | None = None) -> 
     if isinstance(legacy_duration, int) and 1 <= legacy_duration <= MAX_DURATION_SECONDS:
         return [legacy_duration]
     return []
+
+
+def _decode_resolutions(value: str | None) -> list[str]:
+    try:
+        resolutions = json.loads(value or "[]")
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(resolutions, list):
+        return []
+    normalized: list[str] = []
+    for resolution in resolutions:
+        if not isinstance(resolution, str):
+            continue
+        item = resolution.strip()
+        if item and item not in normalized:
+            normalized.append(item)
+    return normalized
 
 
 def list_upstreams(include_keys: bool = False) -> list[dict[str, Any]]:
@@ -436,8 +459,9 @@ def save_upstream(payload: dict[str, Any], upstream_id: int | None = None) -> di
             """
             INSERT INTO model_routes(
                 upstream_id, model, upstream_model, protocol, profile, duration_override, durations_json,
-                image_count, supports_image, supports_video, supports_audio, forward_resolution
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                resolutions_json, image_count, supports_image, supports_video, supports_audio,
+                forward_resolution
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
@@ -448,6 +472,7 @@ def save_upstream(payload: dict[str, Any], upstream_id: int | None = None) -> di
                     route.get("profile", "default"),
                     durations[0] if len(durations) == 1 else None,
                     json.dumps(durations),
+                    json.dumps(route.get("resolutions", []), ensure_ascii=False),
                     route.get("image_count"),
                     int(route.get("supports_image", route.get("image_count") is None or route.get("image_count", 0) > 0)),
                     int(route.get("supports_video", True)),
@@ -931,7 +956,8 @@ def list_model_capabilities() -> list[dict[str, Any]]:
         rows = conn.execute(
             """
             SELECT r.model, r.profile, r.duration_override, r.durations_json,
-                   r.image_count, r.supports_image, r.supports_video, r.supports_audio
+                   r.resolutions_json, r.image_count, r.supports_image, r.supports_video,
+                   r.supports_audio
             FROM model_routes r
             JOIN upstreams u ON u.id = r.upstream_id
             WHERE u.enabled = 1
@@ -953,6 +979,7 @@ def list_model_capabilities() -> list[dict[str, Any]]:
                 bool(row["supports_video"]),
                 bool(row["supports_audio"]),
                 row["image_count"],
+                _decode_resolutions(row["resolutions_json"]),
             ),
         })
     return result

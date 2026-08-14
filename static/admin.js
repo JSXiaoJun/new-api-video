@@ -439,6 +439,7 @@ function addRouteRow(route = {}) {
     <select data-route-field="profile" aria-label="请求格式"${protocol === 'seedance' ? ' disabled' : ''}>${profileOptions(protocol === 'seedance' ? 'default' : selectedProfile)}</select>
     <input data-route-field="upstream_model" maxlength="160" value="${escapeHtml(mappedUpstreamModel)}" placeholder="上游模型名" aria-label="映射上游模型名">
     <button class="duration-picker" data-duration-trigger data-duration-summary type="button">${selectedDurations.length ? durationRanges(selectedDurations).map(formatDurationRange).join(', ') : '工作台默认'}</button>
+    <input data-route-field="resolutions" maxlength="620" value="${escapeHtml((route.resolutions || []).join(', '))}" placeholder="工作台默认" aria-label="支持分辨率" title="多个分辨率用逗号分隔">
     <label class="image-count"><input data-route-field="image_count" type="number" min="0" max="20" value="${route.image_count ?? 1}" aria-label="图片数量"><span>张</span></label>
     <label class="media-support-cell"><input data-route-forward="resolution" type="checkbox"${route.forward_resolution !== false ? ' checked' : ''} aria-label="传分辨率"></label>
     <label class="media-support-cell"><input data-route-support="video" type="checkbox"${route.supports_video !== false ? ' checked' : ''} aria-label="支持视频"></label>
@@ -460,6 +461,8 @@ function readRoutes(allowEmpty = false, preserveBlankModel = false) {
     const model = row.querySelector('[data-route-field="model"]').value.trim()
     const upstreamModel = row.querySelector('[data-route-field="upstream_model"]').value.trim()
     const durations = JSON.parse(row.dataset.durations || '[]')
+    const resolutions = [...new Set(row.querySelector('[data-route-field="resolutions"]').value
+      .split(/[,，]/).map((value) => value.trim()).filter(Boolean))]
     const imageCount = Math.max(0, Math.min(20, Number(row.querySelector('[data-route-field="image_count"]').value) || 0))
     const effectiveModel = model || upstreamModel
     if (!effectiveModel) throw new Error('每一行都必须填写对外模型名或映射上游模型名')
@@ -469,6 +472,7 @@ function readRoutes(allowEmpty = false, preserveBlankModel = false) {
       protocol: row.querySelector('[data-route-field="protocol"]').value,
       profile: row.querySelector('[data-route-field="profile"]').value,
       durations,
+      resolutions,
       duration_override: durations.length === 1 ? durations[0] : null,
       image_count: imageCount,
       supports_image: imageCount > 0,

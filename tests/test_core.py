@@ -53,6 +53,7 @@ class CoreTests(unittest.TestCase):
                         "protocol": "videos",
                         "profile": "manxue-933",
                         "duration_override": 10,
+                        "resolutions": ["2k"],
                     },
                 ],
             }
@@ -485,6 +486,7 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("attachment; filename=\"video-api-integration.md\"", response.headers["content-disposition"])
         self.assertIn("stable-manxue", response.text)
+        self.assertIn("| 分辨率 | 2k |", response.text)
         self.assertNotIn("manxue-900-10s", response.text)
         self.assertIn("API Base URL：`https://zl.yyapi.cloud`", response.text)
         self.assertIn("GET https://zl.yyapi.cloud/v1/models", response.text)
@@ -981,13 +983,14 @@ class CoreTests(unittest.TestCase):
                 database.initialize()
                 with database.connection() as migrated:
                     route = migrated.execute(
-                        "SELECT profile, duration_override, upstream_model, forward_resolution "
+                        "SELECT profile, duration_override, upstream_model, resolutions_json, forward_resolution "
                         "FROM model_routes WHERE model = 'manxue-933'"
                     ).fetchone()
 
             self.assertEqual(route["profile"], "manxue-933")
             self.assertIsNone(route["duration_override"])
             self.assertEqual(route["upstream_model"], "manxue-933")
+            self.assertEqual(json.loads(route["resolutions_json"]), [])
             self.assertEqual(route["forward_resolution"], 1)
 
     def test_initialize_expands_legacy_protocol_constraint_for_ark_v3(self):
@@ -1056,7 +1059,8 @@ class CoreTests(unittest.TestCase):
                         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'model_routes'"
                     ).fetchone()["sql"]
                     routes = migrated.execute(
-                        "SELECT model, protocol, forward_resolution FROM model_routes ORDER BY model"
+                        "SELECT model, protocol, resolutions_json, forward_resolution "
+                        "FROM model_routes ORDER BY model"
                     ).fetchall()
 
             self.assertIn("ark-v3", table_sql)
@@ -1065,6 +1069,7 @@ class CoreTests(unittest.TestCase):
                 ("legacy-video", "videos"),
             ])
             self.assertTrue(all(route["forward_resolution"] == 1 for route in routes))
+            self.assertTrue(all(json.loads(route["resolutions_json"]) == [] for route in routes))
 
     def test_initialize_preserves_explicit_profile_for_mapped_omni_route(self):
         with tempfile.TemporaryDirectory() as data_dir:
@@ -1395,6 +1400,7 @@ class CoreTests(unittest.TestCase):
         capabilities = client.get("/v1/model-capabilities").json()["data"]
         stable = next(item for item in capabilities if item["id"] == "stable-manxue")
         self.assertEqual(stable["capabilities"]["durations"], [10])
+        self.assertEqual(stable["capabilities"]["resolutions"], ["2k"])
 
         captured = {}
         response = httpx.Response(
@@ -1436,6 +1442,7 @@ class CoreTests(unittest.TestCase):
                         "protocol": "videos",
                         "profile": "default",
                         "durations": [4, 6, 30],
+                        "resolutions": ["480p", "720p"],
                     }
                 ],
             }
@@ -1443,10 +1450,12 @@ class CoreTests(unittest.TestCase):
         try:
             route = database.get_upstream(upstream["id"])["routes"][0]
             self.assertEqual(route["durations"], [4, 6, 30])
+            self.assertEqual(route["resolutions"], ["480p", "720p"])
             capabilities = next(
                 item for item in database.list_model_capabilities() if item["id"] == "duration-options-model"
             )
             self.assertEqual(capabilities["capabilities"]["durations"], [4, 6, 30])
+            self.assertEqual(capabilities["capabilities"]["resolutions"], ["480p", "720p"])
         finally:
             database.delete_upstream(upstream["id"])
 

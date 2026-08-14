@@ -54,7 +54,7 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); box-sha
 .field-actions { display: flex; align-items: center; gap: 8px; }
 .quiet-button.compact { min-height: 32px; padding: 0 11px; }
 .route-editor { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius); background: #f7f9f7; }
-.route-editor-header, .route-editor-row { min-width: 1020px; display: grid; grid-template-columns: minmax(145px, 1.2fr) 82px 126px minmax(145px, 1.2fr) 104px 82px 72px 70px 70px 28px; align-items: center; gap: 8px; }
+.route-editor-header, .route-editor-row { min-width: 1140px; display: grid; grid-template-columns: minmax(145px, 1.2fr) 82px 126px minmax(145px, 1.2fr) 104px 112px 82px 72px 70px 70px 28px; align-items: center; gap: 8px; }
 .route-editor-header { padding: 9px 10px; color: var(--muted); border-bottom: 1px solid var(--line); font-size: 11px; font-weight: 650; }
 .route-editor-rows { display: grid; }
 .route-editor-row { padding: 8px 10px; background: #fff; border-bottom: 1px solid #e6ebe8; }

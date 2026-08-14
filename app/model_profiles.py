@@ -175,12 +175,15 @@ def capabilities_for(
     supports_video: bool = True,
     supports_audio: bool = True,
     max_images: int | None = None,
+    resolution_overrides: list[str] | None = None,
 ) -> dict[str, Any]:
     capabilities = deepcopy(PROFILE_DEFINITIONS[profile]['capabilities'])
     if isinstance(duration_overrides, int):
         duration_overrides = [duration_overrides]
     if duration_overrides:
         capabilities['durations'] = duration_overrides
+    if resolution_overrides:
+        capabilities['resolutions'] = resolution_overrides
     if max_images is not None:
         capabilities['maxImages'] = max(0, max_images)
     elif not supports_image:
