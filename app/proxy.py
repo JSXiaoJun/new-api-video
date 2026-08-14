@@ -124,6 +124,12 @@ async def create_video(
         raise HTTPException(status_code=400, detail="prompt is required")
     relay_request_id = database.start_audit_request(upstream["id"], model, protocol, payload)
     routed_payload = {**payload, "model": upstream["upstream_model"]}
+    if not upstream.get("forward_resolution", True):
+        routed_payload.pop("resolution", None)
+        if isinstance(routed_payload.get("metadata"), dict):
+            routed_payload["metadata"] = {
+                key: value for key, value in routed_payload["metadata"].items() if key != "resolution"
+            }
     upstream_payload = (
         ark_video.transform_create_payload(routed_payload)
         if protocol == ark_video.PROTOCOL

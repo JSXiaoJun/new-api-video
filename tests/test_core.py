@@ -981,12 +981,14 @@ class CoreTests(unittest.TestCase):
                 database.initialize()
                 with database.connection() as migrated:
                     route = migrated.execute(
-                        "SELECT profile, duration_override, upstream_model FROM model_routes WHERE model = 'manxue-933'"
+                        "SELECT profile, duration_override, upstream_model, forward_resolution "
+                        "FROM model_routes WHERE model = 'manxue-933'"
                     ).fetchone()
 
             self.assertEqual(route["profile"], "manxue-933")
             self.assertIsNone(route["duration_override"])
             self.assertEqual(route["upstream_model"], "manxue-933")
+            self.assertEqual(route["forward_resolution"], 1)
 
     def test_initialize_expands_legacy_protocol_constraint_for_ark_v3(self):
         with tempfile.TemporaryDirectory() as data_dir:
@@ -1054,7 +1056,7 @@ class CoreTests(unittest.TestCase):
                         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'model_routes'"
                     ).fetchone()["sql"]
                     routes = migrated.execute(
-                        "SELECT model, protocol FROM model_routes ORDER BY model"
+                        "SELECT model, protocol, forward_resolution FROM model_routes ORDER BY model"
                     ).fetchall()
 
             self.assertIn("ark-v3", table_sql)
@@ -1062,6 +1064,7 @@ class CoreTests(unittest.TestCase):
                 ("ark-public", "ark-v3"),
                 ("legacy-video", "videos"),
             ])
+            self.assertTrue(all(route["forward_resolution"] == 1 for route in routes))
 
     def test_initialize_preserves_explicit_profile_for_mapped_omni_route(self):
         with tempfile.TemporaryDirectory() as data_dir:
@@ -1174,6 +1177,7 @@ class CoreTests(unittest.TestCase):
                 "image_count": 9,
                 "supports_video": True,
                 "supports_audio": True,
+                "forward_resolution": False,
             }],
         })
         task_id = f"cgt-{time.time_ns()}"
@@ -1216,6 +1220,7 @@ class CoreTests(unittest.TestCase):
                 "aspect_ratio": "16:9",
                 "duration": 15,
                 "resolution": "720p",
+                "metadata": {"resolution": "1080p"},
                 "generate_audio": True,
                 "image_urls": ["https://cdn.example/reference.png"],
                 "reference_video": "https://cdn.example/reference.mp4",
@@ -1233,6 +1238,8 @@ class CoreTests(unittest.TestCase):
         self.assertNotIn("Idempotency-Key", captured["create_headers"])
         self.assertEqual(captured["create_payload"]["model"], "doubao-seedance-2-0-260128")
         self.assertEqual(captured["create_payload"]["ratio"], "16:9")
+        self.assertNotIn("resolution", captured["create_payload"])
+        self.assertFalse(upstream["routes"][0]["forward_resolution"])
         self.assertEqual([item.get("role") for item in captured["create_payload"]["content"][1:]], [
             "reference_image",
             "reference_video",
@@ -1460,6 +1467,7 @@ class CoreTests(unittest.TestCase):
                     "image_count": 7,
                     "supports_video": False,
                     "supports_audio": True,
+                    "forward_resolution": False,
                 }],
             }
         )
@@ -1480,6 +1488,7 @@ class CoreTests(unittest.TestCase):
                         "image_count": 7,
                         "supports_video": False,
                         "supports_audio": True,
+                        "forward_resolution": False,
                     }],
                 },
                 upstream["id"],
@@ -1491,6 +1500,7 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(updated["routes"][0]["image_count"], 7)
             self.assertFalse(updated["routes"][0]["supports_video"])
             self.assertTrue(updated["routes"][0]["supports_audio"])
+            self.assertFalse(updated["routes"][0]["forward_resolution"])
 
             capabilities = next(
                 item for item in database.list_model_capabilities() if item["id"] == "stable-public-name"

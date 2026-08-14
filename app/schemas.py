@@ -29,6 +29,7 @@ class RouteInput(BaseModel):
     supports_image: bool = True
     supports_video: bool = True
     supports_audio: bool = True
+    forward_resolution: bool = True
     duration_override: int | None = Field(default=None, ge=1, le=60)
 
     @field_validator("model", "upstream_model")

@@ -54,7 +54,7 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); box-sha
 .field-actions { display: flex; align-items: center; gap: 8px; }
 .quiet-button.compact { min-height: 32px; padding: 0 11px; }
 .route-editor { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius); background: #f7f9f7; }
-.route-editor-header, .route-editor-row { min-width: 940px; display: grid; grid-template-columns: minmax(145px, 1.2fr) 82px 126px minmax(145px, 1.2fr) 104px 82px 70px 70px 28px; align-items: center; gap: 8px; }
+.route-editor-header, .route-editor-row { min-width: 1020px; display: grid; grid-template-columns: minmax(145px, 1.2fr) 82px 126px minmax(145px, 1.2fr) 104px 82px 72px 70px 70px 28px; align-items: center; gap: 8px; }
 .route-editor-header { padding: 9px 10px; color: var(--muted); border-bottom: 1px solid var(--line); font-size: 11px; font-weight: 650; }
 .route-editor-rows { display: grid; }
 .route-editor-row { padding: 8px 10px; background: #fff; border-bottom: 1px solid #e6ebe8; }
@@ -150,7 +150,7 @@ code { font-family: "SFMono-Regular", Consolas, monospace; font-size: 12px; colo
 .mobile-item-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 
 dialog { width: min(680px, calc(100vw - 32px)); max-height: calc(100svh - 32px); border: 0; border-radius: 8px; padding: 0; box-shadow: 0 28px 70px rgba(13, 27, 20, .28); }
-#upstream-dialog { width: min(1050px, calc(100vw - 32px)); overflow: visible; }
+#upstream-dialog { width: min(1180px, calc(100vw - 32px)); overflow: visible; }
 dialog::backdrop { background: rgba(17, 26, 21, .62); backdrop-filter: blur(2px); }
 .dialog-form { max-height: calc(100svh - 32px); padding: 26px; overflow-y: auto; overscroll-behavior: contain; }
 .dialog-heading { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 24px; }
