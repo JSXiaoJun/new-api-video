@@ -152,7 +152,7 @@ code { font-family: "SFMono-Regular", Consolas, monospace; font-size: 12px; colo
 dialog { width: min(680px, calc(100vw - 32px)); max-height: calc(100svh - 32px); border: 0; border-radius: 8px; padding: 0; box-shadow: 0 28px 70px rgba(13, 27, 20, .28); }
 #upstream-dialog { width: min(1050px, calc(100vw - 32px)); overflow: visible; }
 dialog::backdrop { background: rgba(17, 26, 21, .62); backdrop-filter: blur(2px); }
-.dialog-form { padding: 26px; overflow-y: auto; }
+.dialog-form { max-height: calc(100svh - 32px); padding: 26px; overflow-y: auto; overscroll-behavior: contain; }
 .dialog-heading { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 24px; }
 .dialog-heading h2 { margin: 5px 0 0; font-size: 23px; }
 .close-button { width: 36px; height: 36px; border: 0; background: transparent; color: #5f6c65; font-size: 25px; line-height: 1; }
