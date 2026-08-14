@@ -4,9 +4,10 @@ Independent video upstream adapter for New API. It exposes a normalized `/v1/vid
 
 ## Features
 
-- `videos` and `seedance` protocol conversion
+- `videos`, legacy `seedance`, and Volcengine Ark v3 protocol conversion
 - Seedance nested status normalization
 - Automatic or forwarded `Idempotency-Key`
+- Same-origin New API upload presign forwarding for the workbench
 - Multiple upstreams, model routing, priority, and enable/disable controls
 - SQLite task ownership so polling returns to the original upstream
 - Upstream task IDs, media URLs, and error details stay internal to the adapter
@@ -48,12 +49,24 @@ Public model        Request   Upstream model       Workbench profile   Duration
 sora2               videos    (empty)              sora2               (default)
 video-pro-10s       videos    manxue-900-10s       manxue-933          10
 seedance-public     seedance  seedance-2.0-fast    default              (default)
+seedance-2-public   ark-v3    doubao-seedance-2-*  ark-seedance-2       4-15
 ```
 
 The public model name is returned by `/v1/models` and accepted by `/v1/videos`. The optional upstream model name is
 substituted only when forwarding the request. Leaving it empty uses the public model name upstream. Synchronizing
 models preserves existing aliases by upstream model name, adds newly discovered models, and removes models that have
 disappeared upstream. `WORKBENCH_ORIGIN` controls which browser origin may read the public model capability endpoint.
+
+### Volcengine Ark v3
+
+Use base URL `https://ark.cn-beijing.volces.com`, protocol `ark-v3`, and profile `ark-seedance-2` for the native
+`/api/v3/contents/generations/tasks` API. Ark-specific request construction and task parsing live in
+`app/ark_video.py`; generic routing, auditing, and media streaming remain in `app/proxy.py`.
+
+The adapter maps canonical prompts and reference URL arrays into Ark `content` items with `reference_image`,
+`reference_video`, and `reference_audio` roles. Ark's temporary `content.video_url` is retained internally and served
+through the existing public content proxy. `/new-api/v1/upload/presign` forwards workbench presign requests to New API;
+the returned `public_url` is suitable as an Ark reference only when the object is publicly readable.
 
 The admin page's model route editor keeps the discovered upstream name in `映射上游模型名`; leaving `对外模型名`
 empty uses that upstream name as the public name when saving. Supported durations can be selected per route. `请求协议`

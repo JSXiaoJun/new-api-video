@@ -101,7 +101,7 @@ def adapter_auth(authorization: str | None = Header(default=None)) -> None:
         raise HTTPException(status_code=401, detail="Invalid adapter API key")
 
 
-def normalize_discovered_models(payload: Any) -> list[dict[str, Any]]:
+def normalize_discovered_models(payload: Any, protocol_override: str | None = None) -> list[dict[str, Any]]:
     if isinstance(payload, dict):
         raw_models = payload.get("data", payload.get("models", []))
     else:
@@ -121,7 +121,7 @@ def normalize_discovered_models(payload: Any) -> list[dict[str, Any]]:
         if not model_id or len(model_id) > 160 or model_id in seen:
             continue
         seen.add(model_id)
-        protocol = "seedance" if "seedance" in model_id.lower() else "videos"
+        protocol = protocol_override or ("seedance" if "seedance" in model_id.lower() else "videos")
         result.append({
             "model": "",
             "upstream_model": model_id,
@@ -262,6 +262,11 @@ async def new_api_create_video(request: Request):
     return await new_api_gateway.forward(request, "/v1/videos")
 
 
+@app.post("/new-api/v1/upload/presign")
+async def new_api_upload_presign(request: Request):
+    return await new_api_gateway.forward(request, "/v1/upload/presign")
+
+
 @app.get("/new-api/v1/videos/{task_id}")
 async def new_api_fetch_video(
     request: Request,
@@ -351,9 +356,13 @@ async def discover_upstream_models(payload: ModelDiscoveryInput, _: dict = Depen
     headers = {"Accept": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
+    discovery_protocol = None
     try:
         async with httpx.AsyncClient(timeout=min(settings.upstream_timeout_seconds, 30), follow_redirects=True) as client:
             response = await client.get(f"{payload.base_url}/v1/models", headers=headers)
+            if response.status_code == 404:
+                response = await client.get(f"{payload.base_url}/api/v3/models", headers=headers)
+                discovery_protocol = "ark-v3"
     except httpx.RequestError as exc:
         raise HTTPException(status_code=502, detail=f"上游模型请求失败: {exc}") from exc
     if not 200 <= response.status_code < 300:
@@ -362,7 +371,7 @@ async def discover_upstream_models(payload: ModelDiscoveryInput, _: dict = Depen
         upstream_payload = response.json()
     except ValueError as exc:
         raise HTTPException(status_code=502, detail="上游模型接口返回的不是有效 JSON") from exc
-    models = normalize_discovered_models(upstream_payload)
+    models = normalize_discovered_models(upstream_payload, discovery_protocol)
     if not models:
         raise HTTPException(status_code=422, detail="上游没有返回可用模型")
     return {"models": models}

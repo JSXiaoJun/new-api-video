@@ -22,6 +22,53 @@ settings.data_dir.mkdir(parents=True, exist_ok=True)
 DB_PATH = settings.data_dir / "adapter.db"
 
 
+def _ensure_ark_protocol_constraint(conn: sqlite3.Connection) -> None:
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'model_routes'"
+    ).fetchone()
+    if row is not None and "ark-v3" in (row["sql"] or ""):
+        return
+
+    # SQLite 无法原地修改 CHECK，重建表以保留已有路由并扩展协议枚举。
+    conn.commit()
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.executescript(
+            """
+            ALTER TABLE model_routes RENAME TO model_routes_before_ark_v3;
+            CREATE TABLE model_routes (
+                id INTEGER PRIMARY KEY,
+                upstream_id INTEGER NOT NULL REFERENCES upstreams(id) ON DELETE CASCADE,
+                model TEXT NOT NULL,
+                upstream_model TEXT NOT NULL,
+                protocol TEXT NOT NULL CHECK(protocol IN ('videos', 'seedance', 'ark-v3')),
+                profile TEXT NOT NULL DEFAULT 'default',
+                duration_override INTEGER,
+                durations_json TEXT NOT NULL DEFAULT '[]',
+                supports_image INTEGER NOT NULL DEFAULT 1,
+                supports_video INTEGER NOT NULL DEFAULT 1,
+                supports_audio INTEGER NOT NULL DEFAULT 1,
+                image_count INTEGER,
+                UNIQUE(upstream_id, model)
+            );
+            INSERT INTO model_routes(
+                id, upstream_id, model, upstream_model, protocol, profile, duration_override,
+                durations_json, supports_image, supports_video, supports_audio, image_count
+            )
+            SELECT
+                id, upstream_id, model, upstream_model, protocol, profile, duration_override,
+                durations_json, supports_image, supports_video, supports_audio, image_count
+            FROM model_routes_before_ark_v3;
+            DROP TABLE model_routes_before_ark_v3;
+            CREATE INDEX idx_model_routes_model ON model_routes(model);
+            CREATE UNIQUE INDEX idx_model_routes_upstream_model
+                ON model_routes(upstream_id, upstream_model);
+            """
+        )
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
+
+
 def _new_relay_request_id(prefix: str = "vrq") -> str:
     return f"{prefix}_{uuid.uuid4().hex}"
 
@@ -77,7 +124,7 @@ def initialize() -> None:
                 upstream_id INTEGER NOT NULL REFERENCES upstreams(id) ON DELETE CASCADE,
                 model TEXT NOT NULL,
                 upstream_model TEXT NOT NULL,
-                protocol TEXT NOT NULL CHECK(protocol IN ('videos', 'seedance')),
+                protocol TEXT NOT NULL CHECK(protocol IN ('videos', 'seedance', 'ark-v3')),
                 profile TEXT NOT NULL DEFAULT 'default',
                 duration_override INTEGER,
                 UNIQUE(upstream_id, model)
@@ -201,6 +248,7 @@ def initialize() -> None:
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_model_routes_upstream_model ON model_routes(upstream_id, upstream_model)"
         )
+        _ensure_ark_protocol_constraint(conn)
         if profile_added:
             for model in (
                 "gemini-omni-flash",

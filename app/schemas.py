@@ -12,7 +12,7 @@ from .model_profiles import MAX_DURATION_SECONDS
 class RouteInput(BaseModel):
     model: str = Field(min_length=1, max_length=160)
     upstream_model: str = Field(default="", max_length=160)
-    protocol: Literal["videos", "seedance"] = "videos"
+    protocol: Literal["videos", "seedance", "ark-v3"] = "videos"
     profile: Literal[
         "default",
         "gemini-omni",
@@ -20,6 +20,7 @@ class RouteInput(BaseModel):
         "veo31-fast",
         "manxue-900",
         "manxue-933",
+        "ark-seedance-2",
         "grok-auto",
         "grok-fast",
     ] = "default"

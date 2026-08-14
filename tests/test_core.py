@@ -987,6 +987,81 @@ class CoreTests(unittest.TestCase):
             self.assertIsNone(route["duration_override"])
             self.assertEqual(route["upstream_model"], "manxue-933")
 
+    def test_initialize_expands_legacy_protocol_constraint_for_ark_v3(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            database_path = Path(data_dir) / "adapter.db"
+            conn = sqlite3.connect(database_path)
+            conn.executescript(
+                """
+                CREATE TABLE upstreams (
+                    id INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    base_url TEXT NOT NULL,
+                    api_key_encrypted TEXT NOT NULL,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    priority INTEGER NOT NULL DEFAULT 100,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    last_used_at INTEGER
+                );
+                CREATE TABLE model_routes (
+                    id INTEGER PRIMARY KEY,
+                    upstream_id INTEGER NOT NULL REFERENCES upstreams(id) ON DELETE CASCADE,
+                    model TEXT NOT NULL,
+                    upstream_model TEXT NOT NULL,
+                    protocol TEXT NOT NULL CHECK(protocol IN ('videos', 'seedance')),
+                    profile TEXT NOT NULL DEFAULT 'default',
+                    duration_override INTEGER,
+                    UNIQUE(upstream_id, model)
+                );
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO upstreams(id, name, base_url, api_key_encrypted, enabled, priority, created_at, updated_at)
+                VALUES (1, 'legacy-protocol', 'https://legacy.example', ?, 1, 1, 100, 100)
+                """,
+                (secret_box.encrypt("legacy-key"),),
+            )
+            conn.execute(
+                """
+                INSERT INTO model_routes(upstream_id, model, upstream_model, protocol, profile)
+                VALUES (1, 'legacy-video', 'legacy-video', 'videos', 'default')
+                """
+            )
+            conn.commit()
+            conn.close()
+
+            with patch.object(database, "DB_PATH", database_path):
+                database.initialize()
+                database.save_upstream({
+                    "name": "ark",
+                    "base_url": "https://ark.example",
+                    "api_key": "ark-key",
+                    "enabled": True,
+                    "priority": 1,
+                    "routes": [{
+                        "model": "ark-public",
+                        "upstream_model": "doubao-seedance-2-0-260128",
+                        "protocol": "ark-v3",
+                        "profile": "ark-seedance-2",
+                        "durations": [4, 15],
+                    }],
+                })
+                with database.connection() as migrated:
+                    table_sql = migrated.execute(
+                        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'model_routes'"
+                    ).fetchone()["sql"]
+                    routes = migrated.execute(
+                        "SELECT model, protocol FROM model_routes ORDER BY model"
+                    ).fetchall()
+
+            self.assertIn("ark-v3", table_sql)
+            self.assertEqual([(route["model"], route["protocol"]) for route in routes], [
+                ("ark-public", "ark-v3"),
+                ("legacy-video", "videos"),
+            ])
+
     def test_initialize_preserves_explicit_profile_for_mapped_omni_route(self):
         with tempfile.TemporaryDirectory() as data_dir:
             database_path = Path(data_dir) / "adapter.db"
@@ -1058,6 +1133,7 @@ class CoreTests(unittest.TestCase):
             "IN_PROGRESS": "processing",
             "SUCCESS": "completed",
             "FAILURE": "failed",
+            "expired": "failed",
             "processing": "processing",
         }
         for source, target in expected.items():
@@ -1079,6 +1155,105 @@ class CoreTests(unittest.TestCase):
         self.assertNotIn("id", result)
         self.assertNotIn("task_id", result)
         self.assertNotIn("video_url", result)
+
+    def test_ark_v3_create_poll_and_cross_origin_download(self):
+        model = f"ark-public-{time.time_ns()}"
+        upstream = database.save_upstream({
+            "name": f"ark-{time.time_ns()}",
+            "base_url": "https://ark.example",
+            "api_key": "ark-key",
+            "enabled": True,
+            "priority": 1,
+            "routes": [{
+                "model": model,
+                "upstream_model": "doubao-seedance-2-0-260128",
+                "protocol": "ark-v3",
+                "profile": "ark-seedance-2",
+                "durations": [4, 15],
+                "image_count": 9,
+                "supports_video": True,
+                "supports_audio": True,
+            }],
+        })
+        task_id = f"cgt-{time.time_ns()}"
+        captured = {}
+
+        class MockAsyncClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_):
+                return None
+
+            async def post(self, url, **kwargs):
+                captured["create_url"] = url
+                captured["create_headers"] = kwargs["headers"]
+                captured["create_payload"] = kwargs["json"]
+                return httpx.Response(
+                    200,
+                    request=httpx.Request("POST", url),
+                    json={"id": task_id},
+                )
+
+            async def get(self, url, **kwargs):
+                captured["poll_url"] = url
+                captured["poll_headers"] = kwargs["headers"]
+                return httpx.Response(
+                    200,
+                    request=httpx.Request("GET", url),
+                    json={
+                        "id": task_id,
+                        "status": "succeeded",
+                        "content": {"video_url": "https://ark-cdn.example/result.mp4?token=temporary"},
+                    },
+                )
+
+        with patch("app.proxy.httpx.AsyncClient", return_value=MockAsyncClient()):
+            created = asyncio.run(create_video({
+                "model": model,
+                "prompt": "电影感运镜",
+                "aspect_ratio": "16:9",
+                "duration": 15,
+                "resolution": "720p",
+                "generate_audio": True,
+                "image_urls": ["https://cdn.example/reference.png"],
+                "reference_video": "https://cdn.example/reference.mp4",
+                "audio_urls": ["https://cdn.example/reference.mp3"],
+            }, None))
+            fetched = asyncio.run(fetch_task(task_id))
+
+        self.assertEqual(created.status_code, 200)
+        self.assertEqual(json.loads(fetched.body)["status"], "completed")
+        self.assertEqual(captured["create_url"], "https://ark.example/api/v3/contents/generations/tasks")
+        self.assertEqual(
+            captured["poll_url"],
+            f"https://ark.example/api/v3/contents/generations/tasks/{task_id}",
+        )
+        self.assertNotIn("Idempotency-Key", captured["create_headers"])
+        self.assertEqual(captured["create_payload"]["model"], "doubao-seedance-2-0-260128")
+        self.assertEqual(captured["create_payload"]["ratio"], "16:9")
+        self.assertEqual([item.get("role") for item in captured["create_payload"]["content"][1:]], [
+            "reference_image",
+            "reference_video",
+            "reference_audio",
+        ])
+        self.assertEqual(
+            database.get_task(task_id)["source_video_url"],
+            "https://ark-cdn.example/result.mp4?token=temporary",
+        )
+
+        async def mock_stream(source_url, _request, headers=None, **_kwargs):
+            captured["download_url"] = source_url
+            captured["download_headers"] = headers
+            return Response(content=b"video", media_type="video/mp4")
+
+        request = httpx.Request("GET", f"https://media.yyapi.cloud/public/videos/{task_id}/content")
+        with patch("app.proxy.stream_upstream_content", new=mock_stream):
+            asyncio.run(stream_content(task_id, request))
+
+        self.assertEqual(captured["download_url"], "https://ark-cdn.example/result.mp4?token=temporary")
+        self.assertNotIn("Authorization", captured["download_headers"])
+        self.assertEqual(upstream["routes"][0]["protocol"], "ark-v3")
 
     def test_task_response_keeps_upstream_details_internal(self):
         task = {
@@ -1147,6 +1322,55 @@ class CoreTests(unittest.TestCase):
         models = normalize_discovered_models({"data": [{"id": "omni-flash-720p"}]})
 
         self.assertEqual(models[0]["profile"], "gemini-omni")
+
+    def test_model_discovery_falls_back_to_ark_v3_endpoint(self):
+        captured = []
+
+        class MockAsyncClient:
+            def __init__(self, **_kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_):
+                return None
+
+            async def get(self, url, **_kwargs):
+                captured.append(url)
+                if url.endswith("/v1/models"):
+                    return httpx.Response(404, request=httpx.Request("GET", url), json={"error": "not found"})
+                return httpx.Response(
+                    200,
+                    request=httpx.Request("GET", url),
+                    json={"data": [{"id": "doubao-seedance-2-0-260128"}]},
+                )
+
+        client = TestClient(app)
+        session = create_session("admin")
+        client.cookies.set(SESSION_COOKIE, session)
+        with patch("app.main.httpx.AsyncClient", MockAsyncClient):
+            response = client.post(
+                "/admin/api/upstreams/models",
+                headers={"X-CSRF-Token": csrf_token(session)},
+                json={
+                    "base_url": "https://ark.example",
+                    "api_key": "ark-key",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(captured, [
+            "https://ark.example/v1/models",
+            "https://ark.example/api/v3/models",
+        ])
+        self.assertEqual(response.json()["models"], [{
+            "model": "",
+            "upstream_model": "doubao-seedance-2-0-260128",
+            "protocol": "ark-v3",
+            "profile": "ark-seedance-2",
+            "durations": [],
+        }])
 
     def test_model_discovery_selects_933_profile_for_native_aliases(self):
         models = normalize_discovered_models({"data": ["sora-v3-933-pro", "tejiasd2"]})
@@ -1448,6 +1672,47 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(captured["url"], f"{settings.new_api_gateway_base_url}/v1/videos")
         self.assertEqual(captured["authorization"], "Bearer user-new-api-key")
         self.assertEqual(captured["body"]["model"], "gemini-omni-flash")
+
+    def test_new_api_gateway_forwards_upload_presign_request(self):
+        captured = {}
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            captured["method"] = request.method
+            captured["url"] = str(request.url)
+            captured["authorization"] = request.headers.get("authorization")
+            captured["body"] = json.loads(request.content)
+            return httpx.Response(
+                200,
+                request=request,
+                json={
+                    "url": "https://tos.example/upload?signature=temporary",
+                    "public_url": "https://tos.example/uploads/reference.png",
+                    "method": "PUT",
+                    "headers": {"Content-Type": "image/png"},
+                    "expires_at": 1784682900,
+                },
+            )
+
+        transport = httpx.MockTransport(handler)
+        real_async_client = httpx.AsyncClient
+
+        def gateway_client(*_args, **_kwargs):
+            return real_async_client(transport=transport, follow_redirects=False)
+
+        client = TestClient(app)
+        with patch("app.new_api_gateway.httpx.AsyncClient", side_effect=gateway_client):
+            response = client.post(
+                "/new-api/v1/upload/presign",
+                headers={"Authorization": "Bearer user-new-api-key"},
+                json={"filename": "reference.png", "content_type": "image/png"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["method"], "PUT")
+        self.assertEqual(captured["method"], "POST")
+        self.assertEqual(captured["url"], f"{settings.new_api_gateway_base_url}/v1/upload/presign")
+        self.assertEqual(captured["authorization"], "Bearer user-new-api-key")
+        self.assertEqual(captured["body"], {"filename": "reference.png", "content_type": "image/png"})
 
     def test_new_api_video_gateway_preflight_allows_workbench_post(self):
         response = TestClient(app).options(

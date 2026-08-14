@@ -89,6 +89,25 @@ PROFILE_DEFINITIONS: dict[str, dict[str, Any]] = {
             'experimental': True,
         },
     },
+    'ark-seedance-2': {
+        'label': '方舟 Seedance 2.0',
+        'request_format': 'default',
+        'capabilities': {
+            'ratios': ['16:9', '9:16', '4:3', '3:4', '1:1', '21:9'],
+            'durations': list(range(4, 16)),
+            'resolutions': ['480p', '720p'],
+            'maxImages': 9,
+            'referenceVideo': True,
+            'maxAudios': 3,
+            'maxReferences': 12,
+            'minReferenceVideoDuration': 2,
+            'maxReferenceVideoDuration': 15,
+            'minAudioDuration': 2,
+            'maxAudioDuration': 15,
+            'maxTotalAudioDuration': 15,
+            'experimental': True,
+        },
+    },
     'grok-auto': {
         'label': 'Grok 自动参数',
         'request_format': 'grok',
@@ -117,6 +136,8 @@ PROFILE_DEFINITIONS: dict[str, dict[str, Any]] = {
 
 
 def suggest_profile(model: str, protocol: str) -> str:
+    if protocol == 'ark-v3':
+        return 'ark-seedance-2'
     if protocol == 'seedance':
         return 'default'
     return {

@@ -297,9 +297,23 @@ function routeDurations(route) {
     .sort((a, b) => a - b)
 }
 
+function durationRanges(values) {
+  const durations = routeDurations({ durations: values })
+  return durations.reduce((ranges, duration) => {
+    const last = ranges.at(-1)
+    if (last && duration === last.end + 1) last.end = duration
+    else ranges.push({ start: duration, end: duration })
+    return ranges
+  }, [])
+}
+
+function formatDurationRange(range) {
+  return range.start === range.end ? `${range.start}s` : `${range.start}–${range.end}s`
+}
+
 function updateDurationSummary(row) {
-  const values = JSON.parse(row.dataset.durations || '[]').map((duration) => `${duration}s`)
-  row.querySelector('[data-duration-summary]').textContent = values.length ? values.join(', ') : '工作台默认'
+  const ranges = durationRanges(JSON.parse(row.dataset.durations || '[]'))
+  row.querySelector('[data-duration-summary]').textContent = ranges.length ? ranges.map(formatDurationRange).join(', ') : '工作台默认'
 }
 
 function closeDurationMenu() {
@@ -317,6 +331,12 @@ function openDurationMenu(row, trigger) {
       <input data-duration-input type="number" min="1" max="${MAX_DURATION_SECONDS}" step="1" placeholder="秒数" aria-label="输入支持时长">
       <button data-duration-add type="button">添加</button>
     </div>
+    <div class="duration-range-row">
+      <input data-duration-range-start type="number" min="1" max="${MAX_DURATION_SECONDS}" step="1" placeholder="起始" aria-label="范围起始秒数">
+      <span>至</span>
+      <input data-duration-range-end type="number" min="1" max="${MAX_DURATION_SECONDS}" step="1" placeholder="结束" aria-label="范围结束秒数">
+      <button data-duration-range-add type="button">添加范围</button>
+    </div>
     <div data-duration-values class="duration-values"></div>`
   dialog.appendChild(menu)
   const rect = trigger.getBoundingClientRect()
@@ -332,8 +352,9 @@ function openDurationMenu(row, trigger) {
   const renderValues = () => {
     const durations = routeDurations({ durations: JSON.parse(row.dataset.durations || '[]') })
     row.dataset.durations = JSON.stringify(durations)
-    menu.querySelector('[data-duration-values]').innerHTML = durations.length
-      ? durations.map((duration) => `<span class="duration-value"><span>${duration}s</span><button data-duration-remove="${duration}" type="button" aria-label="移除 ${duration} 秒">×</button></span>`).join('')
+    const ranges = durationRanges(durations)
+    menu.querySelector('[data-duration-values]').innerHTML = ranges.length
+      ? ranges.map((range) => `<span class="duration-value"><span>${formatDurationRange(range)}</span><button data-duration-remove-start="${range.start}" data-duration-remove-end="${range.end}" type="button" aria-label="移除 ${range.start}${range.start === range.end ? '' : ` 至 ${range.end}`} 秒">×</button></span>`).join('')
       : '<span class="duration-empty">未添加，使用工作台默认</span>'
     updateDurationSummary(row)
   }
@@ -351,18 +372,49 @@ function openDurationMenu(row, trigger) {
     renderValues()
     input.focus()
   }
+  const addDurationRange = () => {
+    const startInput = menu.querySelector('[data-duration-range-start]')
+    const endInput = menu.querySelector('[data-duration-range-end]')
+    const start = Number(startInput.value)
+    const end = Number(endInput.value)
+    if (
+      !Number.isInteger(start) || !Number.isInteger(end) ||
+      start < 1 || end > MAX_DURATION_SECONDS || start > end
+    ) {
+      showToast(`请输入有效范围，例如 2 至 15（最大 ${MAX_DURATION_SECONDS} 秒）`, 'error')
+      startInput.focus()
+      return
+    }
+    const durations = JSON.parse(row.dataset.durations || '[]')
+    const range = Array.from({ length: end - start + 1 }, (_, index) => start + index)
+    row.dataset.durations = JSON.stringify([...durations, ...range])
+    startInput.value = ''
+    endInput.value = ''
+    renderValues()
+    startInput.focus()
+  }
   menu.querySelector('[data-duration-add]').addEventListener('click', addDuration)
+  menu.querySelector('[data-duration-range-add]').addEventListener('click', addDurationRange)
   menu.querySelector('[data-duration-input]').addEventListener('keydown', (event) => {
     if (event.key === 'Enter') {
       event.preventDefault()
       addDuration()
     }
   })
+  for (const input of menu.querySelectorAll('[data-duration-range-start], [data-duration-range-end]')) {
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault()
+        addDurationRange()
+      }
+    })
+  }
   menu.addEventListener('click', (event) => {
-    const removeButton = event.target.closest('[data-duration-remove]')
+    const removeButton = event.target.closest('[data-duration-remove-start]')
     if (!removeButton) return
-    const removed = Number(removeButton.dataset.durationRemove)
-    const durations = JSON.parse(row.dataset.durations || '[]').filter((duration) => duration !== removed)
+    const start = Number(removeButton.dataset.durationRemoveStart)
+    const end = Number(removeButton.dataset.durationRemoveEnd)
+    const durations = JSON.parse(row.dataset.durations || '[]').filter((duration) => duration < start || duration > end)
     row.dataset.durations = JSON.stringify(durations)
     renderValues()
   })
@@ -374,17 +426,19 @@ function addRouteRow(route = {}) {
   row.className = 'route-editor-row'
   const mappedUpstreamModel = route.upstream_model || route.mapped_upstream_model || ''
   const selectedDurations = routeDurations(route)
-  const selectedProfile = route.profile || 'default'
+  const protocol = route.protocol || 'videos'
+  const selectedProfile = protocol === 'ark-v3' ? (route.profile || 'ark-seedance-2') : (route.profile || 'default')
   row.dataset.durations = JSON.stringify(selectedDurations)
   row.innerHTML = `
     <input data-route-field="model" maxlength="160" value="${escapeHtml(route.model || '')}" placeholder="对外模型名" aria-label="对外模型名">
     <select data-route-field="protocol" aria-label="请求协议">
-      <option value="videos"${route.protocol !== 'seedance' ? ' selected' : ''}>videos</option>
-      <option value="seedance"${route.protocol === 'seedance' ? ' selected' : ''}>seedance</option>
+      <option value="videos"${protocol === 'videos' ? ' selected' : ''}>videos</option>
+      <option value="seedance"${protocol === 'seedance' ? ' selected' : ''}>seedance</option>
+      <option value="ark-v3"${protocol === 'ark-v3' ? ' selected' : ''}>ark-v3（方舟原生）</option>
     </select>
-    <select data-route-field="profile" aria-label="请求格式"${route.protocol === 'seedance' ? ' disabled' : ''}>${profileOptions(route.protocol === 'seedance' ? 'default' : selectedProfile)}</select>
+    <select data-route-field="profile" aria-label="请求格式"${protocol === 'seedance' ? ' disabled' : ''}>${profileOptions(protocol === 'seedance' ? 'default' : selectedProfile)}</select>
     <input data-route-field="upstream_model" maxlength="160" value="${escapeHtml(mappedUpstreamModel)}" placeholder="上游模型名" aria-label="映射上游模型名">
-    <button class="duration-picker" data-duration-trigger data-duration-summary type="button">${selectedDurations.length ? selectedDurations.map((duration) => `${duration}s`).join(', ') : '工作台默认'}</button>
+    <button class="duration-picker" data-duration-trigger data-duration-summary type="button">${selectedDurations.length ? durationRanges(selectedDurations).map(formatDurationRange).join(', ') : '工作台默认'}</button>
     <label class="image-count"><input data-route-field="image_count" type="number" min="0" max="20" value="${route.image_count ?? 1}" aria-label="图片数量"><span>张</span></label>
     <label class="media-support-cell"><input data-route-support="video" type="checkbox"${route.supports_video !== false ? ' checked' : ''} aria-label="支持视频"></label>
     <label class="media-support-cell"><input data-route-support="audio" type="checkbox"${route.supports_audio !== false ? ' checked' : ''} aria-label="支持音频"></label>
@@ -512,7 +566,13 @@ routeRows.addEventListener('change', (event) => {
   const profile = row?.querySelector('[data-route-field="profile"]')
   if (!profile) return
   profile.disabled = target.value === 'seedance'
-  if (profile.disabled) profile.value = 'default'
+  if (profile.disabled) {
+    profile.value = 'default'
+  } else if (target.value === 'ark-v3') {
+    profile.value = 'ark-seedance-2'
+  } else if (profile.value === 'ark-seedance-2') {
+    profile.value = 'default'
+  }
 })
 document.addEventListener('click', (event) => {
   if (!activeDurationMenu) return

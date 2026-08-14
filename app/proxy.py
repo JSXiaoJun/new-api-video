@@ -10,7 +10,7 @@ import httpx
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from . import database
+from . import ark_video, database
 from .config import settings
 from .model_profiles import transform_create_payload
 
@@ -32,6 +32,7 @@ STATUS_MAP = {
     "FAILURE": "failed",
     "FAILED": "failed",
     "CANCELLED": "failed",
+    "EXPIRED": "failed",
 }
 
 
@@ -72,22 +73,28 @@ async def create_video(
     prompt = str(payload.get("prompt", "")).strip()
     if not model:
         raise HTTPException(status_code=400, detail="model is required")
-    if not prompt:
-        raise HTTPException(status_code=400, detail="prompt is required")
 
     upstream = database.select_upstream(model)
     if upstream is None:
         raise HTTPException(status_code=404, detail=f"No enabled upstream for model {model}")
 
     protocol = upstream["protocol"]
+    if not prompt and (protocol != ark_video.PROTOCOL or not ark_video.has_reference_content(payload)):
+        raise HTTPException(status_code=400, detail="prompt is required")
     relay_request_id = database.start_audit_request(upstream["id"], model, protocol, payload)
-    upstream_payload = transform_create_payload(
-        {**payload, "model": upstream["upstream_model"]},
-        upstream["profile"],
+    routed_payload = {**payload, "model": upstream["upstream_model"]}
+    upstream_payload = (
+        ark_video.transform_create_payload(routed_payload)
+        if protocol == ark_video.PROTOCOL
+        else transform_create_payload(routed_payload, upstream["profile"])
     )
     database.record_upstream_request_payload(relay_request_id, upstream_payload)
     response_headers = {REQUEST_ID_HEADER: relay_request_id}
-    endpoint = "/v1/video/generations" if protocol == "seedance" else "/v1/videos"
+    endpoint = (
+        ark_video.CREATE_PATH
+        if protocol == ark_video.PROTOCOL
+        else "/v1/video/generations" if protocol == "seedance" else "/v1/videos"
+    )
     headers = {
         "Authorization": f"Bearer {upstream['api_key']}",
         "Content-Type": "application/json",
@@ -161,6 +168,12 @@ def normalize_task_payload(task: dict[str, Any], payload: dict[str, Any]) -> tup
         content = job_data.get("content") if isinstance(job_data.get("content"), dict) else {}
         video_url = content.get("video_url") or video_url
         error_value = outer_data.get("error") or job_data.get("error") or error_value
+    elif task["protocol"] == ark_video.PROTOCOL:
+        fields = ark_video.extract_task_fields(payload)
+        status_value = fields["status"]
+        video_url = fields["video_url"]
+        error_value = fields["error"]
+        progress = fields["progress"]
 
     status = normalize_status(status_value)
     if status not in {"queued", "processing", "completed", "failed"}:
@@ -194,9 +207,14 @@ async def fetch_task(task_id: str) -> JSONResponse:
     headers = {"Authorization": f"Bearer {task['api_key']}", "Accept": "application/json"}
     relay_request_id = task.get("relay_request_id")
     response_headers = {REQUEST_ID_HEADER: relay_request_id} if relay_request_id else None
+    endpoint = (
+        ark_video.task_path(task_id)
+        if task["protocol"] == ark_video.PROTOCOL
+        else f"/v1/videos/{task_id}"
+    )
     try:
         async with httpx.AsyncClient(timeout=settings.upstream_timeout_seconds) as client:
-            response = await client.get(f"{task['base_url']}/v1/videos/{task_id}", headers=headers)
+            response = await client.get(f"{task['base_url']}{endpoint}", headers=headers)
     except httpx.RequestError as exc:
         logger.warning("Video upstream task request failed: %s", exc)
         sanitized = {"detail": "Video upstream connection failed"}
@@ -315,6 +333,8 @@ async def stream_content(task_id: str, request: Request) -> StreamingResponse:
 
     if source_url:
         source_url = urljoin(task["base_url"] + "/", source_url)
+    elif task["protocol"] == ark_video.PROTOCOL:
+        raise HTTPException(status_code=502, detail="Ark task completed without a video URL")
     else:
         source_url = f"{task['base_url']}/v1/videos/{task_id}/content"
 
