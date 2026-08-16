@@ -3,6 +3,11 @@ const dialog = document.querySelector('#upstream-dialog')
 const form = document.querySelector('#upstream-form')
 const toast = document.querySelector('#toast')
 const discoverModelsButton = document.querySelector('#discover-models')
+const modelSelectionDialog = document.querySelector('#model-selection-dialog')
+const modelSelectionSearch = document.querySelector('#model-selection-search')
+const modelSelectionList = document.querySelector('#model-selection-list')
+const modelSelectionSelectAll = document.querySelector('#model-selection-select-all')
+const modelSelectionConfirm = document.querySelector('#model-selection-confirm')
 const addRouteButton = document.querySelector('#add-route')
 const routeRows = document.querySelector('#route-rows')
 const routeEmpty = document.querySelector('#route-empty')
@@ -21,6 +26,8 @@ let dashboard = { upstreams: [], tasks: [], stats: {} }
 let activeAudit = null
 let activeAuditView = 'request'
 let activeDurationMenu = null
+let pendingDiscoveredModels = []
+let selectedDiscoveredModels = new Set()
 
 function updateResponsiveClass() {
   document.documentElement.classList.toggle('is-mobile', window.matchMedia('(max-width: 760px)').matches)
@@ -440,7 +447,7 @@ function addRouteRow(route = {}) {
     <input data-route-field="upstream_model" maxlength="160" value="${escapeHtml(mappedUpstreamModel)}" placeholder="上游模型名" aria-label="映射上游模型名">
     <button class="duration-picker" data-duration-trigger data-duration-summary type="button">${selectedDurations.length ? durationRanges(selectedDurations).map(formatDurationRange).join(', ') : '工作台默认'}</button>
     <input data-route-field="resolutions" maxlength="620" value="${escapeHtml((route.resolutions || []).join(', '))}" placeholder="工作台默认" aria-label="支持分辨率" title="多个分辨率用逗号分隔">
-    <label class="image-count"><input data-route-field="image_count" type="number" min="0" max="30" value="${route.image_count ?? 1}" aria-label="图片数量"><span>张</span></label>
+    <label class="image-count"><input data-route-field="image_count" type="number" min="0" max="50" value="${route.image_count ?? 1}" aria-label="图片数量"><span>张</span></label>
     <label class="media-support-cell"><input data-route-forward="resolution" type="checkbox"${route.forward_resolution !== false ? ' checked' : ''} aria-label="传分辨率"></label>
     <label class="media-support-cell"><input data-route-support="video" type="checkbox"${route.supports_video !== false ? ' checked' : ''} aria-label="支持视频"></label>
     <label class="media-support-cell"><input data-route-support="audio" type="checkbox"${route.supports_audio !== false ? ' checked' : ''} aria-label="支持音频"></label>
@@ -463,7 +470,7 @@ function readRoutes(allowEmpty = false, preserveBlankModel = false) {
     const durations = JSON.parse(row.dataset.durations || '[]')
     const resolutions = [...new Set(row.querySelector('[data-route-field="resolutions"]').value
       .split(/[,，]/).map((value) => value.trim()).filter(Boolean))]
-    const imageCount = Math.max(0, Math.min(30, Number(row.querySelector('[data-route-field="image_count"]').value) || 0))
+    const imageCount = Math.max(0, Math.min(50, Number(row.querySelector('[data-route-field="image_count"]').value) || 0))
     const effectiveModel = model || upstreamModel
     if (!effectiveModel) throw new Error('每一行都必须填写对外模型名或映射上游模型名')
     return {
@@ -511,6 +518,60 @@ function closeDialog() {
   setRouteRows([])
 }
 
+function filteredDiscoveredModels() {
+  const query = modelSelectionSearch.value.trim().toLowerCase()
+  return pendingDiscoveredModels.filter((model) => {
+    if (!query) return true
+    return `${model.upstream_model} ${profileLabel(model.profile)} ${model.protocol}`.toLowerCase().includes(query)
+  })
+}
+
+function updateModelSelectionState() {
+  const checkboxes = [...modelSelectionList.querySelectorAll('[data-model-select]')]
+  const visibleSelectedCount = checkboxes.filter((checkbox) => checkbox.checked).length
+  const selectedCount = selectedDiscoveredModels.size
+  modelSelectionConfirm.disabled = selectedCount === 0
+  modelSelectionConfirm.textContent = selectedCount ? `添加选中模型（${selectedCount}）` : '添加选中模型'
+  modelSelectionSelectAll.checked = checkboxes.length > 0 && checkboxes.every((checkbox) => checkbox.checked)
+  modelSelectionSelectAll.indeterminate = visibleSelectedCount > 0 && visibleSelectedCount < checkboxes.length
+}
+
+function renderModelSelectionList() {
+  const models = filteredDiscoveredModels()
+  modelSelectionList.innerHTML = models.length
+    ? models.map((model) => `
+      <label class="model-selection-item">
+        <input type="checkbox" data-model-select="${escapeHtml(model.upstream_model)}"${selectedDiscoveredModels.has(model.upstream_model) ? ' checked' : ''}>
+        <span><strong>${escapeHtml(model.upstream_model)}</strong><small>${escapeHtml(profileLabel(model.profile))} · ${escapeHtml(model.protocol)}</small></span>
+      </label>`).join('')
+    : '<p class="model-selection-empty">没有匹配的未添加模型</p>'
+  modelSelectionList.querySelectorAll('[data-model-select]').forEach((checkbox) => {
+    checkbox.addEventListener('change', () => {
+      if (checkbox.checked) selectedDiscoveredModels.add(checkbox.dataset.modelSelect)
+      else selectedDiscoveredModels.delete(checkbox.dataset.modelSelect)
+      updateModelSelectionState()
+    })
+  })
+  updateModelSelectionState()
+}
+
+function openModelSelection(models) {
+  pendingDiscoveredModels = models
+  selectedDiscoveredModels = new Set()
+  modelSelectionSearch.value = ''
+  modelSelectionSelectAll.checked = false
+  modelSelectionSelectAll.indeterminate = false
+  renderModelSelectionList()
+  modelSelectionDialog.showModal()
+  modelSelectionSearch.focus()
+}
+
+function closeModelSelection() {
+  pendingDiscoveredModels = []
+  selectedDiscoveredModels = new Set()
+  modelSelectionDialog.close()
+}
+
 discoverModelsButton.addEventListener('click', async () => {
   const baseUrl = document.querySelector('#upstream-base-url').value.trim()
   const apiKey = document.querySelector('#upstream-api-key').value
@@ -534,15 +595,13 @@ discoverModelsButton.addEventListener('click', async () => {
     })
     const currentRoutes = readRoutes(true, true)
     const currentByUpstream = new Map(currentRoutes.map((route) => [route.upstream_model || route.model, route]))
-    const discoveredNames = new Set(result.models.map((item) => item.upstream_model))
     const addedRoutes = result.models.filter((item) => !currentByUpstream.has(item.upstream_model))
-    const retainedRoutes = currentRoutes.filter((route) => !discoveredNames.has(route.upstream_model || route.model))
-    setRouteRows([
-      ...result.models.map((item) => currentByUpstream.get(item.upstream_model) || item),
-      ...retainedRoutes,
-    ])
-    const retainedText = retainedRoutes.length ? `，保留 ${retainedRoutes.length} 条未发现的已有路由` : ''
-    showToast(`发现 ${result.models.length} 个模型，新增 ${addedRoutes.length} 个${retainedText}`)
+    if (!addedRoutes.length) {
+      showToast(`发现 ${result.models.length} 个模型，均已添加`)
+    } else {
+      openModelSelection(addedRoutes)
+      showToast(`发现 ${result.models.length} 个模型，其中 ${addedRoutes.length} 个尚未添加`)
+    }
   } catch (error) {
     document.querySelector('#form-error').textContent = error.message
     document.querySelector('#form-error').hidden = false
@@ -551,6 +610,26 @@ discoverModelsButton.addEventListener('click', async () => {
     discoverModelsButton.textContent = '同步上游模型'
   }
 
+})
+
+modelSelectionSearch.addEventListener('input', renderModelSelectionList)
+modelSelectionSelectAll.addEventListener('change', () => {
+  modelSelectionList.querySelectorAll('[data-model-select]').forEach((checkbox) => {
+    checkbox.checked = modelSelectionSelectAll.checked
+    if (checkbox.checked) selectedDiscoveredModels.add(checkbox.dataset.modelSelect)
+    else selectedDiscoveredModels.delete(checkbox.dataset.modelSelect)
+  })
+  updateModelSelectionState()
+})
+modelSelectionConfirm.addEventListener('click', () => {
+  const currentRoutes = readRoutes(true, true)
+  const selectedRoutes = pendingDiscoveredModels.filter((model) => selectedDiscoveredModels.has(model.upstream_model))
+  setRouteRows([...currentRoutes, ...selectedRoutes])
+  closeModelSelection()
+  showToast(`已追加 ${selectedRoutes.length} 个模型，原有顺序未改变`)
+})
+document.querySelectorAll('#model-selection-cancel, #model-selection-cancel-action').forEach((button) => {
+  button.addEventListener('click', closeModelSelection)
 })
 
 addRouteButton.addEventListener('click', () => addRouteRow())

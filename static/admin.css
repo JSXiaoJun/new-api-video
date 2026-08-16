@@ -80,6 +80,20 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); box-sha
 .route-remove { width: 34px; height: 34px; padding: 0; border: 0; border-radius: 4px; color: #768078; background: transparent; font-size: 18px; line-height: 1; }
 .route-remove:hover { color: var(--danger); background: #fff0ee; }
 .route-editor-empty { padding: 34px 16px; color: var(--muted); text-align: center; font-size: 12px; font-weight: 500; }
+.model-selection-dialog { width: min(580px, calc(100vw - 32px)); max-height: calc(100svh - 32px); border: 0; border-radius: 8px; padding: 0; box-shadow: 0 28px 70px rgba(13, 27, 20, .28); }
+.model-selection-form { display: grid; gap: 16px; padding: 24px; }
+.model-selection-hint { margin: 0; color: var(--muted); font-size: 13px; }
+.model-selection-toolbar { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 14px; }
+.model-selection-toolbar input[type="search"] { width: 100%; height: 36px; padding: 0 10px; border: 1px solid #cbd4cf; border-radius: 4px; }
+.model-selection-toolbar label { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; color: var(--ink); font-size: 12px; font-weight: 650; }
+.model-selection-list { display: grid; max-height: min(430px, 50vh); overflow: auto; border: 1px solid var(--line); border-radius: 4px; }
+.model-selection-item { display: flex; align-items: flex-start; gap: 10px; padding: 11px 12px; border-bottom: 1px solid #e6ebe8; cursor: pointer; }
+.model-selection-item:last-child { border-bottom: 0; }
+.model-selection-item:hover { background: #f5f8f5; }
+.model-selection-item > span { display: grid; gap: 3px; min-width: 0; }
+.model-selection-item strong { overflow-wrap: anywhere; font: 12px/1.4 "SFMono-Regular", Consolas, monospace; }
+.model-selection-item small { color: var(--muted); font-size: 11px; }
+.model-selection-empty { margin: 0; padding: 30px 16px; color: var(--muted); text-align: center; font-size: 12px; }
 
 .app-header { width: 100%; height: 64px; display: flex; align-items: center; justify-content: space-between; padding: 0 clamp(20px, 4vw, 56px); background: #17211c; color: #f4f8f5; border-bottom: 1px solid #2d3b34; }
 .app-brand { color: inherit; text-decoration: none; display: flex; align-items: center; gap: 12px; font-size: 14px; font-weight: 750; }

@@ -6,7 +6,7 @@
     <meta name="csrf-token" content="{{ csrf_token }}">
     <link rel="icon" href="data:,">
     <title>Video Relay Console</title>
-    <link rel="stylesheet" href="/static/admin.css?v=20260814-3">
+    <link rel="stylesheet" href="/static/admin.css?v=20260816-1">
   </head>
   <body>
     <header class="app-header">
@@ -139,6 +139,25 @@
         </div>
       </form>
     </dialog>
+    <dialog id="model-selection-dialog" class="model-selection-dialog">
+      <form method="dialog" class="model-selection-form">
+        <div class="dialog-heading">
+          <div><p class="eyebrow">MODEL DISCOVERY</p><h2>选择要添加的模型</h2></div>
+          <button id="model-selection-cancel" class="close-button" type="button" aria-label="关闭">×</button>
+        </div>
+        <p class="model-selection-hint">已过滤当前表格中的模型。勾选后会追加到表格底部。</p>
+        <div class="model-selection-toolbar">
+          <input id="model-selection-search" type="search" placeholder="筛选模型名、协议或格式" aria-label="筛选待添加模型">
+          <label><input id="model-selection-select-all" type="checkbox"> 全选</label>
+        </div>
+        <div id="model-selection-list" class="model-selection-list"></div>
+        <div class="dialog-actions">
+          <button id="model-selection-cancel-action" class="quiet-button compact" type="button">取消</button>
+          <span class="action-spacer"></span>
+          <button id="model-selection-confirm" class="primary-button compact" type="button" disabled>添加选中模型</button>
+        </div>
+      </form>
+    </dialog>
     <dialog id="audit-dialog" class="audit-dialog">
       <div class="audit-shell">
         <header class="audit-header">
@@ -191,6 +210,6 @@
       </div>
     </dialog>
     <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
-    <script src="/static/admin.js?v=20260814-5" defer></script>
+    <script src="/static/admin.js?v=20260816-1" defer></script>
   </body>
 </html>

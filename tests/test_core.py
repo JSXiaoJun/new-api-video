@@ -72,6 +72,13 @@ class CoreTests(unittest.TestCase):
         self.assertIn('id="copy-audit-json"', response.text)
         self.assertIn("请求格式", response.text)
         self.assertIn("转换后参数", response.text)
+        self.assertIn('id="model-selection-dialog"', response.text)
+        self.assertIn('id="model-selection-search"', response.text)
+        self.assertIn('id="model-selection-select-all"', response.text)
+        self.assertIn('id="model-selection-confirm"', response.text)
+        admin_script = client.get("/static/admin.js")
+        self.assertEqual(admin_script.status_code, 200)
+        self.assertIn('max="50"', admin_script.text)
 
     def test_image_admin_page_and_api_require_admin_session(self):
         client = TestClient(app)
