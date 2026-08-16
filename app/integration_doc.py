@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import datetime
 from typing import Any
 
 
@@ -80,6 +80,7 @@ def build_integration_document(
 ) -> str:
     base_url = base_url.rstrip("/")
     public_base_url = (public_base_url or base_url).rstrip("/")
+    generated_at = datetime.now().astimezone().isoformat(timespec="seconds")
     example_model = models[0] if models else {"id": "模型名", "capabilities": {}}
     example_capabilities = example_model["capabilities"]
     example_durations = [value for value in example_capabilities.get("durations", []) if value]
@@ -94,7 +95,8 @@ def build_integration_document(
         f"> API Base URL：`{base_url}`  ",
         f"> Public Media Base URL：`{public_base_url}`  ",
         "> 协议：OpenAI Videos 兼容接口  ",
-        f"> 生成日期：{date.today().isoformat()}",
+        f"> 当前开放视频模型：{len(models)} 个  ",
+        f"> 生成时间：{generated_at}",
         "",
         "## 接入流程",
         "",
@@ -169,17 +171,15 @@ def build_integration_document(
         f"| 查询任务 | `GET {base_url}/v1/videos/{{task_id}}` |",
         f"| 下载视频 | `GET {public_base_url}/public/videos/{{task_id}}/content`（免鉴权，自任务创建后约 24 小时有效，最多 {download_limit} 次） |",
         "",
-        "### 模型响应示例",
+        "### 当前模型响应快照",
         "",
         "```json",
         json.dumps(
             {
                 "object": "list",
                 "data": [
-                    {
-                        "id": example_model["id"],
-                        "object": "model",
-                    }
+                    {"id": model["id"], "object": "model"}
+                    for model in models
                 ],
             },
             ensure_ascii=False,

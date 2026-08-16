@@ -474,6 +474,9 @@ class CoreTests(unittest.TestCase):
         client = TestClient(app)
         session = create_session("admin")
         client.cookies.set(SESSION_COOKIE, session)
+        document = client.get("/admin/api/integration-document")
+        self.assertEqual(document.status_code, 200)
+        self.assertNotIn(model, document.text)
         updated = client.put(
             f"/admin/api/upstreams/{upstream['id']}",
             headers={"X-CSRF-Token": csrf_token(session)},
@@ -554,6 +557,7 @@ class CoreTests(unittest.TestCase):
     def test_admin_can_download_integration_document(self):
         client = TestClient(app)
         client.cookies.set(SESSION_COOKIE, create_session("admin"))
+        current_models = database.list_model_capabilities()
         original_base_url = database.get_public_link_base_url()
         original_limit = database.get_public_video_download_limit()
         try:
@@ -565,6 +569,11 @@ class CoreTests(unittest.TestCase):
             database.set_public_video_download_limit(original_limit)
         self.assertEqual(response.status_code, 200)
         self.assertIn("attachment; filename=\"video-api-integration.md\"", response.headers["content-disposition"])
+        self.assertEqual(response.headers["cache-control"], "no-store, max-age=0")
+        self.assertEqual(response.headers["pragma"], "no-cache")
+        self.assertEqual(int(response.headers["x-model-count"]), len(current_models))
+        self.assertIn(f"当前开放视频模型：{len(current_models)} 个", response.text)
+        self.assertEqual(response.text.count('"object": "model"'), len(current_models))
         self.assertIn("stable-manxue", response.text)
         self.assertIn("| 分辨率 | 2k |", response.text)
         self.assertNotIn("manxue-900-10s", response.text)
@@ -606,6 +615,8 @@ class CoreTests(unittest.TestCase):
             database.set_public_link_base_url(original_base_url)
         self.assertEqual(response.status_code, 200)
         self.assertIn("attachment; filename=\"image-api-integration.md\"", response.headers["content-disposition"])
+        self.assertEqual(response.headers["cache-control"], "no-store, max-age=0")
+        self.assertEqual(response.headers["pragma"], "no-cache")
         self.assertIn("Base URL：`https://zl.yyapi.cloud`", response.text)
         self.assertIn("https://media.yyapi.cloud/public/images/assets/{asset_id}", response.text)
         self.assertNotIn("https://media.yyapi.cloud/v1/images/generations", response.text)

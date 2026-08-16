@@ -243,16 +243,22 @@ def update_public_video_settings(
 
 @app.get("/admin/api/integration-document")
 def integration_document(_: tuple[str, dict] = Depends(admin_session)):
+    models = database.list_model_capabilities()
     content = build_integration_document(
         settings.api_public_base_url,
-        database.list_model_capabilities(),
+        models,
         database.get_public_video_download_limit(),
         database.get_public_link_base_url(),
     )
     return Response(
         content=content,
         media_type="text/markdown; charset=utf-8",
-        headers={"Content-Disposition": 'attachment; filename="video-api-integration.md"'},
+        headers={
+            "Content-Disposition": 'attachment; filename="video-api-integration.md"',
+            "Cache-Control": "no-store, max-age=0",
+            "Pragma": "no-cache",
+            "X-Model-Count": str(len(models)),
+        },
     )
 
 
@@ -292,7 +298,11 @@ def image_integration_document(_: tuple[str, dict] = Depends(admin_session)):
     return Response(
         content=content,
         media_type="text/markdown; charset=utf-8",
-        headers={"Content-Disposition": 'attachment; filename="image-api-integration.md"'},
+        headers={
+            "Content-Disposition": 'attachment; filename="image-api-integration.md"',
+            "Cache-Control": "no-store, max-age=0",
+            "Pragma": "no-cache",
+        },
     )
 
 
