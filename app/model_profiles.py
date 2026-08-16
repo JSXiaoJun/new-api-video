@@ -4,6 +4,8 @@ from copy import deepcopy
 import re
 from typing import Any
 
+from .channels import pro666
+
 
 MAX_DURATION_SECONDS = 60
 
@@ -26,7 +28,7 @@ PROFILE_DEFINITIONS: dict[str, dict[str, Any]] = {
         'request_format': 'gemini-omni',
         'capabilities': {
             'ratios': ['16:9', '9:16'],
-            'durations': [4, 6, 8, 10],
+            'durations': [5],
             'resolutions': ['720p'],
             'maxImages': 5,
             'referenceVideo': True,
@@ -132,6 +134,7 @@ PROFILE_DEFINITIONS: dict[str, dict[str, Any]] = {
             'experimental': True,
         },
     },
+    **pro666.PROFILE_DEFINITIONS,
 }
 
 
@@ -140,6 +143,9 @@ def suggest_profile(model: str, protocol: str) -> str:
         return 'ark-seedance-2'
     if protocol == 'seedance':
         return 'default'
+    pro666_route = pro666.suggest_route(model)
+    if pro666_route:
+        return pro666_route['profile']
     return {
         'gemini-omni-flash': 'gemini-omni',
         'omni-flash-720p': 'gemini-omni',
@@ -156,6 +162,12 @@ def suggest_profile(model: str, protocol: str) -> str:
     }.get(model, 'default')
 
 
+def suggest_protocol(model: str) -> str:
+    if pro666.suggest_route(model):
+        return 'videos'
+    return 'seedance' if 'seedance' in model.lower() else 'videos'
+
+
 def suggest_duration_override(model: str) -> int | None:
     match = re.search(r'-(\d{1,2})s(?:$|-)', model.lower())
     if not match:
@@ -166,6 +178,17 @@ def suggest_duration_override(model: str) -> int | None:
 
 def profile_options() -> list[dict[str, str]]:
     return [{'id': profile, 'label': data['label']} for profile, data in PROFILE_DEFINITIONS.items()]
+
+
+def suggest_route(model: str, protocol: str) -> dict[str, Any]:
+    channel_route = pro666.suggest_route(model) if protocol == 'videos' else None
+    if channel_route:
+        return channel_route
+    duration = suggest_duration_override(model)
+    return {
+        'profile': suggest_profile(model, protocol),
+        'durations': [duration] if duration else [],
+    }
 
 
 def capabilities_for(
@@ -212,6 +235,8 @@ def capabilities_for(
 
 def transform_create_payload(payload: dict[str, Any], profile: str) -> dict[str, Any]:
     request_format = PROFILE_DEFINITIONS[profile]['request_format']
+    if request_format in pro666.REQUEST_FORMATS:
+        return pro666.transform_create_payload(payload, request_format)
     metadata = payload.get('metadata') if isinstance(payload.get('metadata'), dict) else {}
     images = payload.get('image_urls') if isinstance(payload.get('image_urls'), list) else []
     if not images and isinstance(payload.get('images'), list):
@@ -224,7 +249,7 @@ def transform_create_payload(payload: dict[str, Any], profile: str) -> dict[str,
     if not reference_video and isinstance(payload.get('reference_videos'), list) and payload['reference_videos']:
         reference_video = payload['reference_videos'][0]
     duration = payload.get('duration') or payload.get('seconds')
-    aspect_ratio = payload.get('aspect_ratio') or metadata.get('ratio')
+    aspect_ratio = payload.get('aspect_ratio') or metadata.get('aspect_ratio') or metadata.get('ratio')
     resolution = payload.get('resolution') or metadata.get('resolution')
     known_fields = {
         'model', 'prompt', 'aspect_ratio', 'duration', 'seconds', 'resolution', 'generate_audio',
@@ -243,10 +268,10 @@ def transform_create_payload(payload: dict[str, Any], profile: str) -> dict[str,
         return common
     if request_format == 'gemini-omni':
         return {
-            **common,
-            **({'aspect_ratio': aspect_ratio} if aspect_ratio else {}),
-            **({'duration': duration} if duration else {}),
-            **({'resolution': resolution} if resolution else {}),
+            **{key: value for key, value in common.items() if key != 'generate_audio'},
+            'duration': 5,
+            **({'resolution': str(resolution).upper()} if resolution else {}),
+            **({'metadata': {'aspect_ratio': aspect_ratio}} if aspect_ratio else {}),
             **({'images': images} if images else {}),
             **({'reference_video': reference_video} if reference_video else {}),
             **({'audio_urls': payload['audio_urls']} if payload.get('audio_urls') else {}),

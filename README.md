@@ -75,6 +75,18 @@ discovery suggests a format only for new rows; editing and later synchronization
 Synchronization is non-destructive: models missing from a later discovery response remain in the editor. If an upstream
 renames a model, update that route's `映射上游模型名` manually, verify its saved `请求格式`, then save the upstream.
 
+### Pro666 Channel
+
+Add Pro666 as a regular video upstream with `https://api.pro666.top` as its Base URL and the channel API key, then use
+`同步上游模型`. The adapter recognizes the current Pro666 video catalog and assigns the correct `/v1/videos` request
+profile, duration list, resolution, reference-image count, and audio/video support automatically.
+
+The Pro666 adapter is isolated in `app/channels/pro666.py`. It supports the documented `video-v1`, `sd2-431`,
+`sd2-5-720p`, Firefly Seedance 2, and `veo-omni` payload families, plus the currently advertised
+`video-v1-face`, `video-900`, and `sd2-5-vref-720p` aliases. Firefly model names contain `seedance`, but they must keep
+the auto-selected `videos` protocol because Pro666 exposes them through `POST /v1/videos` rather than
+`POST /v1/video/generations`.
+
 Use `生成对接文档` in the video or image admin page to download a Markdown document generated from the currently
 enabled public models and their configured capabilities.
 

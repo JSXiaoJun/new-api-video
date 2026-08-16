@@ -12,6 +12,7 @@ from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from . import ark_video, database
+from .channels import pro666
 from .config import settings
 from .model_profiles import transform_create_payload
 
@@ -35,6 +36,7 @@ STATUS_MAP = {
     "FAILED": "failed",
     "CANCELLED": "failed",
     "EXPIRED": "failed",
+    "SUBMITTED": "queued",
 }
 
 
@@ -209,7 +211,13 @@ async def create_video(
 
 def normalize_task_payload(task: dict[str, Any], payload: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
     status_value: Any = payload.get("status")
-    video_url: str | None = payload.get("video_url")
+    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    video_url: str | None = (
+        payload.get("video_url")
+        or payload.get("result_url")
+        or metadata.get("url")
+        or payload.get("download_url")
+    )
     error_value: Any = payload.get("error")
     progress: Any = payload.get("progress")
 
@@ -394,7 +402,9 @@ async def stream_content(task_id: str, request: Request) -> StreamingResponse:
         source_url = f"{task['base_url']}/v1/videos/{task_id}/content"
 
     request_headers = {}
-    if same_origin(source_url, task["base_url"]):
+    if same_origin(source_url, task["base_url"]) or pro666.permits_api_key_forwarding(
+        source_url, task["base_url"]
+    ):
         request_headers["Authorization"] = f"Bearer {task['api_key']}"
 
     return await stream_upstream_content(

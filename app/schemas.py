@@ -23,10 +23,18 @@ class RouteInput(BaseModel):
         "ark-seedance-2",
         "grok-auto",
         "grok-fast",
+        "pro666-video-v1",
+        "pro666-video-900",
+        "pro666-sd2-431",
+        "pro666-sd2-5",
+        "pro666-firefly-480p",
+        "pro666-firefly-720p",
+        "pro666-firefly-1080p",
+        "pro666-veo-omni",
     ] = "default"
     durations: list[int] = Field(default_factory=list, max_length=MAX_DURATION_SECONDS)
     resolutions: list[str] = Field(default_factory=list, max_length=20)
-    image_count: int | None = Field(default=None, ge=0, le=20)
+    image_count: int | None = Field(default=None, ge=0, le=30)
     supports_image: bool = True
     supports_video: bool = True
     supports_audio: bool = True

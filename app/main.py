@@ -15,7 +15,7 @@ from . import database, image_database, image_proxy, new_api_gateway, proxy
 from .config import PUBLIC_LINK_BASE_URLS, ROOT_DIR, settings
 from .integration_doc import build_integration_document
 from .image_integration_doc import build_image_integration_document
-from .model_profiles import profile_options, suggest_duration_override, suggest_profile
+from .model_profiles import profile_options, suggest_protocol, suggest_route
 from .schemas import (
     ImageUpstreamInput,
     LoginInput,
@@ -121,13 +121,12 @@ def normalize_discovered_models(payload: Any, protocol_override: str | None = No
         if not model_id or len(model_id) > 160 or model_id in seen:
             continue
         seen.add(model_id)
-        protocol = protocol_override or ("seedance" if "seedance" in model_id.lower() else "videos")
+        protocol = protocol_override or suggest_protocol(model_id)
         result.append({
             "model": "",
             "upstream_model": model_id,
             "protocol": protocol,
-            "profile": suggest_profile(model_id, protocol),
-            "durations": [duration] if (duration := suggest_duration_override(model_id)) else [],
+            **suggest_route(model_id, protocol),
         })
     return result
 

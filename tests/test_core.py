@@ -876,6 +876,47 @@ class CoreTests(unittest.TestCase):
 
         self.assertEqual(captured["headers"]["Authorization"], "Bearer private-key")
 
+    def test_video_stream_keeps_api_key_for_pro666_content_host(self):
+        upstream = database.save_upstream({
+            "name": f"pro666-content-{time.time_ns()}",
+            "base_url": "https://api.pro666.top",
+            "api_key": "pro666-key",
+            "enabled": True,
+            "priority": 1,
+            "routes": [{
+                "model": "pro666-content-model",
+                "protocol": "videos",
+                "profile": "pro666-video-v1",
+            }],
+        })
+        relay_request_id = database.start_audit_request(
+            upstream["id"],
+            "pro666-content-model",
+            "videos",
+            {"model": "pro666-content-model", "prompt": "content"},
+        )
+        task_id = f"pro666-content-task-{time.time_ns()}"
+        database.create_task(task_id, upstream["id"], relay_request_id, "pro666-content-model", "videos", "completed")
+        source_url = f"https://pro666.top/v1/videos/{task_id}/content"
+        database.update_task(task_id, "completed", source_url, None)
+        captured = {}
+
+        async def mock_stream(_source_url, _request, headers=None, **_kwargs):
+            captured["headers"] = headers
+            return Response(content=b"video", media_type="video/mp4")
+
+        request = httpx.Request("GET", "https://media.yyapi.cloud/public/videos/task_public/content")
+        try:
+            with patch("app.proxy.stream_upstream_content", new=mock_stream):
+                asyncio.run(stream_content(task_id, request))
+        finally:
+            with database.connection() as conn:
+                conn.execute("DELETE FROM tasks WHERE upstream_id = ?", (upstream["id"],))
+                conn.execute("DELETE FROM audit_requests WHERE upstream_id = ?", (upstream["id"],))
+            database.delete_upstream(upstream["id"])
+
+        self.assertEqual(captured["headers"]["Authorization"], "Bearer pro666-key")
+
     def test_initialize_migrates_legacy_tasks_without_data_loss(self):
         with tempfile.TemporaryDirectory() as data_dir:
             legacy_path = Path(data_dir) / "adapter.db"
@@ -1390,6 +1431,39 @@ class CoreTests(unittest.TestCase):
 
         self.assertEqual([model["profile"] for model in models], ["manxue-933", "manxue-933"])
 
+    def test_pro666_model_discovery_assigns_channel_profiles_and_limits(self):
+        model_names = [
+            "firefly-seedance2-1080p",
+            "firefly-seedance2-480p",
+            "firefly-seedance2-720p",
+            "firefly-seedance2-fast-480p",
+            "firefly-seedance2-fast-720p",
+            "sd2-431-720p-fast",
+            "sd2-431-720p-pro",
+            "sd2-5-720p",
+            "sd2-5-vref-720p",
+            "veo-omni",
+            "video-900",
+            "video-v1",
+            "video-v1-face",
+        ]
+
+        discovered = normalize_discovered_models({"data": model_names})
+        routes = {route["upstream_model"]: route for route in discovered}
+
+        self.assertEqual(routes["firefly-seedance2-1080p"]["profile"], "pro666-firefly-1080p")
+        self.assertEqual(routes["firefly-seedance2-fast-480p"]["profile"], "pro666-firefly-480p")
+        self.assertEqual(routes["sd2-431-720p-pro"]["profile"], "pro666-sd2-431")
+        self.assertEqual(routes["sd2-5-vref-720p"]["profile"], "pro666-sd2-5")
+        self.assertEqual(routes["veo-omni"]["profile"], "pro666-veo-omni")
+        self.assertEqual(routes["video-900"]["profile"], "pro666-video-900")
+        self.assertEqual(routes["video-v1-face"]["profile"], "pro666-video-v1")
+        self.assertEqual(routes["sd2-431-720p-fast"]["image_count"], 4)
+        self.assertEqual(routes["sd2-5-720p"]["image_count"], 30)
+        self.assertEqual(routes["sd2-5-vref-720p"]["durations"], list(range(4, 31)))
+        self.assertFalse(routes["video-v1"]["supports_video"])
+        self.assertFalse(routes["veo-omni"]["supports_audio"])
+
     def test_public_model_alias_is_used_without_exposing_upstream_name(self):
         client = TestClient(app)
         models = client.get("/v1/models", headers={"Authorization": "Bearer test-adapter-key"})
@@ -1567,10 +1641,31 @@ class CoreTests(unittest.TestCase):
             "gemini-omni",
         )
 
-        self.assertEqual(payload["images"], ["https://cdn/reference.png"])
-        self.assertNotIn("image_url", payload)
-        self.assertNotIn("image_urls", payload)
+        self.assertEqual(
+            payload,
+            {
+                "model": "omni-flash-720p",
+                "prompt": "test @图1",
+                "duration": 5,
+                "resolution": "720P",
+                "metadata": {"aspect_ratio": "16:9"},
+                "images": ["https://cdn/reference.png"],
+            },
+        )
+        self.assertEqual(capabilities_for("gemini-omni")["durations"], [5])
         self.assertEqual(capabilities_for("gemini-omni")["resolutions"], ["720p"])
+
+    def test_gemini_omni_profile_accepts_nested_aspect_ratio(self):
+        payload = transform_create_payload(
+            {
+                "model": "omni-flash-720p",
+                "prompt": "test",
+                "metadata": {"aspect_ratio": "9:16"},
+            },
+            "gemini-omni",
+        )
+
+        self.assertEqual(payload["metadata"], {"aspect_ratio": "9:16"})
 
     def test_gemini_omni_profile_accepts_upstream_images_input(self):
         images = ["https://cdn/one.png", "https://cdn/two.png"]
@@ -1581,6 +1676,216 @@ class CoreTests(unittest.TestCase):
         )
 
         self.assertEqual(payload["images"], images)
+
+    def test_pro666_video_v1_profile_uses_top_level_openai_video_fields(self):
+        payload = transform_create_payload(
+            {
+                "model": "video-v1-face",
+                "prompt": "test",
+                "duration": 10,
+                "aspect_ratio": "9:16",
+                "resolution": "720p",
+                "generate_audio": True,
+                "image_urls": ["https://cdn/face.png"],
+            },
+            "pro666-video-v1",
+        )
+
+        self.assertEqual(payload, {
+            "model": "video-v1-face",
+            "prompt": "test",
+            "duration": 10,
+            "aspect_ratio": "9:16",
+            "images": ["https://cdn/face.png"],
+        })
+
+    def test_pro666_sd2_profile_normalizes_reference_media(self):
+        payload = transform_create_payload(
+            {
+                "model": "sd2-431-720p-fast",
+                "prompt": "test",
+                "seconds": 8,
+                "metadata": {"aspect_ratio": "21:9", "resolution": "720p"},
+                "generate_audio": False,
+                "image_url": "https://cdn/main.png",
+                "reference_image_urls": ["https://cdn/ref.png"],
+                "reference_videos": ["https://cdn/one.mp4", "https://cdn/two.mp4"],
+                "audio_urls": ["https://cdn/voice.mp3"],
+            },
+            "pro666-sd2-431",
+        )
+
+        self.assertEqual(payload, {
+            "model": "sd2-431-720p-fast",
+            "prompt": "test",
+            "duration": 8,
+            "aspect_ratio": "21:9",
+            "generateAudio": False,
+            "resolution": "720p",
+            "images": ["https://cdn/main.png", "https://cdn/ref.png"],
+            "videos": ["https://cdn/one.mp4", "https://cdn/two.mp4"],
+            "audios": ["https://cdn/voice.mp3"],
+        })
+        capabilities = capabilities_for("pro666-sd2-431")
+        self.assertEqual(capabilities["durations"], list(range(4, 16)))
+        self.assertEqual(capabilities["maxImages"], 4)
+        self.assertEqual(capabilities["maxAudios"], 1)
+
+    def test_pro666_sd2_first_last_frame_mode_omits_reference_arrays(self):
+        payload = transform_create_payload(
+            {
+                "model": "sd2-5-vref-720p",
+                "prompt": "test",
+                "duration": 20,
+                "firstFrameUrl": "https://cdn/first.png",
+                "last_frame": "https://cdn/last.png",
+                "images": ["https://cdn/ignored.png"],
+                "videos": ["https://cdn/ignored.mp4"],
+                "audios": ["https://cdn/ignored.mp3"],
+            },
+            "pro666-sd2-5",
+        )
+
+        self.assertEqual(payload["first_frame_url"], "https://cdn/first.png")
+        self.assertEqual(payload["last_frame_url"], "https://cdn/last.png")
+        self.assertNotIn("images", payload)
+        self.assertNotIn("videos", payload)
+        self.assertNotIn("audios", payload)
+        self.assertEqual(capabilities_for("pro666-sd2-5")["maxImages"], 30)
+
+    def test_pro666_firefly_profile_preserves_advanced_options(self):
+        payload = transform_create_payload(
+            {
+                "model": "firefly-seedance2-fast-480p",
+                "prompt": "test @Image1 @Video1 @Audio1",
+                "duration": 5,
+                "aspect_ratio": "16:9",
+                "resolution": "1080p",
+                "generate_audio": True,
+                "negative_prompt": "watermark",
+                "auto_face": True,
+                "auto_face_mode": "grid-mosaic",
+                "images": ["https://cdn/image.png"],
+                "reference_video": "https://cdn/video.mp4",
+                "audio_urls": ["https://cdn/audio.mp3"],
+            },
+            "pro666-firefly-480p",
+        )
+
+        self.assertEqual(payload["generateAudio"], True)
+        self.assertEqual(payload["images"], ["https://cdn/image.png"])
+        self.assertEqual(payload["videos"], ["https://cdn/video.mp4"])
+        self.assertEqual(payload["audios"], ["https://cdn/audio.mp3"])
+        self.assertEqual(payload["negative_prompt"], "watermark")
+        self.assertEqual(payload["auto_face_mode"], "grid-mosaic")
+        self.assertNotIn("resolution", payload)
+
+    def test_pro666_veo_omni_profile_builds_messages_for_images(self):
+        payload = transform_create_payload(
+            {
+                "model": "veo-omni",
+                "prompt": "keep the subject",
+                "duration": 10,
+                "aspect_ratio": "16:9",
+                "resolution": "720p",
+                "generate_audio": False,
+                "messages": [],
+                "reference_mode": "unsupported",
+                "extra_body": {"unsupported": True},
+                "image_urls": ["https://cdn/one.png", "https://cdn/two.png"],
+            },
+            "pro666-veo-omni",
+        )
+
+        self.assertEqual(payload, {
+            "model": "veo-omni",
+            "prompt": "keep the subject",
+            "seconds": "10",
+            "aspect_ratio": "16:9",
+            "resolution": "720p",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "keep the subject"},
+                    {"type": "image_url", "image_url": {"url": "https://cdn/one.png", "detail": "high"}},
+                    {"type": "image_url", "image_url": {"url": "https://cdn/two.png", "detail": "high"}},
+                ],
+            }],
+        })
+
+    def test_pro666_polling_finds_all_documented_video_url_locations(self):
+        task = {"protocol": "videos", "model": "pro666-test", "created_at": 1}
+        payloads = [
+            ({"status": "completed", "video_url": "https://cdn/video.mp4"}, "https://cdn/video.mp4"),
+            ({"status": "completed", "result_url": "https://cdn/result.mp4"}, "https://cdn/result.mp4"),
+            ({"status": "completed", "download_url": "https://cdn/download.mp4"}, "https://cdn/download.mp4"),
+            ({"status": "completed", "metadata": {"url": "https://cdn/metadata.mp4"}}, "https://cdn/metadata.mp4"),
+        ]
+
+        for payload, expected_url in payloads:
+            with self.subTest(expected_url=expected_url):
+                normalized, video_url = normalize_task_payload(task, payload)
+                self.assertEqual(normalized["status"], "completed")
+                self.assertEqual(video_url, expected_url)
+
+        self.assertEqual(normalize_status("submitted"), "queued")
+
+    def test_pro666_firefly_route_posts_to_videos_endpoint(self):
+        route = normalize_discovered_models({"data": ["firefly-seedance2-fast-720p"]})[0]
+        route["model"] = "public-firefly"
+        upstream = database.save_upstream({
+            "name": f"pro666-{time.time_ns()}",
+            "base_url": "https://api.pro666.top",
+            "api_key": "pro666-key",
+            "enabled": True,
+            "priority": 1,
+            "routes": [route],
+        })
+        captured = {}
+        response = httpx.Response(
+            200,
+            request=httpx.Request("POST", "https://api.pro666.top/v1/videos"),
+            json={"task_id": "pro666-task", "status": "submitted"},
+        )
+
+        class MockAsyncClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_):
+                return None
+
+            async def post(self, url, **kwargs):
+                captured["url"] = url
+                captured["payload"] = kwargs["json"]
+                return response
+
+        try:
+            with patch("app.proxy.httpx.AsyncClient", return_value=MockAsyncClient()):
+                result = asyncio.run(create_video({
+                    "model": "public-firefly",
+                    "prompt": "test @Image1",
+                    "duration": 6,
+                    "aspect_ratio": "9:16",
+                    "generate_audio": True,
+                    "image_urls": ["https://cdn/image.png"],
+                }, None))
+        finally:
+            with database.connection() as conn:
+                conn.execute("DELETE FROM tasks WHERE upstream_id = ?", (upstream["id"],))
+                conn.execute("DELETE FROM audit_requests WHERE upstream_id = ?", (upstream["id"],))
+            database.delete_upstream(upstream["id"])
+
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(captured["url"], "https://api.pro666.top/v1/videos")
+        self.assertEqual(captured["payload"], {
+            "model": "firefly-seedance2-fast-720p",
+            "prompt": "test @Image1",
+            "duration": 6,
+            "aspect_ratio": "9:16",
+            "generateAudio": True,
+            "images": ["https://cdn/image.png"],
+        })
 
     def test_gemini_omni_route_forwards_images_array_to_upstream(self):
         upstream = database.save_upstream(
