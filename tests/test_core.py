@@ -418,6 +418,33 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(deleted.status_code, 200)
         self.assertIsNone(image_database.get_upstream(upstream_id))
 
+    def test_video_upstream_delete_hides_config_but_preserves_audit_history(self):
+        client = TestClient(app)
+        session = create_session("admin")
+        client.cookies.set(SESSION_COOKIE, session)
+        headers = {"X-CSRF-Token": csrf_token(session)}
+        upstream = database.save_upstream({
+            "name": "video-delete",
+            "base_url": "https://video-delete.example",
+            "api_key": "video-delete-key",
+            "enabled": True,
+            "priority": 5,
+            "routes": [{"model": "video-delete-model", "protocol": "videos"}],
+        })
+        relay_request_id = database.start_audit_request(
+            upstream["id"], "video-delete-model", "videos", {"model": "video-delete-model"}
+        )
+        database.create_task("video-delete-task", upstream["id"], relay_request_id, "video-delete-model", "videos", "completed")
+
+        deleted = client.delete(f"/admin/api/upstreams/{upstream['id']}", headers=headers)
+        self.assertEqual(deleted.status_code, 200)
+        self.assertNotIn(upstream["id"], {item["id"] for item in database.list_upstreams()})
+        self.assertIsNone(database.select_upstream("video-delete-model"))
+        audit = database.get_audit_request(relay_request_id)
+        self.assertIsNotNone(audit)
+        self.assertEqual(audit["upstream_name"], "video-delete")
+        self.assertIsNotNone(database.get_task("video-delete-task"))
+
     def test_image_model_discovery_uses_saved_key_and_normalizes_v1_url(self):
         upstream = image_database.save_upstream(
             {

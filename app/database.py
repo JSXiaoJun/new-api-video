@@ -121,7 +121,8 @@ def initialize() -> None:
                 priority INTEGER NOT NULL DEFAULT 100,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
-                last_used_at INTEGER
+                last_used_at INTEGER,
+                deleted_at INTEGER
             );
             CREATE TABLE IF NOT EXISTS model_routes (
                 id INTEGER PRIMARY KEY,
@@ -203,6 +204,9 @@ def initialize() -> None:
             "INSERT OR IGNORE INTO app_settings(key, value, updated_at) VALUES('public_video_download_limit', ?, ?)",
             (str(PUBLIC_VIDEO_DOWNLOAD_LIMIT), int(time.time())),
         )
+        upstream_columns = {row["name"] for row in conn.execute("PRAGMA table_info(upstreams)").fetchall()}
+        if "deleted_at" not in upstream_columns:
+            conn.execute("ALTER TABLE upstreams ADD COLUMN deleted_at INTEGER")
         task_columns = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()}
         if "relay_request_id" not in task_columns:
             conn.execute("ALTER TABLE tasks ADD COLUMN relay_request_id TEXT")
@@ -371,7 +375,7 @@ def _decode_resolutions(value: str | None) -> list[str]:
 
 def list_upstreams(include_keys: bool = False) -> list[dict[str, Any]]:
     with connection() as conn:
-        rows = conn.execute("SELECT * FROM upstreams ORDER BY priority, id").fetchall()
+        rows = conn.execute("SELECT * FROM upstreams WHERE deleted_at IS NULL ORDER BY priority, id").fetchall()
         result = []
         for row in rows:
             item = dict(row)
@@ -431,7 +435,10 @@ def save_upstream(payload: dict[str, Any], upstream_id: int | None = None) -> di
             )
             upstream_id = int(cursor.lastrowid)
         else:
-            existing = conn.execute("SELECT api_key_encrypted FROM upstreams WHERE id = ?", (upstream_id,)).fetchone()
+            existing = conn.execute(
+                "SELECT api_key_encrypted FROM upstreams WHERE id = ? AND deleted_at IS NULL",
+                (upstream_id,),
+            ).fetchone()
             if existing is None:
                 raise KeyError("upstream_not_found")
             encrypted_key = existing["api_key_encrypted"]
@@ -490,6 +497,9 @@ def save_upstream(payload: dict[str, Any], upstream_id: int | None = None) -> di
 
 def delete_upstream(upstream_id: int) -> None:
     with connection() as conn:
+        upstream = conn.execute("SELECT deleted_at FROM upstreams WHERE id = ?", (upstream_id,)).fetchone()
+        if upstream is None or upstream["deleted_at"] is not None:
+            raise KeyError("upstream_not_found")
         task_count = conn.execute(
             """
             SELECT
@@ -499,7 +509,13 @@ def delete_upstream(upstream_id: int) -> None:
             (upstream_id, upstream_id),
         ).fetchone()[0]
         if task_count:
-            raise ValueError("upstream_has_tasks")
+            now = int(time.time())
+            conn.execute(
+                "UPDATE upstreams SET enabled = 0, deleted_at = ?, updated_at = ? WHERE id = ?",
+                (now, now, upstream_id),
+            )
+            conn.execute("DELETE FROM model_routes WHERE upstream_id = ?", (upstream_id,))
+            return
         cursor = conn.execute("DELETE FROM upstreams WHERE id = ?", (upstream_id,))
         if cursor.rowcount == 0:
             raise KeyError("upstream_not_found")
@@ -513,7 +529,7 @@ def select_upstream(model: str) -> dict[str, Any] | None:
                    r.forward_resolution
             FROM upstreams u
             JOIN model_routes r ON r.upstream_id = u.id
-            WHERE u.enabled = 1 AND r.model = ?
+            WHERE u.enabled = 1 AND u.deleted_at IS NULL AND r.model = ?
             ORDER BY u.priority ASC, COALESCE(u.last_used_at, 0) ASC, u.id ASC
             LIMIT 1
             """,
@@ -928,9 +944,15 @@ def get_task_by_relay_request_id(relay_request_id: str) -> dict[str, Any] | None
 
 def dashboard_data() -> dict[str, Any]:
     with connection() as conn:
-        upstreams = conn.execute("SELECT COUNT(*) FROM upstreams").fetchone()[0]
-        enabled = conn.execute("SELECT COUNT(*) FROM upstreams WHERE enabled = 1").fetchone()[0]
-        models = conn.execute("SELECT COUNT(DISTINCT model) FROM model_routes").fetchone()[0]
+        upstreams = conn.execute("SELECT COUNT(*) FROM upstreams WHERE deleted_at IS NULL").fetchone()[0]
+        enabled = conn.execute("SELECT COUNT(*) FROM upstreams WHERE deleted_at IS NULL AND enabled = 1").fetchone()[0]
+        models = conn.execute(
+            """
+            SELECT COUNT(DISTINCT r.model)
+            FROM model_routes r JOIN upstreams u ON u.id = r.upstream_id
+            WHERE u.deleted_at IS NULL
+            """
+        ).fetchone()[0]
         tasks = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
     return {
         "stats": {"upstreams": upstreams, "enabled": enabled, "models": models, "tasks": tasks},
@@ -945,7 +967,7 @@ def list_models() -> list[str]:
             """
             SELECT DISTINCT r.model FROM model_routes r
             JOIN upstreams u ON u.id = r.upstream_id
-            WHERE u.enabled = 1 ORDER BY r.model
+            WHERE u.enabled = 1 AND u.deleted_at IS NULL ORDER BY r.model
             """
         ).fetchall()
     return [row["model"] for row in rows]
@@ -960,7 +982,7 @@ def list_model_capabilities() -> list[dict[str, Any]]:
                    r.supports_audio
             FROM model_routes r
             JOIN upstreams u ON u.id = r.upstream_id
-            WHERE u.enabled = 1
+            WHERE u.enabled = 1 AND u.deleted_at IS NULL
             ORDER BY r.model, u.priority, u.id
             """
         ).fetchall()
