@@ -71,6 +71,7 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn('id="copy-audit-json"', response.text)
         self.assertIn("请求格式", response.text)
+        self.assertIn("模型启用", response.text)
         self.assertIn("转换后参数", response.text)
         self.assertIn('id="model-selection-dialog"', response.text)
         self.assertIn('id="model-selection-search"', response.text)
@@ -79,6 +80,7 @@ class CoreTests(unittest.TestCase):
         admin_script = client.get("/static/admin.js")
         self.assertEqual(admin_script.status_code, 200)
         self.assertIn('max="50"', admin_script.text)
+        self.assertIn("data-route-enabled", admin_script.text)
 
     def test_image_admin_page_and_api_require_admin_session(self):
         client = TestClient(app)
@@ -444,6 +446,50 @@ class CoreTests(unittest.TestCase):
         self.assertIsNotNone(audit)
         self.assertEqual(audit["upstream_name"], "video-delete")
         self.assertIsNotNone(database.get_task("video-delete-task"))
+
+    def test_video_model_can_be_disabled_without_deleting_route(self):
+        model = f"disabled-model-{time.time_ns()}"
+        upstream = database.save_upstream({
+            "name": "model-disable",
+            "base_url": "https://model-disable.example",
+            "api_key": "model-disable-key",
+            "enabled": True,
+            "priority": 5,
+            "routes": [{"model": model, "protocol": "videos", "enabled": False}],
+        })
+        self.assertFalse(database.get_upstream(upstream["id"])["routes"][0]["enabled"])
+        self.assertNotIn(model, database.list_models())
+        self.assertNotIn(model, {item["id"] for item in database.list_model_capabilities()})
+        self.assertIsNone(database.select_upstream(model))
+        models_response = TestClient(app).get(
+            "/v1/models",
+            headers={"Authorization": "Bearer test-adapter-key"},
+        )
+        self.assertEqual(models_response.status_code, 200)
+        self.assertNotIn(
+            model,
+            {item["id"] for item in models_response.json()["data"]},
+        )
+
+        client = TestClient(app)
+        session = create_session("admin")
+        client.cookies.set(SESSION_COOKIE, session)
+        updated = client.put(
+            f"/admin/api/upstreams/{upstream['id']}",
+            headers={"X-CSRF-Token": csrf_token(session)},
+            json={
+                "name": "model-disable",
+                "base_url": "https://model-disable.example",
+                "api_key": "",
+                "enabled": True,
+                "priority": 5,
+                "routes": [{"model": model, "protocol": "videos", "enabled": True}],
+            },
+        )
+        self.assertEqual(updated.status_code, 200)
+        self.assertIn(model, database.list_models())
+        self.assertIsNotNone(database.select_upstream(model))
+        database.delete_upstream(upstream["id"])
 
     def test_image_model_discovery_uses_saved_key_and_normalizes_v1_url(self):
         upstream = image_database.save_upstream(

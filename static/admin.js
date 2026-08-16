@@ -430,7 +430,7 @@ function openDurationMenu(row, trigger) {
 
 function addRouteRow(route = {}) {
   const row = document.createElement('div')
-  row.className = 'route-editor-row'
+  row.className = `route-editor-row${route.enabled === false ? ' route-disabled' : ''}`
   const mappedUpstreamModel = route.upstream_model || route.mapped_upstream_model || ''
   const selectedDurations = routeDurations(route)
   const protocol = route.protocol || 'videos'
@@ -451,6 +451,7 @@ function addRouteRow(route = {}) {
     <label class="media-support-cell"><input data-route-forward="resolution" type="checkbox"${route.forward_resolution !== false ? ' checked' : ''} aria-label="传分辨率"></label>
     <label class="media-support-cell"><input data-route-support="video" type="checkbox"${route.supports_video !== false ? ' checked' : ''} aria-label="支持视频"></label>
     <label class="media-support-cell"><input data-route-support="audio" type="checkbox"${route.supports_audio !== false ? ' checked' : ''} aria-label="支持音频"></label>
+    <label class="route-enabled-cell"><input data-route-enabled type="checkbox"${route.enabled !== false ? ' checked' : ''} aria-label="启用模型"></label>
     <button class="route-remove" type="button" title="移除此模型" aria-label="移除此模型">×</button>`
   routeRows.appendChild(row)
   updateRouteEmpty()
@@ -486,6 +487,7 @@ function readRoutes(allowEmpty = false, preserveBlankModel = false) {
       forward_resolution: row.querySelector('[data-route-forward="resolution"]').checked,
       supports_video: row.querySelector('[data-route-support="video"]').checked,
       supports_audio: row.querySelector('[data-route-support="audio"]').checked,
+      enabled: row.querySelector('[data-route-enabled]').checked,
     }
   })
   if (!routes.length && !allowEmpty) throw new Error('至少需要一个模型路由')
@@ -646,6 +648,10 @@ routeRows.addEventListener('click', (event) => {
 })
 routeRows.addEventListener('change', (event) => {
   const target = event.target instanceof Element ? event.target : null
+  if (target?.matches('[data-route-enabled]')) {
+    target.closest('.route-editor-row')?.classList.toggle('route-disabled', !target.checked)
+    return
+  }
   if (!target?.matches('[data-route-field="protocol"]')) return
   const row = target.closest('.route-editor-row')
   const profile = row?.querySelector('[data-route-field="profile"]')

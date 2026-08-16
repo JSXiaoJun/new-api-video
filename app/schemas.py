@@ -35,6 +35,7 @@ class RouteInput(BaseModel):
     durations: list[int] = Field(default_factory=list, max_length=MAX_DURATION_SECONDS)
     resolutions: list[str] = Field(default_factory=list, max_length=20)
     image_count: int | None = Field(default=None, ge=0, le=50)
+    enabled: bool = True
     supports_image: bool = True
     supports_video: bool = True
     supports_audio: bool = True
