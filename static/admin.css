@@ -86,6 +86,7 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); box-sha
 .model-selection-toolbar { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 14px; }
 .model-selection-toolbar input[type="search"] { width: 100%; height: 36px; padding: 0 10px; border: 1px solid #cbd4cf; border-radius: 4px; }
 .model-selection-toolbar label { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; color: var(--ink); font-size: 12px; font-weight: 650; }
+.model-selection-toolbar input[type="checkbox"], .model-selection-item input[type="checkbox"] { width: 16px; height: 16px; flex: 0 0 16px; margin: 2px 0 0; padding: 0; accent-color: var(--accent); }
 .model-selection-list { display: grid; max-height: min(430px, 50vh); overflow: auto; border: 1px solid var(--line); border-radius: 4px; }
 .model-selection-item { display: flex; align-items: flex-start; gap: 10px; padding: 11px 12px; border-bottom: 1px solid #e6ebe8; cursor: pointer; }
 .model-selection-item:last-child { border-bottom: 0; }
