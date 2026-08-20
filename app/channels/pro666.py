@@ -46,15 +46,39 @@ PROFILE_DEFINITIONS: dict[str, dict[str, Any]] = {
         },
     },
     'pro666-sd2-5': {
-        'label': 'Pro666 · sd2-5',
+        'label': 'Pro666 · sd2.5 720p',
         'request_format': 'pro666-sd2',
         'capabilities': {
             'ratios': RATIOS_WIDE,
-            'durations': list(range(4, 30)),
+            'durations': list(range(4, 31)),
             'resolutions': ['720p'],
             'maxImages': 30,
             'referenceVideo': True,
             'maxAudios': 10,
+        },
+    },
+    'pro666-sd2-5-480p': {
+        'label': 'Pro666 · sd2.5 480p',
+        'request_format': 'pro666-sd2',
+        'capabilities': {
+            'ratios': RATIOS_WIDE,
+            'durations': list(range(4, 31)),
+            'resolutions': ['480p'],
+            'maxImages': 30,
+            'referenceVideo': True,
+            'maxAudios': 10,
+        },
+    },
+    'pro666-sd2-mini': {
+        'label': 'Pro666 · sd2-mini',
+        'request_format': 'pro666-sd2',
+        'capabilities': {
+            'ratios': RATIOS_WIDE,
+            'durations': list(range(4, 16)),
+            'resolutions': ['720p'],
+            'maxImages': 9,
+            'referenceVideo': True,
+            'maxAudios': 3,
         },
     },
     'pro666-firefly-480p': {
@@ -119,8 +143,12 @@ def suggest_route(model: str) -> dict[str, Any] | None:
         return _route('pro666-video-900', list(range(5, 16)), 9, False, False)
     if normalized in {'sd2-431-720p-fast', 'sd2-431-720p-pro'}:
         return _route('pro666-sd2-431', list(range(4, 16)), 4, True, True)
-    if normalized == 'sd2-5-720p':
-        return _route('pro666-sd2-5', list(range(4, 30)), 30, True, True)
+    if normalized in {'sd2.5-720p', 'sd2-5-720p'}:
+        return _route('pro666-sd2-5', list(range(4, 31)), 30, True, True)
+    if normalized == 'sd2.5-480p':
+        return _route('pro666-sd2-5-480p', list(range(4, 31)), 30, True, True)
+    if normalized == 'sd2-mini':
+        return _route('pro666-sd2-mini', list(range(4, 16)), 9, True, True)
     if normalized == 'sd2-5-vref-720p':
         return _route('pro666-sd2-5', list(range(4, 31)), 30, True, True)
     if normalized.startswith('firefly-seedance2'):
@@ -178,8 +206,12 @@ def transform_create_payload(payload: dict[str, Any], request_format: str) -> di
         ('reference_audio', 'audio_url'),
     )
     generate_audio = payload.get('generateAudio') if 'generateAudio' in payload else payload.get('generate_audio')
-    first_frame = _first(payload, 'first_frame_url', 'firstFrameUrl', 'first_frame_image', 'first_frame')
-    last_frame = _first(payload, 'last_frame_url', 'lastFrameUrl', 'last_frame_image', 'last_frame')
+    first_frame = _first(
+        payload, 'first_image', 'first_frame_url', 'firstFrameUrl', 'first_frame_image', 'first_frame'
+    )
+    last_frame = _first(
+        payload, 'last_image', 'last_frame_url', 'lastFrameUrl', 'last_frame_image', 'last_frame'
+    )
     common = {
         **_extra_fields(payload),
         'model': payload.get('model'),
@@ -296,8 +328,8 @@ _CONSUMED_FIELDS = {
     'videos', 'reference_videos', 'video_urls', 'videoUrls', 'reference_video', 'video_url',
     'audios', 'reference_audios', 'audio_urls', 'audioUrls', 'reference_audio', 'audio_url',
     'reference_mode', 'extra_body',
-    'first_frame_url', 'firstFrameUrl', 'first_frame_image', 'first_frame',
-    'last_frame_url', 'lastFrameUrl', 'last_frame_image', 'last_frame',
+    'first_image', 'first_frame_url', 'firstFrameUrl', 'first_frame_image', 'first_frame',
+    'last_image', 'last_frame_url', 'lastFrameUrl', 'last_frame_image', 'last_frame',
 }
 
 

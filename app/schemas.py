@@ -27,6 +27,8 @@ class RouteInput(BaseModel):
         "pro666-video-900",
         "pro666-sd2-431",
         "pro666-sd2-5",
+        "pro666-sd2-5-480p",
+        "pro666-sd2-mini",
         "pro666-firefly-480p",
         "pro666-firefly-720p",
         "pro666-firefly-1080p",

@@ -1531,6 +1531,9 @@ class CoreTests(unittest.TestCase):
             "firefly-seedance2-fast-720p",
             "sd2-431-720p-fast",
             "sd2-431-720p-pro",
+            "sd2.5-480p",
+            "sd2.5-720p",
+            "sd2-mini",
             "sd2-5-720p",
             "sd2-5-vref-720p",
             "veo-omni",
@@ -1545,11 +1548,18 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(routes["firefly-seedance2-1080p"]["profile"], "pro666-firefly-1080p")
         self.assertEqual(routes["firefly-seedance2-fast-480p"]["profile"], "pro666-firefly-480p")
         self.assertEqual(routes["sd2-431-720p-pro"]["profile"], "pro666-sd2-431")
+        self.assertEqual(routes["sd2.5-480p"]["profile"], "pro666-sd2-5-480p")
+        self.assertEqual(routes["sd2.5-720p"]["profile"], "pro666-sd2-5")
+        self.assertEqual(routes["sd2-mini"]["profile"], "pro666-sd2-mini")
         self.assertEqual(routes["sd2-5-vref-720p"]["profile"], "pro666-sd2-5")
         self.assertEqual(routes["veo-omni"]["profile"], "pro666-veo-omni")
         self.assertEqual(routes["video-900"]["profile"], "pro666-video-900")
         self.assertEqual(routes["video-v1-face"]["profile"], "pro666-video-v1")
         self.assertEqual(routes["sd2-431-720p-fast"]["image_count"], 4)
+        self.assertEqual(routes["sd2.5-480p"]["durations"], list(range(4, 31)))
+        self.assertEqual(routes["sd2.5-720p"]["durations"], list(range(4, 31)))
+        self.assertEqual(routes["sd2-mini"]["durations"], list(range(4, 16)))
+        self.assertEqual(routes["sd2-mini"]["image_count"], 9)
         self.assertEqual(routes["sd2-5-720p"]["image_count"], 30)
         self.assertEqual(routes["sd2-5-vref-720p"]["durations"], list(range(4, 31)))
         self.assertFalse(routes["video-v1"]["supports_video"])
@@ -1843,6 +1853,41 @@ class CoreTests(unittest.TestCase):
         self.assertNotIn("videos", payload)
         self.assertNotIn("audios", payload)
         self.assertEqual(capabilities_for("pro666-sd2-5")["maxImages"], 30)
+
+    def test_pro666_sd2_profiles_match_current_public_models(self):
+        sd_480p = capabilities_for("pro666-sd2-5-480p")
+        sd_720p = capabilities_for("pro666-sd2-5")
+        mini = capabilities_for("pro666-sd2-mini")
+
+        self.assertEqual(sd_480p["durations"], list(range(4, 31)))
+        self.assertEqual(sd_480p["resolutions"], ["480p"])
+        self.assertEqual(sd_480p["maxImages"], 30)
+        self.assertEqual(sd_480p["maxAudios"], 10)
+        self.assertEqual(sd_720p["durations"], list(range(4, 31)))
+        self.assertEqual(sd_720p["resolutions"], ["720p"])
+        self.assertEqual(mini["durations"], list(range(4, 16)))
+        self.assertEqual(mini["resolutions"], ["720p"])
+        self.assertEqual(mini["maxImages"], 9)
+        self.assertEqual(mini["maxAudios"], 3)
+
+    def test_pro666_sd2_accepts_current_first_last_image_fields(self):
+        payload = transform_create_payload(
+            {
+                "model": "sd2.5-480p",
+                "prompt": "test",
+                "duration": 10,
+                "first_image": "https://cdn/first.png",
+                "last_image": "https://cdn/last.png",
+                "images": ["https://cdn/ignored.png"],
+            },
+            "pro666-sd2-5-480p",
+        )
+
+        self.assertEqual(payload["first_frame_url"], "https://cdn/first.png")
+        self.assertEqual(payload["last_frame_url"], "https://cdn/last.png")
+        self.assertNotIn("first_image", payload)
+        self.assertNotIn("last_image", payload)
+        self.assertNotIn("images", payload)
 
     def test_pro666_firefly_profile_preserves_advanced_options(self):
         payload = transform_create_payload(
