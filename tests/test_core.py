@@ -23,6 +23,7 @@ TEST_DATA_DIR = tempfile.TemporaryDirectory()
 os.environ["DATA_DIR"] = TEST_DATA_DIR.name
 
 from app import database, image_database
+from app.channels import o10_grok
 from app.config import settings
 from app.main import app, normalize_discovered_models
 from app.image_proxy import classify_health_outcome, forward_json
@@ -1267,6 +1268,72 @@ class CoreTests(unittest.TestCase):
                 "sora-v3-933-pro": "default",
                 "tejiasd2": "gemini-omni",
             })
+
+    def test_o10_grok_create_and_poll_are_channel_isolated(self):
+        model = f"grok-isolated-{time.time_ns()}"
+        database.save_upstream({
+            "name": "o10-test",
+            "base_url": "https://o10.top",
+            "api_key": "o10-secret",
+            "enabled": True,
+            "priority": 1,
+            "routes": [{
+                "model": model,
+                "upstream_model": "grok-imagine-video-1.5",
+                "protocol": o10_grok.PROTOCOL,
+                "profile": "grok-auto",
+                "durations": [1, 15],
+                "resolutions": ["480p", "720p"],
+                "image_count": 1,
+                "supports_video": False,
+                "supports_audio": False,
+            }],
+        })
+        captured = {}
+        task_id = "req-o10-1"
+
+        class MockAsyncClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_):
+                return None
+
+            async def post(self, url, **kwargs):
+                captured["post"] = (url, kwargs)
+                return httpx.Response(200, request=httpx.Request("POST", url), json={"request_id": task_id})
+
+            async def get(self, url, **kwargs):
+                captured["get"] = (url, kwargs)
+                return httpx.Response(200, request=httpx.Request("GET", url), json={
+                    "status": "done",
+                    "progress": 100,
+                    "video": {"url": f"/v1/videos/{task_id}/content"},
+                })
+
+        with patch("app.proxy.httpx.AsyncClient", return_value=MockAsyncClient()):
+            created = asyncio.run(create_video({
+                "model": model,
+                "prompt": "日落海浪",
+                "duration": 6,
+                "aspect_ratio": "16:9",
+                "resolution": "720p",
+                "image_urls": ["https://cdn.example/ref.png"],
+            }, None))
+            fetched = asyncio.run(fetch_task(task_id))
+
+        self.assertEqual(created.status_code, 200)
+        self.assertEqual(captured["post"][0], "https://o10.top/v1/videos/generations")
+        self.assertEqual(captured["post"][1]["json"], {
+            "model": "grok-imagine-video-1.5",
+            "prompt": "日落海浪",
+            "duration": 6,
+            "aspect_ratio": "16:9",
+            "resolution": "720p",
+            "image": {"url": "https://cdn.example/ref.png"},
+        })
+        self.assertEqual(captured["get"][0], f"https://o10.top/v1/videos/{task_id}")
+        self.assertEqual(json.loads(fetched.body)["status"], "completed")
 
     def test_status_mapping(self):
         expected = {

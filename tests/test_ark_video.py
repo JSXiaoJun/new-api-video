@@ -3,9 +3,35 @@ from __future__ import annotations
 import unittest
 
 from app.ark_video import extract_task_fields, has_reference_content, task_path, transform_create_payload
+from app.channels import o10_grok
 
 
 class ArkVideoTests(unittest.TestCase):
+    def test_o10_grok_adapter_is_isolated(self):
+        payload = o10_grok.transform_create_payload({
+            "model": "grok-imagine-video-1.5",
+            "prompt": "海浪",
+            "duration": 6,
+            "aspect_ratio": "16:9",
+            "resolution": "720p",
+            "image_urls": ["https://cdn.example/ref.png"],
+            "metadata": {"private": "ignored"},
+        })
+        self.assertEqual(payload, {
+            "model": "grok-imagine-video-1.5",
+            "prompt": "海浪",
+            "duration": 6,
+            "aspect_ratio": "16:9",
+            "resolution": "720p",
+            "image": {"url": "https://cdn.example/ref.png"},
+        })
+        self.assertEqual(o10_grok.extract_create_task_id({"request_id": "req-1"}), "req-1")
+        self.assertEqual(o10_grok.task_path("req/1"), "/v1/videos/req%2F1")
+        self.assertEqual(o10_grok.extract_task_fields({"status": "pending", "progress": 94})["status"], "processing")
+        self.assertEqual(
+            o10_grok.extract_task_fields({"status": "done", "video": {"url": "/v1/videos/req-1/content"}})["video_url"],
+            "/v1/videos/req-1/content",
+        )
     def test_transforms_canonical_multimodal_payload(self):
         payload = transform_create_payload({
             "model": "doubao-seedance-2-0-260128",

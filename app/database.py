@@ -22,11 +22,11 @@ settings.data_dir.mkdir(parents=True, exist_ok=True)
 DB_PATH = settings.data_dir / "adapter.db"
 
 
-def _ensure_ark_protocol_constraint(conn: sqlite3.Connection) -> None:
+def _ensure_protocol_constraint(conn: sqlite3.Connection) -> None:
     row = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'model_routes'"
     ).fetchone()
-    if row is not None and "ark-v3" in (row["sql"] or ""):
+    if row is not None and all(protocol in (row["sql"] or "") for protocol in ("ark-v3", "o10-grok")):
         return
 
     # SQLite 无法原地修改 CHECK，重建表以保留已有路由并扩展协议枚举。
@@ -41,7 +41,7 @@ def _ensure_ark_protocol_constraint(conn: sqlite3.Connection) -> None:
                 upstream_id INTEGER NOT NULL REFERENCES upstreams(id) ON DELETE CASCADE,
                 model TEXT NOT NULL,
                 upstream_model TEXT NOT NULL,
-                protocol TEXT NOT NULL CHECK(protocol IN ('videos', 'seedance', 'ark-v3')),
+                protocol TEXT NOT NULL CHECK(protocol IN ('videos', 'seedance', 'ark-v3', 'o10-grok')),
                 profile TEXT NOT NULL DEFAULT 'default',
                 duration_override INTEGER,
                 durations_json TEXT NOT NULL DEFAULT '[]',
@@ -130,7 +130,7 @@ def initialize() -> None:
                 upstream_id INTEGER NOT NULL REFERENCES upstreams(id) ON DELETE CASCADE,
                 model TEXT NOT NULL,
                 upstream_model TEXT NOT NULL,
-                protocol TEXT NOT NULL CHECK(protocol IN ('videos', 'seedance', 'ark-v3')),
+                protocol TEXT NOT NULL CHECK(protocol IN ('videos', 'seedance', 'ark-v3', 'o10-grok')),
                 profile TEXT NOT NULL DEFAULT 'default',
                 duration_override INTEGER,
                 resolutions_json TEXT NOT NULL DEFAULT '[]',
@@ -266,7 +266,7 @@ def initialize() -> None:
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_model_routes_upstream_model ON model_routes(upstream_id, upstream_model)"
         )
-        _ensure_ark_protocol_constraint(conn)
+        _ensure_protocol_constraint(conn)
         if profile_added:
             for model in (
                 "gemini-omni-flash",

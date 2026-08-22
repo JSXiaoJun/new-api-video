@@ -434,7 +434,7 @@ function addRouteRow(route = {}) {
   const mappedUpstreamModel = route.upstream_model || route.mapped_upstream_model || ''
   const selectedDurations = routeDurations(route)
   const protocol = route.protocol || 'videos'
-  const selectedProfile = protocol === 'ark-v3' ? (route.profile || 'ark-seedance-2') : (route.profile || 'default')
+  const selectedProfile = protocol === 'ark-v3' ? (route.profile || 'ark-seedance-2') : protocol === 'o10-grok' ? (route.profile || 'grok-auto') : (route.profile || 'default')
   row.dataset.durations = JSON.stringify(selectedDurations)
   row.innerHTML = `
     <input data-route-field="model" maxlength="160" value="${escapeHtml(route.model || '')}" placeholder="对外模型名" aria-label="对外模型名">
@@ -442,6 +442,7 @@ function addRouteRow(route = {}) {
       <option value="videos"${protocol === 'videos' ? ' selected' : ''}>videos</option>
       <option value="seedance"${protocol === 'seedance' ? ' selected' : ''}>seedance</option>
       <option value="ark-v3"${protocol === 'ark-v3' ? ' selected' : ''}>ark-v3（方舟原生）</option>
+      <option value="o10-grok"${protocol === 'o10-grok' ? ' selected' : ''}>o10-grok（Grok）</option>
     </select>
     <select data-route-field="profile" aria-label="请求格式"${protocol === 'seedance' ? ' disabled' : ''}>${profileOptions(protocol === 'seedance' ? 'default' : selectedProfile)}</select>
     <input data-route-field="upstream_model" maxlength="160" value="${escapeHtml(mappedUpstreamModel)}" placeholder="上游模型名" aria-label="映射上游模型名">
@@ -661,6 +662,8 @@ routeRows.addEventListener('change', (event) => {
     profile.value = 'default'
   } else if (target.value === 'ark-v3') {
     profile.value = 'ark-seedance-2'
+  } else if (target.value === 'o10-grok') {
+    profile.value = 'grok-auto'
   } else if (profile.value === 'ark-seedance-2') {
     profile.value = 'default'
   }

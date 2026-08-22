@@ -12,7 +12,7 @@ from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from . import ark_video, database
-from .channels import pro666
+from .channels import o10_grok, pro666
 from .config import settings
 from .model_profiles import transform_create_payload
 
@@ -132,16 +132,19 @@ async def create_video(
             routed_payload["metadata"] = {
                 key: value for key, value in routed_payload["metadata"].items() if key != "resolution"
             }
-    upstream_payload = (
-        ark_video.transform_create_payload(routed_payload)
-        if protocol == ark_video.PROTOCOL
-        else transform_create_payload(routed_payload, upstream["profile"])
-    )
+    if protocol == ark_video.PROTOCOL:
+        upstream_payload = ark_video.transform_create_payload(routed_payload)
+    elif protocol == o10_grok.PROTOCOL:
+        upstream_payload = o10_grok.transform_create_payload(routed_payload)
+    else:
+        upstream_payload = transform_create_payload(routed_payload, upstream["profile"])
     database.record_upstream_request_payload(relay_request_id, upstream_payload)
     response_headers = {REQUEST_ID_HEADER: relay_request_id}
     endpoint = (
         ark_video.CREATE_PATH
         if protocol == ark_video.PROTOCOL
+        else o10_grok.CREATE_PATH
+        if protocol == o10_grok.PROTOCOL
         else "/v1/video/generations" if protocol == "seedance" else "/v1/videos"
     )
     headers = {
@@ -172,7 +175,11 @@ async def create_video(
         database.record_audit_event(relay_request_id, "create", response.status_code, response.text, sanitized)
         database.fail_audit_request(relay_request_id, sanitized["detail"])
         raise HTTPException(status_code=502, detail=sanitized["detail"], headers=response_headers) from exc
-    task_id = str(upstream_payload.get("task_id") or upstream_payload.get("id") or "").strip()
+    task_id = (
+        o10_grok.extract_create_task_id(upstream_payload)
+        if protocol == o10_grok.PROTOCOL
+        else str(upstream_payload.get("task_id") or upstream_payload.get("id") or "").strip()
+    )
     if not task_id:
         sanitized = {"detail": "Upstream response did not contain a task_id"}
         database.record_audit_event(relay_request_id, "create", response.status_code, response.text, sanitized)
@@ -234,6 +241,12 @@ def normalize_task_payload(task: dict[str, Any], payload: dict[str, Any]) -> tup
         video_url = fields["video_url"]
         error_value = fields["error"]
         progress = fields["progress"]
+    elif task["protocol"] == o10_grok.PROTOCOL:
+        fields = o10_grok.extract_task_fields(payload)
+        status_value = fields["status"]
+        video_url = fields["video_url"]
+        error_value = fields["error"]
+        progress = fields["progress"]
 
     status = normalize_status(status_value)
     if status not in {"queued", "processing", "completed", "failed"}:
@@ -273,6 +286,8 @@ async def fetch_task(task_id: str) -> JSONResponse:
     endpoint = (
         ark_video.task_path(task_id)
         if task["protocol"] == ark_video.PROTOCOL
+        else o10_grok.task_path(task_id)
+        if task["protocol"] == o10_grok.PROTOCOL
         else f"/v1/videos/{task_id}"
     )
     try:
@@ -398,6 +413,8 @@ async def stream_content(task_id: str, request: Request) -> StreamingResponse:
         source_url = urljoin(task["base_url"] + "/", source_url)
     elif task["protocol"] == ark_video.PROTOCOL:
         raise HTTPException(status_code=502, detail="Ark task completed without a video URL")
+    elif task["protocol"] == o10_grok.PROTOCOL:
+        source_url = f"{task['base_url']}{o10_grok.content_path(task_id)}"
     else:
         source_url = f"{task['base_url']}/v1/videos/{task_id}/content"
 

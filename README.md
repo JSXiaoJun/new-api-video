@@ -90,6 +90,14 @@ the auto-selected `videos` protocol because Pro666 exposes them through `POST /v
 Use `生成对接文档` in the video or image admin page to download a Markdown document generated from the currently
 enabled public models and their configured capabilities.
 
+### o10.top Grok Channel
+
+为 `https://o10.top` 新建视频上游，填写该上游的 API key，然后使用 `同步上游模型`。o10 模型会被隔离到
+`o10-grok` 请求协议和 `app/channels/o10_grok.py` 适配器，不会改变 `videos`、`seedance` 或 `ark-v3` 的请求体。
+该适配器使用 `POST /v1/videos/generations` 创建任务，使用 `GET /v1/videos/{request_id}` 轮询，并将上游返回的
+相对 `video.url` 转成同源内容下载；下载请求仅在同源时携带上游密钥。当前报告确认的模型为
+`grok-imagine-video` 和 `grok-imagine-video-1.5`，支持 1-15 秒、480p/720p，以及单张参考图片。
+
 The customer-facing video document uses `API_PUBLIC_BASE_URL` for all authenticated New API requests and the
 admin-selected public media domain for downloads. It never includes the middleware admin domain, adapter address, or
 the internal New API gateway target. The workbench separately uses `data[].id` from `/v1/model-capabilities` as its complete model list, cache

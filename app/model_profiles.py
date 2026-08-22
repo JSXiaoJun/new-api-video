@@ -4,7 +4,7 @@ from copy import deepcopy
 import re
 from typing import Any
 
-from .channels import pro666
+from .channels import o10_grok, pro666
 
 
 MAX_DURATION_SECONDS = 60
@@ -114,10 +114,10 @@ PROFILE_DEFINITIONS: dict[str, dict[str, Any]] = {
         'label': 'Grok 自动参数',
         'request_format': 'grok',
         'capabilities': {
-            'ratios': ['自动'],
-            'durations': [0],
-            'resolutions': ['自动'],
-            'maxImages': 0,
+            'ratios': ['16:9', '9:16'],
+            'durations': list(range(1, 16)),
+            'resolutions': ['480p', '720p'],
+            'maxImages': 1,
             'referenceVideo': False,
             'experimental': True,
         },
@@ -139,6 +139,8 @@ PROFILE_DEFINITIONS: dict[str, dict[str, Any]] = {
 
 
 def suggest_profile(model: str, protocol: str) -> str:
+    if protocol == o10_grok.PROTOCOL:
+        return 'grok-auto'
     if protocol == 'ark-v3':
         return 'ark-seedance-2'
     if protocol == 'seedance':
@@ -163,6 +165,8 @@ def suggest_profile(model: str, protocol: str) -> str:
 
 
 def suggest_protocol(model: str) -> str:
+    if o10_grok.suggest_route(model):
+        return o10_grok.PROTOCOL
     if pro666.suggest_route(model):
         return 'videos'
     return 'seedance' if 'seedance' in model.lower() else 'videos'
@@ -181,6 +185,16 @@ def profile_options() -> list[dict[str, str]]:
 
 
 def suggest_route(model: str, protocol: str) -> dict[str, Any]:
+    if protocol == o10_grok.PROTOCOL:
+        return o10_grok.suggest_route(model) or {
+            'profile': 'grok-auto',
+            'durations': list(range(1, 16)),
+            'resolutions': ['480p', '720p'],
+            'image_count': 1,
+            'supports_image': True,
+            'supports_video': False,
+            'supports_audio': False,
+        }
     channel_route = pro666.suggest_route(model) if protocol == 'videos' else None
     if channel_route:
         return channel_route

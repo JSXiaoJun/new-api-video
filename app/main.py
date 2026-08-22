@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from . import database, image_database, image_proxy, new_api_gateway, proxy
+from .channels import o10_grok
 from .config import PUBLIC_LINK_BASE_URLS, ROOT_DIR, settings
 from .integration_doc import build_integration_document
 from .image_integration_doc import build_image_integration_document
@@ -365,15 +366,17 @@ async def discover_upstream_models(payload: ModelDiscoveryInput, _: dict = Depen
     headers = {"Accept": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
-    discovery_protocol = None
+    discovery_protocol = o10_grok.PROTOCOL if o10_grok.is_o10_base_url(payload.base_url) else None
     try:
         async with httpx.AsyncClient(timeout=min(settings.upstream_timeout_seconds, 30), follow_redirects=True) as client:
             response = await client.get(f"{payload.base_url}/v1/models", headers=headers)
-            if response.status_code == 404:
+            if response.status_code == 404 and discovery_protocol is None:
                 response = await client.get(f"{payload.base_url}/api/v3/models", headers=headers)
                 discovery_protocol = "ark-v3"
     except httpx.RequestError as exc:
         raise HTTPException(status_code=502, detail=f"上游模型请求失败: {exc}") from exc
+    if discovery_protocol == o10_grok.PROTOCOL and response.status_code == 404:
+        return {"models": normalize_discovered_models(list(o10_grok.KNOWN_MODELS), discovery_protocol)}
     if not 200 <= response.status_code < 300:
         raise HTTPException(status_code=502, detail=f"上游模型接口返回 HTTP {response.status_code}")
     try:
