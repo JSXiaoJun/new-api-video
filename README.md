@@ -82,8 +82,9 @@ Add Pro666 as a regular video upstream with `https://api.pro666.top` as its Base
 profile, duration list, resolution, reference-image count, and audio/video support automatically.
 
 The Pro666 adapter is isolated in `app/channels/pro666.py`. It supports the documented `video-v1`, `sd2-431`,
-`sd2-5-720p`, Firefly Seedance 2, and `veo-omni` payload families, plus the currently advertised
-`video-v1-face`, `video-900`, and `sd2-5-vref-720p` aliases. Firefly model names contain `seedance`, but they must keep
+`sd2.5-480p`, `sd2.5-720p`, `sd2-mini`, Firefly Seedance 2, and `veo-omni` payload families, plus the legacy
+`sd2-5-720p` name and the currently advertised `video-v1-face`, `video-900`, and `sd2-5-vref-720p` aliases.
+Firefly model names contain `seedance`, but they must keep
 the auto-selected `videos` protocol because Pro666 exposes them through `POST /v1/videos` rather than
 `POST /v1/video/generations`.
 
