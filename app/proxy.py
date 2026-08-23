@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import time
@@ -20,6 +21,7 @@ from .model_profiles import transform_create_payload
 logger = logging.getLogger("uvicorn.error")
 REQUEST_ID_HEADER = "X-Oneapi-Request-Id"
 MAX_UPSTREAM_ERROR_MESSAGE_LENGTH = 1000
+RETRYABLE_POLL_STATUS_CODES = {409, 429, 500, 502, 503, 504}
 
 
 STATUS_MAP = {
@@ -293,10 +295,11 @@ def normalize_task_payload(task: dict[str, Any], payload: dict[str, Any]) -> tup
     return result, video_url
 
 
-async def fetch_task(task_id: str) -> JSONResponse:
+async def fetch_task(task_id: str, timeout_seconds: float | None = None) -> JSONResponse:
     task = database.get_task(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
+    database.touch_task(task_id)
     headers = {"Authorization": f"Bearer {task['api_key']}", "Accept": "application/json"}
     relay_request_id = task.get("relay_request_id")
     response_headers = {REQUEST_ID_HEADER: relay_request_id} if relay_request_id else None
@@ -310,7 +313,8 @@ async def fetch_task(task_id: str) -> JSONResponse:
         else f"/v1/videos/{task_id}"
     )
     try:
-        async with httpx.AsyncClient(timeout=settings.upstream_timeout_seconds) as client:
+        request_timeout = settings.upstream_timeout_seconds if timeout_seconds is None else timeout_seconds
+        async with httpx.AsyncClient(timeout=request_timeout) as client:
             url = (
                 funai.api_url(task["base_url"], endpoint)
                 if task["protocol"] == funai.PROTOCOL
@@ -324,7 +328,15 @@ async def fetch_task(task_id: str) -> JSONResponse:
             database.record_audit_event(relay_request_id, "poll", None, None, sanitized)
         raise HTTPException(status_code=502, detail=sanitized["detail"], headers=response_headers) from exc
     if not 200 <= response.status_code < 300:
-        return upstream_error(response, relay_request_id, "poll")
+        error_response = upstream_error(response, relay_request_id, "poll")
+        if response.status_code not in RETRYABLE_POLL_STATUS_CODES:
+            try:
+                error_payload = response.json()
+            except ValueError:
+                error_payload = None
+            error = upstream_error_message(error_payload, "Video generation failed")
+            database.update_task(task_id, "failed", None, error)
+        return error_response
     try:
         payload = response.json()
     except ValueError as exc:
@@ -340,6 +352,24 @@ async def fetch_task(task_id: str) -> JSONResponse:
     if relay_request_id:
         database.record_audit_event(relay_request_id, "poll", response.status_code, response.text, result)
     return JSONResponse(result, headers=response_headers)
+
+
+async def reconcile_pending_tasks(limit: int = 8, stale_seconds: int = 3) -> None:
+    task_ids = database.list_pending_task_ids(int(time.time()) - max(0, stale_seconds), limit)
+    if not task_ids:
+        return
+
+    semaphore = asyncio.Semaphore(8)
+
+    async def refresh(task_id: str) -> None:
+        async with semaphore:
+            try:
+                await fetch_task(task_id, timeout_seconds=min(5.0, settings.upstream_timeout_seconds))
+            except HTTPException:
+                # Connection and malformed-response errors are recorded by fetch_task and retried later.
+                pass
+
+    await asyncio.gather(*(refresh(task_id) for task_id in task_ids))
 
 
 async def stream_upstream_content(

@@ -5,7 +5,7 @@ import json
 import os
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 
@@ -21,7 +21,7 @@ os.environ["DATA_DIR"] = TEST_DATA_DIR.name
 
 from app.channels import funai
 from app.main import normalize_discovered_models
-from app.proxy import create_video, fetch_task
+from app.proxy import create_video, fetch_task, reconcile_pending_tasks
 
 
 class FunAIChannelTests(unittest.TestCase):
@@ -322,6 +322,111 @@ class FunAIChannelTests(unittest.TestCase):
             "https://api.funai.works/generated/result.mp4",
             None,
         )
+
+    def test_failed_poll_updates_local_task_and_audit_status(self):
+        task_id = "video_funai_failed"
+        task = {
+            "task_id": task_id,
+            "api_key": "funai-secret",
+            "base_url": "https://api.funai.works/v1",
+            "protocol": funai.PROTOCOL,
+            "model": "public-kling",
+            "created_at": 100,
+            "relay_request_id": "vrq_funai_failed",
+            "public_task_id": None,
+        }
+        response = httpx.Response(
+            200,
+            request=httpx.Request("GET", f"https://api.funai.works/v1/videos/{task_id}"),
+            json={
+                "id": task_id,
+                "status": "failed",
+                "progress": 100,
+                "error": {"message": "upstream returned an invalid response"},
+            },
+        )
+
+        class MockAsyncClient:
+            def __init__(self, **_kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            async def get(self, *_args, **_kwargs):
+                return response
+
+        with (
+            patch("app.proxy.database.get_task", return_value=task),
+            patch("app.proxy.database.update_task") as update_task,
+            patch("app.proxy.database.record_audit_event"),
+            patch("app.proxy.httpx.AsyncClient", MockAsyncClient),
+        ):
+            result = asyncio.run(fetch_task(task_id))
+
+        self.assertEqual(json.loads(result.body)["status"], "failed")
+        update_task.assert_called_once_with(
+            task_id,
+            "failed",
+            None,
+            "upstream returned an invalid response",
+        )
+
+    def test_non_retryable_poll_http_error_marks_task_failed(self):
+        task_id = "video_funai_missing"
+        task = {
+            "task_id": task_id,
+            "api_key": "funai-secret",
+            "base_url": "https://api.funai.works/v1",
+            "protocol": funai.PROTOCOL,
+            "model": "public-kling",
+            "created_at": 100,
+            "relay_request_id": "vrq_funai_missing",
+            "public_task_id": None,
+        }
+        response = httpx.Response(
+            404,
+            request=httpx.Request("GET", f"https://api.funai.works/v1/videos/{task_id}"),
+            json={"error": {"message": "Task expired or does not exist"}},
+        )
+
+        class MockAsyncClient:
+            def __init__(self, **_kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            async def get(self, *_args, **_kwargs):
+                return response
+
+        with (
+            patch("app.proxy.database.get_task", return_value=task),
+            patch("app.proxy.database.update_task") as update_task,
+            patch("app.proxy.database.record_audit_event"),
+            patch("app.proxy.httpx.AsyncClient", MockAsyncClient),
+        ):
+            result = asyncio.run(fetch_task(task_id))
+
+        self.assertEqual(result.status_code, 404)
+        update_task.assert_called_once_with(task_id, "failed", None, "Task expired or does not exist")
+
+    def test_reconciler_refreshes_all_stale_pending_tasks(self):
+        fetch = AsyncMock()
+        with (
+            patch("app.proxy.database.list_pending_task_ids", return_value=["task_one", "task_two"]),
+            patch("app.proxy.fetch_task", fetch),
+        ):
+            asyncio.run(reconcile_pending_tasks(limit=2, stale_seconds=5))
+
+        self.assertEqual({call.args[0] for call in fetch.await_args_list}, {"task_one", "task_two"})
+        self.assertTrue(all(call.kwargs["timeout_seconds"] <= 5 for call in fetch.await_args_list))
 
 
 if __name__ == "__main__":

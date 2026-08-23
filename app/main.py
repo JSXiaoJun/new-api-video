@@ -221,7 +221,8 @@ def image_dashboard(request: Request, session: str | None = Cookie(default=None,
 
 
 @app.get("/admin/api/dashboard")
-def dashboard_api(_: tuple[str, dict] = Depends(admin_session)):
+async def dashboard_api(_: tuple[str, dict] = Depends(admin_session)):
+    await proxy.reconcile_pending_tasks()
     return {
         **database.dashboard_data(),
         "profiles": profile_options(),
@@ -310,11 +311,12 @@ def image_integration_document(_: tuple[str, dict] = Depends(admin_session)):
 
 
 @app.get("/admin/api/tasks")
-def audit_tasks(
+async def audit_tasks(
     q: str = Query(default="", max_length=191),
     status: str = Query(default="", pattern="^(|queued|processing|completed|failed)$"),
     _: tuple[str, dict] = Depends(admin_session),
 ):
+    await proxy.reconcile_pending_tasks()
     return {"tasks": database.list_audit_requests(q.strip(), status)}
 
 

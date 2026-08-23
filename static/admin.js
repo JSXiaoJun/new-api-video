@@ -28,6 +28,7 @@ let activeAuditView = 'request'
 let activeDurationMenu = null
 let pendingDiscoveredModels = []
 let selectedDiscoveredModels = new Set()
+let taskRefreshInFlight = false
 
 function updateResponsiveClass() {
   document.documentElement.classList.toggle('is-mobile', window.matchMedia('(max-width: 760px)').matches)
@@ -204,6 +205,19 @@ async function loadTasks() {
   const result = await api(`/admin/api/tasks?${params}`)
   dashboard.tasks = result.tasks
   render()
+}
+
+async function refreshPendingTasks() {
+  if (document.hidden || taskRefreshInFlight) return
+  if (!dashboard.tasks.some((task) => task.status === 'queued' || task.status === 'processing')) return
+  taskRefreshInFlight = true
+  try {
+    await loadTasks()
+  } catch {
+    // The next interval retries without interrupting other admin operations.
+  } finally {
+    taskRefreshInFlight = false
+  }
 }
 
 function selectedAuditEvent() {
@@ -687,6 +701,7 @@ document.querySelector('#refresh-button').addEventListener('click', async () => 
   await loadDashboard()
   showToast('数据已刷新')
 })
+setInterval(refreshPendingTasks, 5000)
 publicLinkForm.addEventListener('submit', async (event) => {
   event.preventDefault()
   const button = publicLinkForm.querySelector('button[type="submit"]')

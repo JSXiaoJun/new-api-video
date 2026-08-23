@@ -662,6 +662,32 @@ def get_task(task_id: str) -> dict[str, Any] | None:
         return item
 
 
+def list_pending_task_ids(stale_before: int, limit: int = 20) -> list[str]:
+    with connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT task_id FROM tasks
+            WHERE status IN ('queued', 'processing') AND updated_at <= ?
+            ORDER BY updated_at ASC LIMIT ?
+            """,
+            (stale_before, max(1, min(limit, 50))),
+        ).fetchall()
+    return [str(row["task_id"]) for row in rows]
+
+
+def touch_task(task_id: str) -> None:
+    now = int(time.time())
+    with connection() as conn:
+        conn.execute("UPDATE tasks SET updated_at = ? WHERE task_id = ?", (now, task_id))
+        conn.execute(
+            """
+            UPDATE audit_requests SET updated_at = ?
+            WHERE relay_request_id = (SELECT relay_request_id FROM tasks WHERE task_id = ?)
+            """,
+            (now, task_id),
+        )
+
+
 def update_task(task_id: str, status: str, source_video_url: str | None, error: str | None) -> None:
     with connection() as conn:
         conn.execute(
