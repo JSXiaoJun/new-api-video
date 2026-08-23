@@ -95,6 +95,42 @@ class FunAIChannelTests(unittest.TestCase):
         })
         self.assertNotIn("input_video", unsupported_video)
 
+    def test_omni_maps_local_reference_image_aliases(self):
+        singular = funai.transform_create_payload({
+            "model": "gemini-omni",
+            "prompt": "Keep the product identity",
+            "reference_image": "https://cdn.example/product.png",
+        })
+        self.assertEqual(singular["image_reference"], "https://cdn.example/product.png")
+        self.assertNotIn("reference_image", singular)
+        self.assertNotIn("reference_images", singular)
+
+        plural = funai.transform_create_payload({
+            "model": "gemini-omni-flash",
+            "prompt": "Use all references",
+            "reference_images": [
+                "https://cdn.example/product.png",
+                "https://cdn.example/style.png",
+            ],
+        })
+        self.assertEqual(plural["reference_images"], [
+            "https://cdn.example/product.png",
+            "https://cdn.example/style.png",
+        ])
+        self.assertNotIn("image_reference", plural)
+
+    def test_omni_does_not_emit_duplicate_reference_fields(self):
+        payload = funai.transform_create_payload({
+            "model": "gemini-omni",
+            "prompt": "Prefer the explicit local alias",
+            "reference_image": "https://cdn.example/explicit.png",
+            "image_urls": ["https://cdn.example/legacy.png"],
+        })
+
+        self.assertEqual(payload["image_reference"], "https://cdn.example/explicit.png")
+        self.assertNotIn("reference_image", payload)
+        self.assertNotIn("reference_images", payload)
+
     def test_create_and_poll_use_funai_adapter_only(self):
         captured: dict[str, object] = {}
         task_id = "video_funai_1"

@@ -207,6 +207,9 @@ def transform_create_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "image_url",
         "image_urls",
         "images",
+        "image_reference",
+        "reference_image",
+        "reference_images",
         "reference_image_urls",
         "reference_video",
         "reference_videos",
@@ -232,14 +235,7 @@ def transform_create_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if "audio" not in result and "generate_audio" in payload:
         result["audio"] = payload["generate_audio"]
 
-    images = _string_list(payload.get("image_urls"))
-    if not images:
-        images = _string_list(payload.get("images"))
-    if not images:
-        image_url = payload.get("image_url")
-        if isinstance(image_url, str) and image_url.strip():
-            images = [image_url.strip()]
-            images.extend(_string_list(payload.get("reference_image_urls")))
+    images, singular_reference = _reference_images(payload)
 
     reference_video = _first_reference_video(payload)
     if (
@@ -253,7 +249,10 @@ def transform_create_payload(payload: dict[str, Any]) -> dict[str, Any]:
         if normalized_model == "minimax-h3":
             result.setdefault("reference_images", images)
         elif normalized_model in {"kling-o3", "kling-v3"} or normalized_model.startswith("gemini-omni"):
-            result.setdefault("reference_images", images)
+            if singular_reference and len(images) == 1:
+                result.setdefault("image_reference", images[0])
+            else:
+                result.setdefault("reference_images", images)
         elif "kling-o3-" in normalized_model and "v2v-reference" in normalized_model:
             result.setdefault("images", images)
         elif normalized_model == "kling-v3-omni-v2v-create":
@@ -277,6 +276,27 @@ def _string_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return [item.strip() for item in value if isinstance(item, str) and item.strip()]
+
+
+def _reference_images(payload: dict[str, Any]) -> tuple[list[str], bool]:
+    """Normalize local aliases while retaining explicit singular intent."""
+    singular = payload.get("reference_image")
+    if not isinstance(singular, str) or not singular.strip():
+        singular = payload.get("image_reference")
+    if isinstance(singular, str) and singular.strip():
+        return [singular.strip()], True
+
+    for field in ("reference_images", "image_urls", "images"):
+        images = _string_list(payload.get(field))
+        if images:
+            return images, False
+
+    image_url = payload.get("image_url")
+    if isinstance(image_url, str) and image_url.strip():
+        images = [image_url.strip()]
+        images.extend(_string_list(payload.get("reference_image_urls")))
+        return images, False
+    return [], False
 
 
 def _first_reference_video(payload: dict[str, Any]) -> str | None:
