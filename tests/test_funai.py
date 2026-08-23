@@ -78,6 +78,51 @@ class FunAIChannelTests(unittest.TestCase):
         self.assertEqual(kling["input_video"], "https://cdn.example/source.mp4")
         self.assertNotIn("seconds", kling)
 
+        kling_reference = funai.transform_create_payload({
+            "model": "kling-o3-pro-v2v-reference",
+            "prompt": "Keep both characters",
+            "seconds": 10,
+            "image_urls": [
+                "https://cdn.example/character-one.png",
+                "https://cdn.example/character-two.png",
+            ],
+        })
+        self.assertEqual(kling_reference["element_references"], [
+            "https://cdn.example/character-one.png",
+            "https://cdn.example/character-two.png",
+        ])
+        self.assertNotIn("images", kling_reference)
+
+        explicit_frames = funai.transform_create_payload({
+            "model": "kling-o3-pro-v2v-reference",
+            "prompt": "Use both character references",
+            "images": [
+                "https://cdn.example/character-one.png",
+                "https://cdn.example/character-two.png",
+            ],
+        })
+        self.assertEqual(explicit_frames["element_references"], [
+            "https://cdn.example/character-one.png",
+            "https://cdn.example/character-two.png",
+        ])
+        self.assertNotIn("images", explicit_frames)
+
+        kling_v3 = funai.transform_create_payload({
+            "model": "kling-v3",
+            "prompt": "Animate the two characters",
+            "image_urls": ["https://cdn.example/character.png"],
+        })
+        self.assertEqual(kling_v3["element_references"], ["https://cdn.example/character.png"])
+        self.assertNotIn("images", kling_v3)
+
+        kling_omni = funai.transform_create_payload({
+            "model": "kling-v3-omni-v2v-create",
+            "prompt": "Restyle the characters",
+            "image_urls": ["https://cdn.example/character.png"],
+        })
+        self.assertEqual(kling_omni["element_references"], ["https://cdn.example/character.png"])
+        self.assertNotIn("images", kling_omni)
+
         veo = funai.transform_create_payload({
             "model": "veo-3.1",
             "prompt": "Product shot",

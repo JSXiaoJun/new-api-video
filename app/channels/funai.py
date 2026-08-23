@@ -248,15 +248,15 @@ def transform_create_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if images:
         if normalized_model == "minimax-h3":
             result.setdefault("reference_images", images)
-        elif normalized_model in {"kling-o3", "kling-v3"} or normalized_model.startswith("gemini-omni"):
+        elif normalized_model == "kling-o3" or normalized_model.startswith("gemini-omni"):
             if singular_reference and len(images) == 1:
                 result.setdefault("image_reference", images[0])
             else:
                 result.setdefault("reference_images", images)
-        elif "kling-o3-" in normalized_model and "v2v-reference" in normalized_model:
-            result.setdefault("images", images)
-        elif normalized_model == "kling-v3-omni-v2v-create":
-            result.setdefault("style_references", images)
+        elif normalized_model.startswith("kling-"):
+            # Workbench image_urls mean ordinary subject/character references.
+            # Never turn them into Kling's first/last-frame `images` field.
+            result.setdefault("element_references", images)
         else:
             result.setdefault("images", images)
 
