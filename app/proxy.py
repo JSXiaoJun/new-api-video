@@ -199,13 +199,20 @@ async def create_video(
         database.fail_audit_request(relay_request_id, sanitized["detail"])
         raise HTTPException(status_code=502, detail=sanitized["detail"], headers=response_headers)
 
-    status = normalize_status(upstream_payload.get("status", "queued"))
+    create_status = upstream_payload.get("status")
+    if create_status is None and upstream_payload.get("error"):
+        create_status = "failed"
+    status = normalize_status(create_status or "queued")
     if status not in {"queued", "processing", "completed", "failed"}:
         status = "queued"
-    try:
-        progress = max(0, min(100, int(float(upstream_payload.get("progress") or 0))))
-    except (TypeError, ValueError, OverflowError):
-        progress = 0
+    progress_value = upstream_payload.get("progress")
+    if progress_value is None:
+        progress = 100 if status in {"completed", "failed"} else (30 if status == "processing" else 0)
+    else:
+        try:
+            progress = max(0, min(100, int(float(progress_value))))
+        except (TypeError, ValueError, OverflowError):
+            progress = 0
     result = {
         "id": task_id,
         "object": "video",
@@ -267,6 +274,8 @@ def normalize_task_payload(task: dict[str, Any], payload: dict[str, Any]) -> tup
         error_value = fields["error"]
         progress = fields["progress"]
 
+    if status_value is None and error_value:
+        status_value = "failed"
     status = normalize_status(status_value)
     if status not in {"queued", "processing", "completed", "failed"}:
         status = "queued"

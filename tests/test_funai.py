@@ -286,6 +286,7 @@ class FunAIChannelTests(unittest.TestCase):
             patch("app.proxy.database.record_audit_event"),
             patch("app.proxy.database.create_task"),
             patch("app.proxy.database.get_task", return_value=task),
+            patch("app.proxy.database.touch_task"),
             patch("app.proxy.database.update_task") as update_task,
             patch("app.proxy.httpx.AsyncClient", MockAsyncClient),
         ):
@@ -340,8 +341,6 @@ class FunAIChannelTests(unittest.TestCase):
             request=httpx.Request("GET", f"https://api.funai.works/v1/videos/{task_id}"),
             json={
                 "id": task_id,
-                "status": "failed",
-                "progress": 100,
                 "error": {"message": "upstream returned an invalid response"},
             },
         )
@@ -361,6 +360,7 @@ class FunAIChannelTests(unittest.TestCase):
 
         with (
             patch("app.proxy.database.get_task", return_value=task),
+            patch("app.proxy.database.touch_task"),
             patch("app.proxy.database.update_task") as update_task,
             patch("app.proxy.database.record_audit_event"),
             patch("app.proxy.httpx.AsyncClient", MockAsyncClient),
@@ -408,6 +408,7 @@ class FunAIChannelTests(unittest.TestCase):
 
         with (
             patch("app.proxy.database.get_task", return_value=task),
+            patch("app.proxy.database.touch_task"),
             patch("app.proxy.database.update_task") as update_task,
             patch("app.proxy.database.record_audit_event"),
             patch("app.proxy.httpx.AsyncClient", MockAsyncClient),

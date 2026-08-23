@@ -2364,6 +2364,41 @@ class CoreTests(unittest.TestCase):
             "code": "video_generation_failed",
         })
 
+    def test_create_response_infers_failure_when_error_omits_status(self):
+        response = httpx.Response(
+            200,
+            request=httpx.Request("POST", "https://private-upstream.example/v1/videos"),
+            json={
+                "id": "implicit-failure-task",
+                "error": {
+                    "code": "upstream_error",
+                    "message": "temporary account availability issue; please retry shortly",
+                    "type": "upstream_error",
+                },
+            },
+        )
+
+        class MockAsyncClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_):
+                return None
+
+            async def post(self, *_args, **_kwargs):
+                return response
+
+        with patch("app.proxy.httpx.AsyncClient", return_value=MockAsyncClient()):
+            result = asyncio.run(create_video({"model": "audit-model", "prompt": "test"}, None))
+
+        body = json.loads(result.body)
+        self.assertEqual(body["status"], "failed")
+        self.assertEqual(body["progress"], 100)
+        self.assertEqual(
+            body["error"]["message"],
+            "temporary account availability issue; please retry shortly",
+        )
+
     def test_audit_data_is_correlated_and_encrypted(self):
         relay_request_id = database.start_audit_request(
             self.upstream["id"],
