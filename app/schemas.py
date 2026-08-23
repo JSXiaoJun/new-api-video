@@ -12,7 +12,7 @@ from .model_profiles import MAX_DURATION_SECONDS
 class RouteInput(BaseModel):
     model: str = Field(min_length=1, max_length=160)
     upstream_model: str = Field(default="", max_length=160)
-    protocol: Literal["videos", "seedance", "ark-v3", "o10-grok"] = "videos"
+    protocol: Literal["videos", "seedance", "ark-v3", "o10-grok", "funai"] = "videos"
     profile: Literal[
         "default",
         "gemini-omni",
@@ -23,6 +23,12 @@ class RouteInput(BaseModel):
         "ark-seedance-2",
         "grok-auto",
         "grok-fast",
+        "funai-minimax-h3",
+        "funai-kling",
+        "funai-runway",
+        "funai-sora",
+        "funai-gemini-omni",
+        "funai-veo",
         "pro666-video-v1",
         "pro666-video-900",
         "pro666-sd2-431",

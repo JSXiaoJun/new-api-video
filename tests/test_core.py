@@ -1197,6 +1197,7 @@ class CoreTests(unittest.TestCase):
                     ).fetchall()
 
             self.assertIn("ark-v3", table_sql)
+            self.assertIn("funai", table_sql)
             self.assertEqual([(route["model"], route["protocol"]) for route in routes], [
                 ("ark-public", "ark-v3"),
                 ("legacy-video", "videos"),

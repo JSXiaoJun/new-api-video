@@ -26,7 +26,9 @@ def _ensure_protocol_constraint(conn: sqlite3.Connection) -> None:
     row = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'model_routes'"
     ).fetchone()
-    if row is not None and all(protocol in (row["sql"] or "") for protocol in ("ark-v3", "o10-grok")):
+    if row is not None and all(
+        protocol in (row["sql"] or "") for protocol in ("ark-v3", "o10-grok", "funai")
+    ):
         return
 
     # SQLite 无法原地修改 CHECK，重建表以保留已有路由并扩展协议枚举。
@@ -35,13 +37,13 @@ def _ensure_protocol_constraint(conn: sqlite3.Connection) -> None:
     try:
         conn.executescript(
             """
-            ALTER TABLE model_routes RENAME TO model_routes_before_ark_v3;
+            ALTER TABLE model_routes RENAME TO model_routes_before_protocol_expand;
             CREATE TABLE model_routes (
                 id INTEGER PRIMARY KEY,
                 upstream_id INTEGER NOT NULL REFERENCES upstreams(id) ON DELETE CASCADE,
                 model TEXT NOT NULL,
                 upstream_model TEXT NOT NULL,
-                protocol TEXT NOT NULL CHECK(protocol IN ('videos', 'seedance', 'ark-v3', 'o10-grok')),
+                protocol TEXT NOT NULL CHECK(protocol IN ('videos', 'seedance', 'ark-v3', 'o10-grok', 'funai')),
                 profile TEXT NOT NULL DEFAULT 'default',
                 duration_override INTEGER,
                 durations_json TEXT NOT NULL DEFAULT '[]',
@@ -63,8 +65,8 @@ def _ensure_protocol_constraint(conn: sqlite3.Connection) -> None:
                 id, upstream_id, model, upstream_model, protocol, profile, duration_override,
                 durations_json, resolutions_json, supports_image, supports_video, supports_audio, image_count,
                 enabled, forward_resolution
-            FROM model_routes_before_ark_v3;
-            DROP TABLE model_routes_before_ark_v3;
+            FROM model_routes_before_protocol_expand;
+            DROP TABLE model_routes_before_protocol_expand;
             CREATE INDEX idx_model_routes_model ON model_routes(model);
             CREATE UNIQUE INDEX idx_model_routes_upstream_model
                 ON model_routes(upstream_id, upstream_model);
@@ -130,7 +132,7 @@ def initialize() -> None:
                 upstream_id INTEGER NOT NULL REFERENCES upstreams(id) ON DELETE CASCADE,
                 model TEXT NOT NULL,
                 upstream_model TEXT NOT NULL,
-                protocol TEXT NOT NULL CHECK(protocol IN ('videos', 'seedance', 'ark-v3', 'o10-grok')),
+                protocol TEXT NOT NULL CHECK(protocol IN ('videos', 'seedance', 'ark-v3', 'o10-grok', 'funai')),
                 profile TEXT NOT NULL DEFAULT 'default',
                 duration_override INTEGER,
                 resolutions_json TEXT NOT NULL DEFAULT '[]',

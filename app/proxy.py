@@ -12,7 +12,7 @@ from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from . import ark_video, database
-from .channels import o10_grok, pro666
+from .channels import funai, o10_grok, pro666
 from .config import settings
 from .model_profiles import transform_create_payload
 
@@ -134,6 +134,8 @@ async def create_video(
             }
     if protocol == ark_video.PROTOCOL:
         upstream_payload = ark_video.transform_create_payload(routed_payload)
+    elif protocol == funai.PROTOCOL:
+        upstream_payload = funai.transform_create_payload(routed_payload)
     elif protocol == o10_grok.PROTOCOL:
         upstream_payload = o10_grok.transform_create_payload(routed_payload)
     else:
@@ -143,6 +145,8 @@ async def create_video(
     endpoint = (
         ark_video.CREATE_PATH
         if protocol == ark_video.PROTOCOL
+        else funai.CREATE_PATH
+        if protocol == funai.PROTOCOL
         else o10_grok.CREATE_PATH
         if protocol == o10_grok.PROTOCOL
         else "/v1/video/generations" if protocol == "seedance" else "/v1/videos"
@@ -158,7 +162,12 @@ async def create_video(
 
     try:
         async with httpx.AsyncClient(timeout=settings.upstream_timeout_seconds) as client:
-            response = await client.post(upstream["base_url"] + endpoint, headers=headers, json=upstream_payload)
+            url = (
+                funai.api_url(upstream["base_url"], endpoint)
+                if protocol == funai.PROTOCOL
+                else upstream["base_url"] + endpoint
+            )
+            response = await client.post(url, headers=headers, json=upstream_payload)
     except httpx.RequestError as exc:
         logger.warning("Video upstream create request failed: %s", exc)
         sanitized = {"detail": "Video upstream connection failed"}
@@ -176,7 +185,9 @@ async def create_video(
         database.fail_audit_request(relay_request_id, sanitized["detail"])
         raise HTTPException(status_code=502, detail=sanitized["detail"], headers=response_headers) from exc
     task_id = (
-        o10_grok.extract_create_task_id(upstream_payload)
+        funai.extract_create_task_id(upstream_payload)
+        if protocol == funai.PROTOCOL
+        else o10_grok.extract_create_task_id(upstream_payload)
         if protocol == o10_grok.PROTOCOL
         else str(upstream_payload.get("task_id") or upstream_payload.get("id") or "").strip()
     )
@@ -241,6 +252,12 @@ def normalize_task_payload(task: dict[str, Any], payload: dict[str, Any]) -> tup
         video_url = fields["video_url"]
         error_value = fields["error"]
         progress = fields["progress"]
+    elif task["protocol"] == funai.PROTOCOL:
+        fields = funai.extract_task_fields(payload)
+        status_value = fields["status"]
+        video_url = fields["video_url"]
+        error_value = fields["error"]
+        progress = fields["progress"]
     elif task["protocol"] == o10_grok.PROTOCOL:
         fields = o10_grok.extract_task_fields(payload)
         status_value = fields["status"]
@@ -286,13 +303,20 @@ async def fetch_task(task_id: str) -> JSONResponse:
     endpoint = (
         ark_video.task_path(task_id)
         if task["protocol"] == ark_video.PROTOCOL
+        else funai.task_path(task_id)
+        if task["protocol"] == funai.PROTOCOL
         else o10_grok.task_path(task_id)
         if task["protocol"] == o10_grok.PROTOCOL
         else f"/v1/videos/{task_id}"
     )
     try:
         async with httpx.AsyncClient(timeout=settings.upstream_timeout_seconds) as client:
-            response = await client.get(f"{task['base_url']}{endpoint}", headers=headers)
+            url = (
+                funai.api_url(task["base_url"], endpoint)
+                if task["protocol"] == funai.PROTOCOL
+                else f"{task['base_url']}{endpoint}"
+            )
+            response = await client.get(url, headers=headers)
     except httpx.RequestError as exc:
         logger.warning("Video upstream task request failed: %s", exc)
         sanitized = {"detail": "Video upstream connection failed"}
@@ -415,6 +439,8 @@ async def stream_content(task_id: str, request: Request) -> StreamingResponse:
         raise HTTPException(status_code=502, detail="Ark task completed without a video URL")
     elif task["protocol"] == o10_grok.PROTOCOL:
         source_url = f"{task['base_url']}{o10_grok.content_path(task_id)}"
+    elif task["protocol"] == funai.PROTOCOL:
+        source_url = funai.api_url(task["base_url"], funai.content_path(task_id))
     else:
         source_url = f"{task['base_url']}/v1/videos/{task_id}/content"
 
