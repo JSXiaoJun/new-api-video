@@ -54,13 +54,27 @@ PROFILE_DEFINITIONS: dict[str, dict[str, Any]] = {
         },
     },
     "funai-kling": {
-        "label": "FunAI Kling",
+        "label": "FunAI Kling 参考图",
         "request_format": "funai",
         "capabilities": {
             "ratios": ["16:9", "1:1", "9:16"],
             "durations": list(range(3, 16)),
             "resolutions": ["720p", "1080p", "2160p"],
             "maxImages": 7,
+            "referenceVideo": True,
+            "minReferenceVideoDuration": 0,
+            "maxReferenceVideoDuration": 30,
+            "experimental": True,
+        },
+    },
+    "funai-kling-frames": {
+        "label": "FunAI Kling 首尾帧",
+        "request_format": "funai",
+        "capabilities": {
+            "ratios": ["16:9", "1:1", "9:16"],
+            "durations": list(range(3, 16)),
+            "resolutions": ["720p", "1080p", "2160p"],
+            "maxImages": 2,
             "referenceVideo": True,
             "minReferenceVideoDuration": 0,
             "maxReferenceVideoDuration": 30,
@@ -151,8 +165,9 @@ def suggest_route(model: str) -> dict[str, Any] | None:
             image_count = 2
         elif normalized == "kling-v3-omni-v2v-create":
             image_count = 6
+        profile = "funai-kling-frames" if normalized == "kling-v3" else "funai-kling"
         return _route(
-            "funai-kling",
+            profile,
             range(3, 16),
             ["720p", "1080p", "2160p"],
             image_count,
@@ -192,7 +207,10 @@ def _route(
     }
 
 
-def transform_create_payload(payload: dict[str, Any]) -> dict[str, Any]:
+def transform_create_payload(
+    payload: dict[str, Any],
+    profile: str | None = None,
+) -> dict[str, Any]:
     model = str(payload.get("model") or "").strip()
     normalized_model = model.lower()
     metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
@@ -248,15 +266,19 @@ def transform_create_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if images:
         if normalized_model == "minimax-h3":
             result.setdefault("reference_images", images)
+        elif normalized_model == "kling-o3" and profile == "funai-kling-frames":
+            _set_kling_frames(result, normalized_model, images)
         elif normalized_model == "kling-o3" or normalized_model.startswith("gemini-omni"):
             if singular_reference and len(images) == 1:
                 result.setdefault("image_reference", images[0])
             else:
                 result.setdefault("reference_images", images)
         elif normalized_model.startswith("kling-"):
-            # Workbench image_urls mean ordinary subject/character references.
-            # Never turn them into Kling's first/last-frame `images` field.
-            result.setdefault("element_references", images)
+            if profile == "funai-kling-frames":
+                _set_kling_frames(result, normalized_model, images)
+            else:
+                # The default Kling profile always treats uploads as subject references.
+                result.setdefault("element_references", images)
         else:
             result.setdefault("images", images)
 
@@ -270,6 +292,19 @@ def transform_create_payload(payload: dict[str, Any]) -> dict[str, Any]:
         result.pop("seconds", None)
 
     return {key: value for key, value in result.items() if value is not None and value != ""}
+
+
+def _set_kling_frames(result: dict[str, Any], model: str, images: list[str]) -> None:
+    frames = images[:2]
+    if model in {"kling-o3", "kling-v3"}:
+        result.setdefault("start_frame", frames[0])
+        if len(frames) > 1:
+            result.setdefault("end_frame", frames[1])
+    elif model in {"kling-o3-pro-v2v-reference", "kling-o3-standard-v2v-reference"}:
+        result.setdefault("images", frames)
+    else:
+        # Kling Omni V2V does not accept first/last-frame input.
+        result.setdefault("element_references", images)
 
 
 def _string_list(value: Any) -> list[str]:

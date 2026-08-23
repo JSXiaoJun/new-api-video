@@ -135,7 +135,7 @@ async def create_video(
     if protocol == ark_video.PROTOCOL:
         upstream_payload = ark_video.transform_create_payload(routed_payload)
     elif protocol == funai.PROTOCOL:
-        upstream_payload = funai.transform_create_payload(routed_payload)
+        upstream_payload = funai.transform_create_payload(routed_payload, upstream["profile"])
     elif protocol == o10_grok.PROTOCOL:
         upstream_payload = o10_grok.transform_create_payload(routed_payload)
     else:

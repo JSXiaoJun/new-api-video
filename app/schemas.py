@@ -25,6 +25,7 @@ class RouteInput(BaseModel):
         "grok-fast",
         "funai-minimax-h3",
         "funai-kling",
+        "funai-kling-frames",
         "funai-runway",
         "funai-sora",
         "funai-gemini-omni",

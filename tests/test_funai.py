@@ -32,17 +32,24 @@ class FunAIChannelTests(unittest.TestCase):
                     {"id": "gpt-image-2"},
                     {"id": "minimax-h3"},
                     {"id": "veo-3.1-fast"},
+                    {"id": "kling-v3"},
+                    {"id": "kling-v3-omni-v2v-create"},
                     {"id": "nano-banana2"},
                 ]
             },
             funai.PROTOCOL,
         )
 
-        self.assertEqual([item["upstream_model"] for item in models], ["minimax-h3", "veo-3.1-fast"])
+        self.assertEqual(
+            [item["upstream_model"] for item in models],
+            ["minimax-h3", "veo-3.1-fast", "kling-v3", "kling-v3-omni-v2v-create"],
+        )
         self.assertTrue(all(item["protocol"] == funai.PROTOCOL for item in models))
         self.assertEqual(models[0]["profile"], "funai-minimax-h3")
         self.assertEqual(models[1]["profile"], "funai-veo")
         self.assertEqual(models[1]["durations"], [8])
+        self.assertEqual(models[2]["profile"], "funai-kling-frames")
+        self.assertEqual(models[3]["profile"], "funai-kling")
 
     def test_payload_mapping_is_model_specific(self):
         minimax = funai.transform_create_payload({
@@ -123,6 +130,47 @@ class FunAIChannelTests(unittest.TestCase):
         self.assertEqual(kling_omni["element_references"], ["https://cdn.example/character.png"])
         self.assertNotIn("images", kling_omni)
 
+        kling_o3_frames = funai.transform_create_payload({
+            "model": "kling-o3",
+            "prompt": "Animate between two frames",
+            "image_urls": [
+                "https://cdn.example/start.png",
+                "https://cdn.example/end.png",
+                "https://cdn.example/ignored.png",
+            ],
+        }, "funai-kling-frames")
+        self.assertEqual(kling_o3_frames["start_frame"], "https://cdn.example/start.png")
+        self.assertEqual(kling_o3_frames["end_frame"], "https://cdn.example/end.png")
+        self.assertNotIn("reference_images", kling_o3_frames)
+        self.assertNotIn("element_references", kling_o3_frames)
+
+        kling_v2v_frames = funai.transform_create_payload({
+            "model": "kling-o3-pro-v2v-reference",
+            "prompt": "Animate between two frames",
+            "image_urls": [
+                "https://cdn.example/start.png",
+                "https://cdn.example/end.png",
+                "https://cdn.example/ignored.png",
+            ],
+        }, "funai-kling-frames")
+        self.assertEqual(kling_v2v_frames["images"], [
+            "https://cdn.example/start.png",
+            "https://cdn.example/end.png",
+        ])
+        self.assertNotIn("element_references", kling_v2v_frames)
+
+        kling_omni_frames = funai.transform_create_payload({
+            "model": "kling-v3-omni-v2v-create",
+            "prompt": "Keep the character",
+            "image_urls": ["https://cdn.example/character.png"],
+        }, "funai-kling-frames")
+        self.assertEqual(
+            kling_omni_frames["element_references"],
+            ["https://cdn.example/character.png"],
+        )
+        self.assertNotIn("images", kling_omni_frames)
+        self.assertNotIn("start_frame", kling_omni_frames)
+
         veo = funai.transform_create_payload({
             "model": "veo-3.1",
             "prompt": "Product shot",
@@ -184,7 +232,7 @@ class FunAIChannelTests(unittest.TestCase):
             "api_key": "funai-secret",
             "base_url": "https://api.funai.works/v1",
             "protocol": funai.PROTOCOL,
-            "model": "public-veo",
+            "model": "public-kling",
             "created_at": 100,
             "relay_request_id": "vrq_funai",
             "public_task_id": None,
@@ -227,8 +275,8 @@ class FunAIChannelTests(unittest.TestCase):
             "api_key": "funai-secret",
             "base_url": "https://api.funai.works/v1",
             "protocol": funai.PROTOCOL,
-            "profile": "funai-veo",
-            "upstream_model": "veo-3.1",
+            "profile": "funai-kling-frames",
+            "upstream_model": "kling-v3",
             "forward_resolution": True,
         }
         with (
@@ -242,24 +290,28 @@ class FunAIChannelTests(unittest.TestCase):
             patch("app.proxy.httpx.AsyncClient", MockAsyncClient),
         ):
             created = asyncio.run(create_video({
-                "model": "public-veo",
-                "prompt": "Moonlit ocean",
+                "model": "public-kling",
+                "prompt": "Animate between the frames",
                 "duration": 8,
                 "aspect_ratio": "16:9",
                 "resolution": "1080p",
-                "image_urls": ["https://cdn.example/reference.png"],
+                "image_urls": [
+                    "https://cdn.example/start.png",
+                    "https://cdn.example/end.png",
+                ],
             }, None))
             fetched = asyncio.run(fetch_task(task_id))
 
         post_url, post_options = captured["post"]
         self.assertEqual(post_url, "https://api.funai.works/v1/videos")
         self.assertEqual(post_options["json"], {
-            "model": "veo-3.1",
-            "prompt": "Moonlit ocean",
+            "model": "kling-v3",
+            "prompt": "Animate between the frames",
             "seconds": 8,
             "aspect_ratio": "16:9",
             "resolution": "1080p",
-            "images": ["https://cdn.example/reference.png"],
+            "start_frame": "https://cdn.example/start.png",
+            "end_frame": "https://cdn.example/end.png",
         })
         self.assertEqual(captured["get"][0], f"https://api.funai.works/v1/videos/{task_id}")
         self.assertEqual(json.loads(created.body)["id"], task_id)
