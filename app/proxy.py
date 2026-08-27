@@ -69,7 +69,7 @@ def _find_error_message(value: Any) -> str | None:
         message = _find_error_message(nested_error)
         if message:
             return message
-    for key in ("message", "detail"):
+    for key in ("message", "msg", "detail"):
         candidate = value.get(key)
         if isinstance(candidate, str) and candidate.strip():
             return candidate.strip()
@@ -210,7 +210,12 @@ async def create_video(
         else str(upstream_payload.get("task_id") or upstream_payload.get("id") or "").strip()
     )
     if not task_id:
-        sanitized = {"detail": "Upstream response did not contain a task_id"}
+        sanitized = {
+            "detail": upstream_error_message(
+                upstream_payload,
+                "Upstream response did not contain a task_id",
+            )
+        }
         database.record_audit_event(relay_request_id, "create", response.status_code, response.text, sanitized)
         database.fail_audit_request(relay_request_id, sanitized["detail"])
         raise HTTPException(status_code=502, detail=sanitized["detail"], headers=response_headers)

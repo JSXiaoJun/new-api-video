@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import httpx
+from fastapi import HTTPException
 
 os.environ.setdefault("ADMIN_USERNAME", "admin")
 os.environ.setdefault("ADMIN_PASSWORD", "test-password")
@@ -2296,6 +2297,58 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(
             json.loads(top_level_result.body)["error"]["message"],
             "The image count exceeds 9",
+        )
+
+    def test_upstream_msg_is_forwarded_when_create_returns_no_task_id(self):
+        response = httpx.Response(
+            200,
+            request=httpx.Request("POST", "https://autodl.art/api/v1/comfyui/comfyui_workflow/workflow"),
+            json={
+                "code": "RequestParameterIsWrong",
+                "data": None,
+                "msg": "参数：resolution 的值：768p(1:1) 不在 options 列表中",
+                "request_id": "autodl-request-id",
+            },
+        )
+
+        class MockAsyncClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_):
+                return None
+
+            async def post(self, *_args, **_kwargs):
+                return response
+
+        autodl_model = f"autodl-error-{time.time_ns()}"
+        database.save_upstream({
+            "name": autodl_model,
+            "base_url": "https://autodl.art",
+            "api_key": "autodl-key",
+            "enabled": True,
+            "priority": 1,
+            "routes": [{
+                "model": autodl_model,
+                "upstream_model": "minimax_h3_lightx2v_no_pic",
+                "protocol": "autodl-comfyui",
+                "profile": "autodl-comfyui",
+            }],
+        })
+
+        with patch("app.proxy.httpx.AsyncClient", return_value=MockAsyncClient()):
+            with self.assertRaises(HTTPException) as raised:
+                asyncio.run(create_video({
+                    "model": autodl_model,
+                    "prompt": "测试",
+                    "resolution": "768p",
+                    "aspect_ratio": "1:1",
+                }, None))
+
+        self.assertEqual(raised.exception.status_code, 502)
+        self.assertEqual(
+            raised.exception.detail,
+            "参数：resolution 的值：768p(1:1) 不在 options 列表中",
         )
 
     def test_failed_task_exposes_upstream_message_only_on_failure(self):
