@@ -299,8 +299,29 @@ def _provider_resolution(payload: dict[str, Any], metadata: dict[str, Any]) -> s
         or metadata.get("ratio")
         or "9:16"
     ).strip()
-    suffix = "横" if ratio == "16:9" else "(1:1)" if ratio == "1:1" else "竖"
+    suffix = _resolution_suffix(ratio)
     return f"{value}{suffix}"
+
+
+def _resolution_suffix(ratio: str) -> str:
+    normalized = ratio.strip().lower().replace("×", "x")
+    for separator in (":", "/", "x"):
+        if separator not in normalized:
+            continue
+        left, right = normalized.split(separator, 1)
+        try:
+            width = float(left.strip())
+            height = float(right.strip())
+        except ValueError:
+            break
+        if width <= 0 or height <= 0:
+            break
+        if width > height:
+            return "横"
+        if width < height:
+            return "竖"
+        return "(1:1)"
+    return "竖"
 
 
 def _media_urls(

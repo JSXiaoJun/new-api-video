@@ -71,9 +71,9 @@ class AutoDLComfyUIAdapterTests(unittest.TestCase):
         payload = autodl_comfyui.transform_create_payload({
             "model": "minimax_h3_image_audio_to_video_v2_15s",
             "prompt": "角色说话",
-            "seconds": 8,
+            "duration": 15,
             "resolution": "768p",
-            "aspect_ratio": "9:16",
+            "aspect_ratio": "4:3",
             "image_urls": ["https://cdn.example/one.png", "https://cdn.example/two.png"],
             "audio_urls": ["https://cdn.example/voice.wav"],
             "seed": 123,
@@ -81,13 +81,30 @@ class AutoDLComfyUIAdapterTests(unittest.TestCase):
 
         self.assertEqual(payload, {
             "prompt": "角色说话",
-            "duration": 8,
-            "resolution": "768p竖",
+            "duration": 15,
+            "resolution": "768p横",
             "ref_image_0": "https://cdn.example/one.png",
             "ref_image_1": "https://cdn.example/two.png",
             "ref_audio_0": "https://cdn.example/voice.wav",
             "seed": 123,
         })
+
+    def test_resolution_orientation_uses_ratio_dimensions(self):
+        cases = {
+            "21:9": "768p横",
+            "9/16": "768p竖",
+            "1x1": "768p(1:1)",
+            "4×3": "768p横",
+        }
+        for aspect_ratio, expected in cases.items():
+            with self.subTest(aspect_ratio=aspect_ratio):
+                payload = autodl_comfyui.transform_create_payload({
+                    "model": "minimax_h3_lightx2v_no_pic",
+                    "prompt": "测试画面方向",
+                    "resolution": "768p",
+                    "aspect_ratio": aspect_ratio,
+                })
+                self.assertEqual(payload["resolution"], expected)
 
     def test_first_last_frame_and_promptless_workflows(self):
         first_last = autodl_comfyui.transform_create_payload({
