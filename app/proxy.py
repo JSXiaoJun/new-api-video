@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import time
@@ -12,7 +13,7 @@ from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from . import ark_video, database
-from .channels import autodl_comfyui, o10_grok, pro666
+from .channels import autodl_comfyui, funai, o10_grok, pro666
 from .config import settings
 from .model_profiles import transform_create_payload
 
@@ -20,6 +21,7 @@ from .model_profiles import transform_create_payload
 logger = logging.getLogger("uvicorn.error")
 REQUEST_ID_HEADER = "X-Oneapi-Request-Id"
 MAX_UPSTREAM_ERROR_MESSAGE_LENGTH = 1000
+RETRYABLE_POLL_STATUS_CODES = {409, 429, 500, 502, 503, 504}
 
 
 STATUS_MAP = {
@@ -140,6 +142,8 @@ async def create_video(
             }
     if protocol == ark_video.PROTOCOL:
         upstream_payload = ark_video.transform_create_payload(routed_payload)
+    elif protocol == funai.PROTOCOL:
+        upstream_payload = funai.transform_create_payload(routed_payload, upstream["profile"])
     elif protocol == autodl_comfyui.PROTOCOL:
         upstream_payload = autodl_comfyui.transform_create_payload(routed_payload)
     elif protocol == o10_grok.PROTOCOL:
@@ -151,6 +155,8 @@ async def create_video(
     endpoint = (
         ark_video.CREATE_PATH
         if protocol == ark_video.PROTOCOL
+        else funai.CREATE_PATH
+        if protocol == funai.PROTOCOL
         else autodl_comfyui.create_path(upstream["upstream_model"])
         if protocol == autodl_comfyui.PROTOCOL
         else o10_grok.CREATE_PATH
@@ -172,7 +178,12 @@ async def create_video(
 
     try:
         async with httpx.AsyncClient(timeout=settings.upstream_timeout_seconds) as client:
-            response = await client.post(upstream["base_url"] + endpoint, headers=headers, json=upstream_payload)
+            url = (
+                funai.api_url(upstream["base_url"], endpoint)
+                if protocol == funai.PROTOCOL
+                else upstream["base_url"] + endpoint
+            )
+            response = await client.post(url, headers=headers, json=upstream_payload)
     except httpx.RequestError as exc:
         logger.warning("Video upstream create request failed: %s", exc)
         sanitized = {"detail": "Video upstream connection failed"}
@@ -190,7 +201,9 @@ async def create_video(
         database.fail_audit_request(relay_request_id, sanitized["detail"])
         raise HTTPException(status_code=502, detail=sanitized["detail"], headers=response_headers) from exc
     task_id = (
-        autodl_comfyui.extract_create_task_id(upstream_payload)
+        funai.extract_create_task_id(upstream_payload)
+        if protocol == funai.PROTOCOL
+        else autodl_comfyui.extract_create_task_id(upstream_payload)
         if protocol == autodl_comfyui.PROTOCOL
         else o10_grok.extract_create_task_id(upstream_payload)
         if protocol == o10_grok.PROTOCOL
@@ -202,18 +215,24 @@ async def create_video(
         database.fail_audit_request(relay_request_id, sanitized["detail"])
         raise HTTPException(status_code=502, detail=sanitized["detail"], headers=response_headers)
 
-    status_value = (
+    create_status = (
         autodl_comfyui.extract_create_status(upstream_payload)
         if protocol == autodl_comfyui.PROTOCOL
-        else upstream_payload.get("status", "queued")
+        else upstream_payload.get("status")
     )
-    status = normalize_status(status_value)
+    if create_status is None and upstream_payload.get("error"):
+        create_status = "failed"
+    status = normalize_status(create_status or "queued")
     if status not in {"queued", "processing", "completed", "failed"}:
         status = "queued"
-    try:
-        progress = max(0, min(100, int(float(upstream_payload.get("progress") or 0))))
-    except (TypeError, ValueError, OverflowError):
-        progress = 0
+    progress_value = upstream_payload.get("progress")
+    if progress_value is None:
+        progress = 100 if status in {"completed", "failed"} else (30 if status == "processing" else 0)
+    else:
+        try:
+            progress = max(0, min(100, int(float(progress_value))))
+        except (TypeError, ValueError, OverflowError):
+            progress = 0
     result = {
         "id": task_id,
         "object": "video",
@@ -262,6 +281,12 @@ def normalize_task_payload(task: dict[str, Any], payload: dict[str, Any]) -> tup
         video_url = fields["video_url"]
         error_value = fields["error"]
         progress = fields["progress"]
+    elif task["protocol"] == funai.PROTOCOL:
+        fields = funai.extract_task_fields(payload)
+        status_value = fields["status"]
+        video_url = fields["video_url"]
+        error_value = fields["error"]
+        progress = fields["progress"]
     elif task["protocol"] == autodl_comfyui.PROTOCOL:
         fields = autodl_comfyui.extract_task_fields(payload)
         status_value = fields["status"]
@@ -275,6 +300,8 @@ def normalize_task_payload(task: dict[str, Any], payload: dict[str, Any]) -> tup
         error_value = fields["error"]
         progress = fields["progress"]
 
+    if status_value is None and error_value:
+        status_value = "failed"
     status = normalize_status(status_value)
     if status not in {"queued", "processing", "completed", "failed"}:
         status = "queued"
@@ -303,10 +330,11 @@ def normalize_task_payload(task: dict[str, Any], payload: dict[str, Any]) -> tup
     return result, video_url
 
 
-async def fetch_task(task_id: str) -> JSONResponse:
+async def fetch_task(task_id: str, timeout_seconds: float | None = None) -> JSONResponse:
     task = database.get_task(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
+    database.touch_task(task_id)
     headers = (
         autodl_comfyui.auth_headers(task["api_key"])
         if task["protocol"] == autodl_comfyui.PROTOCOL
@@ -317,6 +345,8 @@ async def fetch_task(task_id: str) -> JSONResponse:
     endpoint = (
         ark_video.task_path(task_id)
         if task["protocol"] == ark_video.PROTOCOL
+        else funai.task_path(task_id)
+        if task["protocol"] == funai.PROTOCOL
         else autodl_comfyui.task_path(task_id)
         if task["protocol"] == autodl_comfyui.PROTOCOL
         else o10_grok.task_path(task_id)
@@ -324,8 +354,14 @@ async def fetch_task(task_id: str) -> JSONResponse:
         else f"/v1/videos/{task_id}"
     )
     try:
-        async with httpx.AsyncClient(timeout=settings.upstream_timeout_seconds) as client:
-            response = await client.get(f"{task['base_url']}{endpoint}", headers=headers)
+        request_timeout = settings.upstream_timeout_seconds if timeout_seconds is None else timeout_seconds
+        async with httpx.AsyncClient(timeout=request_timeout) as client:
+            url = (
+                funai.api_url(task["base_url"], endpoint)
+                if task["protocol"] == funai.PROTOCOL
+                else f"{task['base_url']}{endpoint}"
+            )
+            response = await client.get(url, headers=headers)
     except httpx.RequestError as exc:
         logger.warning("Video upstream task request failed: %s", exc)
         sanitized = {"detail": "Video upstream connection failed"}
@@ -333,7 +369,15 @@ async def fetch_task(task_id: str) -> JSONResponse:
             database.record_audit_event(relay_request_id, "poll", None, None, sanitized)
         raise HTTPException(status_code=502, detail=sanitized["detail"], headers=response_headers) from exc
     if not 200 <= response.status_code < 300:
-        return upstream_error(response, relay_request_id, "poll")
+        error_response = upstream_error(response, relay_request_id, "poll")
+        if response.status_code not in RETRYABLE_POLL_STATUS_CODES:
+            try:
+                error_payload = response.json()
+            except ValueError:
+                error_payload = None
+            error = upstream_error_message(error_payload, "Video generation failed")
+            database.update_task(task_id, "failed", None, error)
+        return error_response
     try:
         payload = response.json()
     except ValueError as exc:
@@ -349,6 +393,24 @@ async def fetch_task(task_id: str) -> JSONResponse:
     if relay_request_id:
         database.record_audit_event(relay_request_id, "poll", response.status_code, response.text, result)
     return JSONResponse(result, headers=response_headers)
+
+
+async def reconcile_pending_tasks(limit: int = 8, stale_seconds: int = 3) -> None:
+    task_ids = database.list_pending_task_ids(int(time.time()) - max(0, stale_seconds), limit)
+    if not task_ids:
+        return
+
+    semaphore = asyncio.Semaphore(8)
+
+    async def refresh(task_id: str) -> None:
+        async with semaphore:
+            try:
+                await fetch_task(task_id, timeout_seconds=min(5.0, settings.upstream_timeout_seconds))
+            except HTTPException:
+                # Connection and malformed-response errors are recorded by fetch_task and retried later.
+                pass
+
+    await asyncio.gather(*(refresh(task_id) for task_id in task_ids))
 
 
 async def stream_upstream_content(
@@ -449,6 +511,8 @@ async def stream_content(task_id: str, request: Request) -> StreamingResponse:
         raise HTTPException(status_code=502, detail=f"{provider} task completed without a video URL")
     elif task["protocol"] == o10_grok.PROTOCOL:
         source_url = f"{task['base_url']}{o10_grok.content_path(task_id)}"
+    elif task["protocol"] == funai.PROTOCOL:
+        source_url = funai.api_url(task["base_url"], funai.content_path(task_id))
     else:
         source_url = f"{task['base_url']}/v1/videos/{task_id}/content"
 

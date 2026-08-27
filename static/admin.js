@@ -28,6 +28,7 @@ let activeAuditView = 'request'
 let activeDurationMenu = null
 let pendingDiscoveredModels = []
 let selectedDiscoveredModels = new Set()
+let taskRefreshInFlight = false
 
 function updateResponsiveClass() {
   document.documentElement.classList.toggle('is-mobile', window.matchMedia('(max-width: 760px)').matches)
@@ -204,6 +205,19 @@ async function loadTasks() {
   const result = await api(`/admin/api/tasks?${params}`)
   dashboard.tasks = result.tasks
   render()
+}
+
+async function refreshPendingTasks() {
+  if (document.hidden || taskRefreshInFlight) return
+  if (!dashboard.tasks.some((task) => task.status === 'queued' || task.status === 'processing')) return
+  taskRefreshInFlight = true
+  try {
+    await loadTasks()
+  } catch {
+    // The next interval retries without interrupting other admin operations.
+  } finally {
+    taskRefreshInFlight = false
+  }
 }
 
 function selectedAuditEvent() {
@@ -434,7 +448,7 @@ function addRouteRow(route = {}) {
   const mappedUpstreamModel = route.upstream_model || route.mapped_upstream_model || ''
   const selectedDurations = routeDurations(route)
   const protocol = route.protocol || 'videos'
-  const selectedProfile = protocol === 'ark-v3' ? (route.profile || 'ark-seedance-2') : protocol === 'o10-grok' ? (route.profile || 'grok-auto') : protocol === 'autodl-comfyui' ? (route.profile || 'autodl-comfyui') : (route.profile || 'default')
+  const selectedProfile = protocol === 'ark-v3' ? (route.profile || 'ark-seedance-2') : protocol === 'o10-grok' ? (route.profile || 'grok-auto') : protocol === 'funai' ? (route.profile || 'funai-veo') : protocol === 'autodl-comfyui' ? (route.profile || 'autodl-comfyui') : (route.profile || 'default')
   row.dataset.durations = JSON.stringify(selectedDurations)
   row.innerHTML = `
     <input data-route-field="model" maxlength="160" value="${escapeHtml(route.model || '')}" placeholder="对外模型名" aria-label="对外模型名">
@@ -443,6 +457,7 @@ function addRouteRow(route = {}) {
       <option value="seedance"${protocol === 'seedance' ? ' selected' : ''}>seedance</option>
       <option value="ark-v3"${protocol === 'ark-v3' ? ' selected' : ''}>ark-v3（方舟原生）</option>
       <option value="o10-grok"${protocol === 'o10-grok' ? ' selected' : ''}>o10-grok（Grok）</option>
+      <option value="funai"${protocol === 'funai' ? ' selected' : ''}>funai（FunAI）</option>
       <option value="autodl-comfyui"${protocol === 'autodl-comfyui' ? ' selected' : ''}>autodl-comfyui（AutoDL）</option>
     </select>
     <select data-route-field="profile" aria-label="请求格式"${protocol === 'seedance' ? ' disabled' : ''}>${profileOptions(protocol === 'seedance' ? 'default' : selectedProfile)}</select>
@@ -665,9 +680,11 @@ routeRows.addEventListener('change', (event) => {
     profile.value = 'ark-seedance-2'
   } else if (target.value === 'o10-grok') {
     profile.value = 'grok-auto'
+  } else if (target.value === 'funai') {
+    profile.value = 'funai-veo'
   } else if (target.value === 'autodl-comfyui') {
     profile.value = 'autodl-comfyui'
-  } else if (profile.value === 'ark-seedance-2') {
+  } else if (profile.value === 'ark-seedance-2' || profile.value === 'autodl-comfyui' || profile.value.startsWith('funai-')) {
     profile.value = 'default'
   }
 })
@@ -687,6 +704,7 @@ document.querySelector('#refresh-button').addEventListener('click', async () => 
   await loadDashboard()
   showToast('数据已刷新')
 })
+setInterval(refreshPendingTasks, 5000)
 publicLinkForm.addEventListener('submit', async (event) => {
   event.preventDefault()
   const button = publicLinkForm.querySelector('button[type="submit"]')

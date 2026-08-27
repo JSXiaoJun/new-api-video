@@ -27,7 +27,8 @@ def _ensure_protocol_constraint(conn: sqlite3.Connection) -> None:
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'model_routes'"
     ).fetchone()
     if row is not None and all(
-        protocol in (row["sql"] or "") for protocol in ("ark-v3", "o10-grok", "autodl-comfyui")
+        protocol in (row["sql"] or "")
+        for protocol in ("ark-v3", "o10-grok", "funai", "autodl-comfyui")
     ):
         return
 
@@ -37,13 +38,13 @@ def _ensure_protocol_constraint(conn: sqlite3.Connection) -> None:
     try:
         conn.executescript(
             """
-            ALTER TABLE model_routes RENAME TO model_routes_before_ark_v3;
+            ALTER TABLE model_routes RENAME TO model_routes_before_protocol_expand;
             CREATE TABLE model_routes (
                 id INTEGER PRIMARY KEY,
                 upstream_id INTEGER NOT NULL REFERENCES upstreams(id) ON DELETE CASCADE,
                 model TEXT NOT NULL,
                 upstream_model TEXT NOT NULL,
-                protocol TEXT NOT NULL CHECK(protocol IN ('videos', 'seedance', 'ark-v3', 'o10-grok', 'autodl-comfyui')),
+                protocol TEXT NOT NULL CHECK(protocol IN ('videos', 'seedance', 'ark-v3', 'o10-grok', 'funai', 'autodl-comfyui')),
                 profile TEXT NOT NULL DEFAULT 'default',
                 duration_override INTEGER,
                 durations_json TEXT NOT NULL DEFAULT '[]',
@@ -65,8 +66,8 @@ def _ensure_protocol_constraint(conn: sqlite3.Connection) -> None:
                 id, upstream_id, model, upstream_model, protocol, profile, duration_override,
                 durations_json, resolutions_json, supports_image, supports_video, supports_audio, image_count,
                 enabled, forward_resolution
-            FROM model_routes_before_ark_v3;
-            DROP TABLE model_routes_before_ark_v3;
+            FROM model_routes_before_protocol_expand;
+            DROP TABLE model_routes_before_protocol_expand;
             CREATE INDEX idx_model_routes_model ON model_routes(model);
             CREATE UNIQUE INDEX idx_model_routes_upstream_model
                 ON model_routes(upstream_id, upstream_model);
@@ -132,7 +133,7 @@ def initialize() -> None:
                 upstream_id INTEGER NOT NULL REFERENCES upstreams(id) ON DELETE CASCADE,
                 model TEXT NOT NULL,
                 upstream_model TEXT NOT NULL,
-                protocol TEXT NOT NULL CHECK(protocol IN ('videos', 'seedance', 'ark-v3', 'o10-grok', 'autodl-comfyui')),
+                protocol TEXT NOT NULL CHECK(protocol IN ('videos', 'seedance', 'ark-v3', 'o10-grok', 'funai', 'autodl-comfyui')),
                 profile TEXT NOT NULL DEFAULT 'default',
                 duration_override INTEGER,
                 resolutions_json TEXT NOT NULL DEFAULT '[]',
@@ -660,6 +661,32 @@ def get_task(task_id: str) -> dict[str, Any] | None:
         item = dict(row)
         item["api_key"] = secret_box.decrypt(item.pop("api_key_encrypted"))
         return item
+
+
+def list_pending_task_ids(stale_before: int, limit: int = 20) -> list[str]:
+    with connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT task_id FROM tasks
+            WHERE status IN ('queued', 'processing') AND updated_at <= ?
+            ORDER BY updated_at ASC LIMIT ?
+            """,
+            (stale_before, max(1, min(limit, 50))),
+        ).fetchall()
+    return [str(row["task_id"]) for row in rows]
+
+
+def touch_task(task_id: str) -> None:
+    now = int(time.time())
+    with connection() as conn:
+        conn.execute("UPDATE tasks SET updated_at = ? WHERE task_id = ?", (now, task_id))
+        conn.execute(
+            """
+            UPDATE audit_requests SET updated_at = ?
+            WHERE relay_request_id = (SELECT relay_request_id FROM tasks WHERE task_id = ?)
+            """,
+            (now, task_id),
+        )
 
 
 def update_task(task_id: str, status: str, source_video_url: str | None, error: str | None) -> None:

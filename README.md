@@ -99,6 +99,16 @@ enabled public models and their configured capabilities.
 相对 `video.url` 转成同源内容下载；下载请求仅在同源时携带上游密钥。当前报告确认的模型为
 `grok-imagine-video` 和 `grok-imagine-video-1.5`，支持 1-15 秒、480p/720p，以及单张参考图片。
 
+### FunAI Channel
+
+为 `https://api.funai.works` 新建视频上游，填写 API key 后使用 `同步上游模型`。FunAI 接入使用独立的
+`funai` 协议和 `app/channels/funai.py`，不会修改通用 `videos`、`seedance`、`ark-v3` 或 `o10-grok`
+请求体。模型同步只保留 FunAI 视频模型，避免把同一个 `/v1/models` 返回的图片模型加入视频路由。
+
+适配器把工作台的 `duration` 映射为 FunAI 的 `seconds`，保留其支持的 `aspect_ratio` / `resolution`，并按
+MiniMax、Kling、Runway、Sora、Gemini Omni 和 Veo 的要求分别映射参考图片、参考视频与参考音频字段。
+轮询会读取 FunAI 完成响应中的 `url` 或 `content_url`，视频下载仍经过现有的内容代理与鉴权隔离。
+
 ### AutoDL.Art ComfyUI Channel
 
 在管理后台新建视频上游，Base URL 填写 `https://autodl.art`，API Key 填写 AutoDL 的 ComfyUI 分组令牌，

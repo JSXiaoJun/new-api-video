@@ -4,7 +4,7 @@ from copy import deepcopy
 import re
 from typing import Any
 
-from .channels import autodl_comfyui, o10_grok, pro666
+from .channels import autodl_comfyui, funai, o10_grok, pro666
 
 
 MAX_DURATION_SECONDS = 60
@@ -134,12 +134,16 @@ PROFILE_DEFINITIONS: dict[str, dict[str, Any]] = {
             'experimental': True,
         },
     },
+    **funai.PROFILE_DEFINITIONS,
     **pro666.PROFILE_DEFINITIONS,
     **autodl_comfyui.PROFILE_DEFINITIONS,
 }
 
 
 def suggest_profile(model: str, protocol: str) -> str:
+    if protocol == funai.PROTOCOL:
+        route = funai.suggest_route(model)
+        return route['profile'] if route else 'funai-veo'
     if protocol == autodl_comfyui.PROTOCOL:
         return autodl_comfyui.PROFILE
     if protocol == o10_grok.PROTOCOL:
@@ -190,6 +194,16 @@ def profile_options() -> list[dict[str, str]]:
 
 
 def suggest_route(model: str, protocol: str) -> dict[str, Any]:
+    if protocol == funai.PROTOCOL:
+        return funai.suggest_route(model) or {
+            'profile': 'funai-veo',
+            'durations': [],
+            'resolutions': [],
+            'image_count': 1,
+            'supports_image': True,
+            'supports_video': False,
+            'supports_audio': False,
+        }
     if protocol == autodl_comfyui.PROTOCOL:
         return autodl_comfyui.suggest_route(model) or {
             'profile': autodl_comfyui.PROFILE,

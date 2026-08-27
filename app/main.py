@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from . import database, image_database, image_proxy, new_api_gateway, proxy
-from .channels import autodl_comfyui, o10_grok
+from .channels import autodl_comfyui, funai, o10_grok
 from .config import PUBLIC_LINK_BASE_URLS, ROOT_DIR, settings
 from .integration_doc import build_integration_document
 from .image_integration_doc import build_image_integration_document
@@ -121,6 +121,8 @@ def normalize_discovered_models(payload: Any, protocol_override: str | None = No
             model_id = ""
         if not model_id or len(model_id) > 160 or model_id in seen:
             continue
+        if protocol_override == funai.PROTOCOL and not funai.is_video_model(model_id):
+            continue
         seen.add(model_id)
         protocol = protocol_override or suggest_protocol(model_id)
         result.append({
@@ -219,7 +221,8 @@ def image_dashboard(request: Request, session: str | None = Cookie(default=None,
 
 
 @app.get("/admin/api/dashboard")
-def dashboard_api(_: tuple[str, dict] = Depends(admin_session)):
+async def dashboard_api(_: tuple[str, dict] = Depends(admin_session)):
+    await proxy.reconcile_pending_tasks()
     return {
         **database.dashboard_data(),
         "profiles": profile_options(),
@@ -308,11 +311,12 @@ def image_integration_document(_: tuple[str, dict] = Depends(admin_session)):
 
 
 @app.get("/admin/api/tasks")
-def audit_tasks(
+async def audit_tasks(
     q: str = Query(default="", max_length=191),
     status: str = Query(default="", pattern="^(|queued|processing|completed|failed)$"),
     _: tuple[str, dict] = Depends(admin_session),
 ):
+    await proxy.reconcile_pending_tasks()
     return {"tasks": database.list_audit_requests(q.strip(), status)}
 
 
@@ -373,10 +377,21 @@ async def discover_upstream_models(payload: ModelDiscoveryInput, _: dict = Depen
     headers = {"Accept": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
-    discovery_protocol = o10_grok.PROTOCOL if o10_grok.is_o10_base_url(payload.base_url) else None
+    discovery_protocol = (
+        funai.PROTOCOL
+        if funai.is_funai_base_url(payload.base_url)
+        else o10_grok.PROTOCOL
+        if o10_grok.is_o10_base_url(payload.base_url)
+        else None
+    )
     try:
         async with httpx.AsyncClient(timeout=min(settings.upstream_timeout_seconds, 30), follow_redirects=True) as client:
-            response = await client.get(f"{payload.base_url}/v1/models", headers=headers)
+            discovery_url = (
+                funai.api_url(payload.base_url, "/v1/models")
+                if discovery_protocol == funai.PROTOCOL
+                else f"{payload.base_url}/v1/models"
+            )
+            response = await client.get(discovery_url, headers=headers)
             if response.status_code == 404 and discovery_protocol is None:
                 response = await client.get(f"{payload.base_url}/api/v3/models", headers=headers)
                 discovery_protocol = "ark-v3"
