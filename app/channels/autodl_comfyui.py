@@ -167,25 +167,25 @@ def transform_create_payload(payload: dict[str, Any]) -> dict[str, Any]:
     resolution = _provider_resolution(payload, metadata)
     result = _native_fields(payload, workflow_id)
 
-    prompt = payload.get("prompt")
-    if isinstance(prompt, str) and prompt.strip():
-        result["prompt"] = prompt.strip()
-    if payload.get("seed") is not None:
-        result["seed"] = payload["seed"]
-    if resolution:
-        result["resolution"] = resolution
-
     if workflow_id == "wan2.2animate-v4-motion_retargeting":
         _setdefault(result, "ref_image", _first_value(payload, "ref_image") or _item(images, 0))
         _setdefault(result, "ref_video", _first_value(payload, "ref_video") or _item(videos, 0))
         return result
 
     if workflow_id == "minimax_h3_image_audio_to_video":
+        if resolution:
+            result["resolution"] = resolution
         if duration is not None:
             result["audio_duration"] = duration
         _setdefault(result, "ref_image_0", _item(images, 0))
         _setdefault(result, "ref_audio_0", _item(audios, 0))
         return result
+
+    prompt = payload.get("prompt")
+    if isinstance(prompt, str) and prompt.strip():
+        result["prompt"] = prompt.strip()
+    if resolution:
+        result["resolution"] = resolution
 
     if workflow_id == "minimax_h3_lightx2v":
         if duration is not None:
@@ -202,6 +202,9 @@ def transform_create_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
     if duration is not None:
         result["duration"] = duration
+    if workflow_id == "minimax_h3_lightx2v_no_pic":
+        return result
+
     for index, image in enumerate(images[:9]):
         _setdefault(result, f"ref_image_{index}", image)
     if workflow_id in {
@@ -210,6 +213,8 @@ def transform_create_payload(payload: dict[str, Any]) -> dict[str, Any]:
     }:
         for index, audio in enumerate(audios[:3]):
             _setdefault(result, f"ref_audio_{index}", audio)
+    if payload.get("seed") is not None:
+        result["seed"] = payload["seed"]
     return result
 
 
@@ -252,15 +257,17 @@ def extract_task_fields(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _native_fields(payload: dict[str, Any], workflow_id: str) -> dict[str, Any]:
-    allowed = {"prompt", "resolution"}
+    allowed: set[str] = set()
     if workflow_id == "wan2.2animate-v4-motion_retargeting":
         allowed.update({"ref_image", "ref_video", "seed"})
     elif workflow_id == "minimax_h3_image_audio_to_video":
-        allowed.update({"audio_duration", "ref_image_0", "ref_audio_0"})
+        allowed.update({"audio_duration", "resolution", "ref_image_0", "ref_audio_0"})
     elif workflow_id == "minimax_h3_lightx2v":
-        allowed.update({"duration", "first_frame", "last_frame"})
+        allowed.update({"prompt", "duration", "resolution", "first_frame", "last_frame"})
+    elif workflow_id == "minimax_h3_lightx2v_no_pic":
+        allowed.update({"prompt", "duration", "resolution"})
     else:
-        allowed.update({"duration", "seed"})
+        allowed.update({"prompt", "duration", "resolution", "seed"})
         allowed.update({f"ref_image_{index}" for index in range(9)})
         if workflow_id in {
             "minimax_h3_image_audio_to_video_v2",

@@ -53,15 +53,18 @@ class AutoDLComfyUIAdapterTests(unittest.TestCase):
         payload = autodl_comfyui.transform_create_payload({
             "model": "minimax_h3_lightx2v_no_pic",
             "prompt": "海边日落",
-            "duration": 5,
-            "resolution": "480p",
-            "aspect_ratio": "16:9",
+            "duration": 6,
+            "resolution": "768p",
+            "aspect_ratio": "3:4",
+            "generate_audio": True,
+            "image_urls": ["https://cdn.example/ignored.png"],
+            "seed": 123,
         })
 
         self.assertEqual(payload, {
             "prompt": "海边日落",
-            "duration": 5,
-            "resolution": "480p横",
+            "duration": 6,
+            "resolution": "768p竖",
         })
 
     def test_multimodal_payload_maps_reference_arrays(self):
@@ -96,6 +99,9 @@ class AutoDLComfyUIAdapterTests(unittest.TestCase):
         })
         motion = autodl_comfyui.transform_create_payload({
             "model": "wan2.2animate-v4-motion_retargeting",
+            "prompt": "通用客户端可能多传的提示词",
+            "duration": 6,
+            "resolution": "768p",
             "image_url": "https://cdn.example/person.png",
             "reference_video": "https://cdn.example/dance.mp4",
         })
@@ -112,8 +118,10 @@ class AutoDLComfyUIAdapterTests(unittest.TestCase):
     def test_lip_sync_renames_duration_and_primary_image_precedes_references(self):
         lip_sync = autodl_comfyui.transform_create_payload({
             "model": "minimax_h3_image_audio_to_video",
+            "prompt": "通用客户端可能多传的提示词",
             "duration": 7,
             "resolution": "768p横",
+            "seed": 123,
             "image_url": "https://cdn.example/face.png",
             "audio_url": "https://cdn.example/voice.wav",
         })
