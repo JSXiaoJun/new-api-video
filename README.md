@@ -4,7 +4,7 @@ Independent video upstream adapter for New API. It exposes a normalized `/v1/vid
 
 ## Features
 
-- `videos`, legacy `seedance`, and Volcengine Ark v3 protocol conversion
+- `videos`, legacy `seedance`, Volcengine Ark v3, o10 Grok, and AutoDL ComfyUI protocol conversion
 - Seedance nested status normalization
 - Automatic or forwarded `Idempotency-Key`
 - Same-origin New API upload presign forwarding for the workbench
@@ -98,6 +98,19 @@ enabled public models and their configured capabilities.
 该适配器使用 `POST /v1/videos/generations` 创建任务，使用 `GET /v1/videos/{request_id}` 轮询，并将上游返回的
 相对 `video.url` 转成同源内容下载；下载请求仅在同源时携带上游密钥。当前报告确认的模型为
 `grok-imagine-video` 和 `grok-imagine-video-1.5`，支持 1-15 秒、480p/720p，以及单张参考图片。
+
+### AutoDL.Art ComfyUI Channel
+
+在管理后台新建视频上游，Base URL 填写 `https://autodl.art`，API Key 填写 AutoDL 的 ComfyUI 分组令牌，
+然后点击 `同步上游模型`。AutoDL 没有 OpenAI 风格的模型列表接口，因此适配器会展示内置且经过验证的 8 个
+视频工作流；选中需要的工作流后保存即可。同步出的路由会自动使用 `autodl-comfyui` 协议和同名请求格式。
+
+适配代码独立位于 `app/channels/autodl_comfyui.py`。它把标准 `/v1/videos` 请求转换成 AutoDL 的
+`POST /api/v1/comfyui/comfyui_workflow/{workflow_id}` 请求，并通过
+`GET /api/v1/comfyui/comfyui_workflow/result/{task_id}` 查询结果。AutoDL 的 `Authorization` 直接使用令牌，
+不添加 `Bearer` 前缀。适配器支持文生视频、多图参考、首尾帧、多图多音频、自动对口型和动作迁移工作流，
+并将外部工作台的 `resolution` 与 `aspect_ratio` 组合成 AutoDL 使用的 `480p竖`、`768p横`、
+`768p(1:1)` 等枚举值。
 
 The customer-facing video document uses `API_PUBLIC_BASE_URL` for all authenticated New API requests and the
 admin-selected public media domain for downloads. It never includes the middleware admin domain, adapter address, or

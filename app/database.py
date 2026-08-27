@@ -26,7 +26,9 @@ def _ensure_protocol_constraint(conn: sqlite3.Connection) -> None:
     row = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'model_routes'"
     ).fetchone()
-    if row is not None and all(protocol in (row["sql"] or "") for protocol in ("ark-v3", "o10-grok")):
+    if row is not None and all(
+        protocol in (row["sql"] or "") for protocol in ("ark-v3", "o10-grok", "autodl-comfyui")
+    ):
         return
 
     # SQLite 无法原地修改 CHECK，重建表以保留已有路由并扩展协议枚举。
@@ -41,7 +43,7 @@ def _ensure_protocol_constraint(conn: sqlite3.Connection) -> None:
                 upstream_id INTEGER NOT NULL REFERENCES upstreams(id) ON DELETE CASCADE,
                 model TEXT NOT NULL,
                 upstream_model TEXT NOT NULL,
-                protocol TEXT NOT NULL CHECK(protocol IN ('videos', 'seedance', 'ark-v3', 'o10-grok')),
+                protocol TEXT NOT NULL CHECK(protocol IN ('videos', 'seedance', 'ark-v3', 'o10-grok', 'autodl-comfyui')),
                 profile TEXT NOT NULL DEFAULT 'default',
                 duration_override INTEGER,
                 durations_json TEXT NOT NULL DEFAULT '[]',
@@ -130,7 +132,7 @@ def initialize() -> None:
                 upstream_id INTEGER NOT NULL REFERENCES upstreams(id) ON DELETE CASCADE,
                 model TEXT NOT NULL,
                 upstream_model TEXT NOT NULL,
-                protocol TEXT NOT NULL CHECK(protocol IN ('videos', 'seedance', 'ark-v3', 'o10-grok')),
+                protocol TEXT NOT NULL CHECK(protocol IN ('videos', 'seedance', 'ark-v3', 'o10-grok', 'autodl-comfyui')),
                 profile TEXT NOT NULL DEFAULT 'default',
                 duration_override INTEGER,
                 resolutions_json TEXT NOT NULL DEFAULT '[]',

@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from . import database, image_database, image_proxy, new_api_gateway, proxy
-from .channels import o10_grok
+from .channels import autodl_comfyui, o10_grok
 from .config import PUBLIC_LINK_BASE_URLS, ROOT_DIR, settings
 from .integration_doc import build_integration_document
 from .image_integration_doc import build_image_integration_document
@@ -362,6 +362,13 @@ async def discover_upstream_models(payload: ModelDiscoveryInput, _: dict = Depen
         if existing is None:
             raise HTTPException(status_code=404, detail="Upstream not found")
         api_key = existing["api_key"]
+
+    if autodl_comfyui.is_autodl_base_url(payload.base_url):
+        return {
+            "models": normalize_discovered_models(
+                list(autodl_comfyui.KNOWN_MODELS), autodl_comfyui.PROTOCOL
+            )
+        }
 
     headers = {"Accept": "application/json"}
     if api_key:

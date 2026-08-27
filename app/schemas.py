@@ -12,7 +12,7 @@ from .model_profiles import MAX_DURATION_SECONDS
 class RouteInput(BaseModel):
     model: str = Field(min_length=1, max_length=160)
     upstream_model: str = Field(default="", max_length=160)
-    protocol: Literal["videos", "seedance", "ark-v3", "o10-grok"] = "videos"
+    protocol: Literal["videos", "seedance", "ark-v3", "o10-grok", "autodl-comfyui"] = "videos"
     profile: Literal[
         "default",
         "gemini-omni",
@@ -33,6 +33,7 @@ class RouteInput(BaseModel):
         "pro666-firefly-720p",
         "pro666-firefly-1080p",
         "pro666-veo-omni",
+        "autodl-comfyui",
     ] = "default"
     durations: list[int] = Field(default_factory=list, max_length=MAX_DURATION_SECONDS)
     resolutions: list[str] = Field(default_factory=list, max_length=20)

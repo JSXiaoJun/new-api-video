@@ -4,7 +4,7 @@ from copy import deepcopy
 import re
 from typing import Any
 
-from .channels import o10_grok, pro666
+from .channels import autodl_comfyui, o10_grok, pro666
 
 
 MAX_DURATION_SECONDS = 60
@@ -135,10 +135,13 @@ PROFILE_DEFINITIONS: dict[str, dict[str, Any]] = {
         },
     },
     **pro666.PROFILE_DEFINITIONS,
+    **autodl_comfyui.PROFILE_DEFINITIONS,
 }
 
 
 def suggest_profile(model: str, protocol: str) -> str:
+    if protocol == autodl_comfyui.PROTOCOL:
+        return autodl_comfyui.PROFILE
     if protocol == o10_grok.PROTOCOL:
         return 'grok-auto'
     if protocol == 'ark-v3':
@@ -165,6 +168,8 @@ def suggest_profile(model: str, protocol: str) -> str:
 
 
 def suggest_protocol(model: str) -> str:
+    if autodl_comfyui.suggest_route(model):
+        return autodl_comfyui.PROTOCOL
     if o10_grok.suggest_route(model):
         return o10_grok.PROTOCOL
     if pro666.suggest_route(model):
@@ -185,6 +190,16 @@ def profile_options() -> list[dict[str, str]]:
 
 
 def suggest_route(model: str, protocol: str) -> dict[str, Any]:
+    if protocol == autodl_comfyui.PROTOCOL:
+        return autodl_comfyui.suggest_route(model) or {
+            'profile': autodl_comfyui.PROFILE,
+            'durations': [],
+            'resolutions': [],
+            'image_count': 0,
+            'supports_image': False,
+            'supports_video': False,
+            'supports_audio': False,
+        }
     if protocol == o10_grok.PROTOCOL:
         return o10_grok.suggest_route(model) or {
             'profile': 'grok-auto',
@@ -249,6 +264,8 @@ def capabilities_for(
 
 def transform_create_payload(payload: dict[str, Any], profile: str) -> dict[str, Any]:
     request_format = PROFILE_DEFINITIONS[profile]['request_format']
+    if request_format == autodl_comfyui.PROFILE:
+        return autodl_comfyui.transform_create_payload(payload)
     if request_format in pro666.REQUEST_FORMATS:
         return pro666.transform_create_payload(payload, request_format)
     metadata = payload.get('metadata') if isinstance(payload.get('metadata'), dict) else {}

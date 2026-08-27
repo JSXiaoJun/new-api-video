@@ -12,7 +12,7 @@ from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from . import ark_video, database
-from .channels import o10_grok, pro666
+from .channels import autodl_comfyui, o10_grok, pro666
 from .config import settings
 from .model_profiles import transform_create_payload
 
@@ -122,7 +122,13 @@ async def create_video(
         raise HTTPException(status_code=404, detail=f"No enabled upstream for model {model}")
 
     protocol = upstream["protocol"]
-    if not prompt and (protocol != ark_video.PROTOCOL or not ark_video.has_reference_content(payload)):
+    allows_promptless = (
+        protocol == ark_video.PROTOCOL and ark_video.has_reference_content(payload)
+    ) or (
+        protocol == autodl_comfyui.PROTOCOL
+        and not autodl_comfyui.requires_prompt(upstream["upstream_model"])
+    )
+    if not prompt and not allows_promptless:
         raise HTTPException(status_code=400, detail="prompt is required")
     relay_request_id = database.start_audit_request(upstream["id"], model, protocol, payload)
     routed_payload = {**payload, "model": upstream["upstream_model"]}
@@ -134,6 +140,8 @@ async def create_video(
             }
     if protocol == ark_video.PROTOCOL:
         upstream_payload = ark_video.transform_create_payload(routed_payload)
+    elif protocol == autodl_comfyui.PROTOCOL:
+        upstream_payload = autodl_comfyui.transform_create_payload(routed_payload)
     elif protocol == o10_grok.PROTOCOL:
         upstream_payload = o10_grok.transform_create_payload(routed_payload)
     else:
@@ -143,15 +151,21 @@ async def create_video(
     endpoint = (
         ark_video.CREATE_PATH
         if protocol == ark_video.PROTOCOL
+        else autodl_comfyui.create_path(upstream["upstream_model"])
+        if protocol == autodl_comfyui.PROTOCOL
         else o10_grok.CREATE_PATH
         if protocol == o10_grok.PROTOCOL
         else "/v1/video/generations" if protocol == "seedance" else "/v1/videos"
     )
-    headers = {
-        "Authorization": f"Bearer {upstream['api_key']}",
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-    }
+    headers = (
+        autodl_comfyui.auth_headers(upstream["api_key"])
+        if protocol == autodl_comfyui.PROTOCOL
+        else {
+            "Authorization": f"Bearer {upstream['api_key']}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+    )
     if protocol == "seedance":
         explicit_key = str(payload.pop("idempotency_key", "")).strip()
         headers["Idempotency-Key"] = incoming_idempotency_key or explicit_key or str(uuid.uuid4())
@@ -176,7 +190,9 @@ async def create_video(
         database.fail_audit_request(relay_request_id, sanitized["detail"])
         raise HTTPException(status_code=502, detail=sanitized["detail"], headers=response_headers) from exc
     task_id = (
-        o10_grok.extract_create_task_id(upstream_payload)
+        autodl_comfyui.extract_create_task_id(upstream_payload)
+        if protocol == autodl_comfyui.PROTOCOL
+        else o10_grok.extract_create_task_id(upstream_payload)
         if protocol == o10_grok.PROTOCOL
         else str(upstream_payload.get("task_id") or upstream_payload.get("id") or "").strip()
     )
@@ -186,7 +202,12 @@ async def create_video(
         database.fail_audit_request(relay_request_id, sanitized["detail"])
         raise HTTPException(status_code=502, detail=sanitized["detail"], headers=response_headers)
 
-    status = normalize_status(upstream_payload.get("status", "queued"))
+    status_value = (
+        autodl_comfyui.extract_create_status(upstream_payload)
+        if protocol == autodl_comfyui.PROTOCOL
+        else upstream_payload.get("status", "queued")
+    )
+    status = normalize_status(status_value)
     if status not in {"queued", "processing", "completed", "failed"}:
         status = "queued"
     try:
@@ -241,6 +262,12 @@ def normalize_task_payload(task: dict[str, Any], payload: dict[str, Any]) -> tup
         video_url = fields["video_url"]
         error_value = fields["error"]
         progress = fields["progress"]
+    elif task["protocol"] == autodl_comfyui.PROTOCOL:
+        fields = autodl_comfyui.extract_task_fields(payload)
+        status_value = fields["status"]
+        video_url = fields["video_url"]
+        error_value = fields["error"]
+        progress = fields["progress"]
     elif task["protocol"] == o10_grok.PROTOCOL:
         fields = o10_grok.extract_task_fields(payload)
         status_value = fields["status"]
@@ -280,12 +307,18 @@ async def fetch_task(task_id: str) -> JSONResponse:
     task = database.get_task(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
-    headers = {"Authorization": f"Bearer {task['api_key']}", "Accept": "application/json"}
+    headers = (
+        autodl_comfyui.auth_headers(task["api_key"])
+        if task["protocol"] == autodl_comfyui.PROTOCOL
+        else {"Authorization": f"Bearer {task['api_key']}", "Accept": "application/json"}
+    )
     relay_request_id = task.get("relay_request_id")
     response_headers = {REQUEST_ID_HEADER: relay_request_id} if relay_request_id else None
     endpoint = (
         ark_video.task_path(task_id)
         if task["protocol"] == ark_video.PROTOCOL
+        else autodl_comfyui.task_path(task_id)
+        if task["protocol"] == autodl_comfyui.PROTOCOL
         else o10_grok.task_path(task_id)
         if task["protocol"] == o10_grok.PROTOCOL
         else f"/v1/videos/{task_id}"
@@ -411,8 +444,9 @@ async def stream_content(task_id: str, request: Request) -> StreamingResponse:
 
     if source_url:
         source_url = urljoin(task["base_url"] + "/", source_url)
-    elif task["protocol"] == ark_video.PROTOCOL:
-        raise HTTPException(status_code=502, detail="Ark task completed without a video URL")
+    elif task["protocol"] in {ark_video.PROTOCOL, autodl_comfyui.PROTOCOL}:
+        provider = "Ark" if task["protocol"] == ark_video.PROTOCOL else "AutoDL"
+        raise HTTPException(status_code=502, detail=f"{provider} task completed without a video URL")
     elif task["protocol"] == o10_grok.PROTOCOL:
         source_url = f"{task['base_url']}{o10_grok.content_path(task_id)}"
     else:
@@ -422,7 +456,11 @@ async def stream_content(task_id: str, request: Request) -> StreamingResponse:
     if same_origin(source_url, task["base_url"]) or pro666.permits_api_key_forwarding(
         source_url, task["base_url"]
     ):
-        request_headers["Authorization"] = f"Bearer {task['api_key']}"
+        request_headers["Authorization"] = (
+            task["api_key"]
+            if task["protocol"] == autodl_comfyui.PROTOCOL
+            else f"Bearer {task['api_key']}"
+        )
 
     return await stream_upstream_content(
         source_url,
