@@ -2153,13 +2153,13 @@ class CoreTests(unittest.TestCase):
         self.assertNotIn("image_urls", detail["upstream_request_payload"])
         self.assertNotIn("https://cdn/reference.png", encrypted_payload)
 
-    def test_model_capabilities_are_public_and_cors_limited(self):
+    def test_model_capabilities_are_public_for_any_origin(self):
         response = TestClient(app).get(
             "/v1/model-capabilities",
-            headers={"Origin": "https://image.yyapi.cloud"},
+            headers={"Origin": "https://canvas.example"},
         )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.headers["access-control-allow-origin"], "https://image.yyapi.cloud")
+        self.assertEqual(response.headers["access-control-allow-origin"], "*")
         self.assertTrue(any(item["id"] == "audit-model" for item in response.json()["data"]))
 
     def test_new_api_video_gateway_preserves_user_auth_body_and_response(self):

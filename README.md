@@ -173,7 +173,7 @@ Authorization: Bearer <ADAPTER_API_KEY>
 
 ```text
 GET  /v1/models
-GET  /v1/model-capabilities  (public capability metadata)
+GET  /v1/model-capabilities  (public capability metadata, readable from any browser origin)
 POST /new-api/v1/videos  (workbench gateway to New API; user API key)
 GET  /new-api/v1/videos/{task_id}
 GET  /new-api/v1/videos/{task_id}/content

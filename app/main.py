@@ -143,7 +143,10 @@ def healthz() -> dict:
 def model_capabilities() -> JSONResponse:
     return JSONResponse(
         {"data": database.list_model_capabilities()},
-        headers={"Cache-Control": "no-store"},
+        headers={
+            "Cache-Control": "no-store",
+            "Access-Control-Allow-Origin": "*",
+        },
     )
 
 
