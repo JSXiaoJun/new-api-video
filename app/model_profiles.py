@@ -4,7 +4,7 @@ from copy import deepcopy
 import re
 from typing import Any
 
-from .channels import autodl_comfyui, funai, o10_grok, pro666
+from .channels import autodl_comfyui, funai, o10_grok, pro666, rolldek
 
 
 MAX_DURATION_SECONDS = 60
@@ -137,6 +137,7 @@ PROFILE_DEFINITIONS: dict[str, dict[str, Any]] = {
     **funai.PROFILE_DEFINITIONS,
     **pro666.PROFILE_DEFINITIONS,
     **autodl_comfyui.PROFILE_DEFINITIONS,
+    **rolldek.PROFILE_DEFINITIONS,
 }
 
 
@@ -150,6 +151,9 @@ def suggest_profile(model: str, protocol: str) -> str:
         return 'grok-auto'
     if protocol == 'ark-v3':
         return 'ark-seedance-2'
+    if protocol == rolldek.PROTOCOL:
+        route = rolldek.suggest_route(model)
+        return route['profile'] if route else 'rolldek-sd2-ch4'
     if protocol == 'seedance':
         return 'default'
     pro666_route = pro666.suggest_route(model)
@@ -176,6 +180,8 @@ def suggest_protocol(model: str) -> str:
         return autodl_comfyui.PROTOCOL
     if o10_grok.suggest_route(model):
         return o10_grok.PROTOCOL
+    if rolldek.suggest_route(model):
+        return rolldek.PROTOCOL
     if pro666.suggest_route(model):
         return 'videos'
     return 'seedance' if 'seedance' in model.lower() else 'videos'
@@ -223,6 +229,16 @@ def suggest_route(model: str, protocol: str) -> dict[str, Any]:
             'supports_image': True,
             'supports_video': False,
             'supports_audio': False,
+        }
+    if protocol == rolldek.PROTOCOL:
+        return rolldek.suggest_route(model) or {
+            'profile': 'rolldek-sd2-ch4',
+            'durations': [],
+            'resolutions': ['720p'],
+            'image_count': 9,
+            'supports_image': True,
+            'supports_video': True,
+            'supports_audio': True,
         }
     channel_route = pro666.suggest_route(model) if protocol == 'videos' else None
     if channel_route:
@@ -278,6 +294,8 @@ def capabilities_for(
 
 def transform_create_payload(payload: dict[str, Any], profile: str) -> dict[str, Any]:
     request_format = PROFILE_DEFINITIONS[profile]['request_format']
+    if request_format in {'rolldek-ch3', 'rolldek-ch4'}:
+        return rolldek.transform_create_payload(payload)
     if request_format == autodl_comfyui.PROFILE:
         return autodl_comfyui.transform_create_payload(payload)
     if request_format in pro666.REQUEST_FORMATS:

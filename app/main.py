@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from . import database, image_database, image_proxy, new_api_gateway, proxy
-from .channels import autodl_comfyui, funai, o10_grok
+from .channels import autodl_comfyui, funai, o10_grok, rolldek
 from .config import PUBLIC_LINK_BASE_URLS, ROOT_DIR, settings
 from .integration_doc import build_integration_document
 from .image_integration_doc import build_image_integration_document
@@ -385,6 +385,8 @@ async def discover_upstream_models(payload: ModelDiscoveryInput, _: dict = Depen
         if funai.is_funai_base_url(payload.base_url)
         else o10_grok.PROTOCOL
         if o10_grok.is_o10_base_url(payload.base_url)
+        else rolldek.PROTOCOL
+        if rolldek.is_rolldek_base_url(payload.base_url)
         else None
     )
     try:
@@ -395,6 +397,8 @@ async def discover_upstream_models(payload: ModelDiscoveryInput, _: dict = Depen
                 else f"{payload.base_url}/v1/models"
             )
             response = await client.get(discovery_url, headers=headers)
+            if response.status_code == 404 and discovery_protocol == rolldek.PROTOCOL:
+                return {"models": normalize_discovered_models(list(rolldek.KNOWN_MODELS), discovery_protocol)}
             if response.status_code == 404 and discovery_protocol is None:
                 response = await client.get(f"{payload.base_url}/api/v3/models", headers=headers)
                 discovery_protocol = "ark-v3"

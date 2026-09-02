@@ -448,7 +448,7 @@ function addRouteRow(route = {}) {
   const mappedUpstreamModel = route.upstream_model || route.mapped_upstream_model || ''
   const selectedDurations = routeDurations(route)
   const protocol = route.protocol || 'videos'
-  const selectedProfile = protocol === 'ark-v3' ? (route.profile || 'ark-seedance-2') : protocol === 'o10-grok' ? (route.profile || 'grok-auto') : protocol === 'funai' ? (route.profile || 'funai-veo') : protocol === 'autodl-comfyui' ? (route.profile || 'autodl-comfyui') : (route.profile || 'default')
+  const selectedProfile = protocol === 'ark-v3' ? (route.profile || 'ark-seedance-2') : protocol === 'o10-grok' ? (route.profile || 'grok-auto') : protocol === 'funai' ? (route.profile || 'funai-veo') : protocol === 'autodl-comfyui' ? (route.profile || 'autodl-comfyui') : protocol === 'rolldek' ? (route.profile || 'rolldek-sd2-ch4') : (route.profile || 'default')
   row.dataset.durations = JSON.stringify(selectedDurations)
   row.innerHTML = `
     <input data-route-field="model" maxlength="160" value="${escapeHtml(route.model || '')}" placeholder="对外模型名" aria-label="对外模型名">
@@ -459,6 +459,7 @@ function addRouteRow(route = {}) {
       <option value="o10-grok"${protocol === 'o10-grok' ? ' selected' : ''}>o10-grok（Grok）</option>
       <option value="funai"${protocol === 'funai' ? ' selected' : ''}>funai（FunAI）</option>
       <option value="autodl-comfyui"${protocol === 'autodl-comfyui' ? ' selected' : ''}>autodl-comfyui（AutoDL）</option>
+      <option value="rolldek"${protocol === 'rolldek' ? ' selected' : ''}>rolldek（RollDek）</option>
     </select>
     <select data-route-field="profile" aria-label="请求格式"${protocol === 'seedance' ? ' disabled' : ''}>${profileOptions(protocol === 'seedance' ? 'default' : selectedProfile)}</select>
     <input data-route-field="upstream_model" maxlength="160" value="${escapeHtml(mappedUpstreamModel)}" placeholder="上游模型名" aria-label="映射上游模型名">
@@ -684,7 +685,9 @@ routeRows.addEventListener('change', (event) => {
     profile.value = 'funai-veo'
   } else if (target.value === 'autodl-comfyui') {
     profile.value = 'autodl-comfyui'
-  } else if (profile.value === 'ark-seedance-2' || profile.value === 'autodl-comfyui' || profile.value.startsWith('funai-')) {
+  } else if (target.value === 'rolldek') {
+    profile.value = 'rolldek-sd2-ch4'
+  } else if (profile.value === 'ark-seedance-2' || profile.value === 'autodl-comfyui' || profile.value.startsWith('funai-') || profile.value.startsWith('rolldek-')) {
     profile.value = 'default'
   }
 })
