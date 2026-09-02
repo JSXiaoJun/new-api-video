@@ -12,6 +12,7 @@ class RollDekAdapterTests(unittest.TestCase):
         self.assertFalse(rolldek.is_rolldek_base_url("https://example.com"))
         self.assertEqual(rolldek.suggest_route("sd-2-ch3")["profile"], "rolldek-sd2-ch3")
         self.assertEqual(rolldek.suggest_route("sd-2.5-ch3")["durations"], [30])
+        self.assertEqual(rolldek.suggest_route("sd-2.5-ch1-15s")["image_count"], 30)
         self.assertEqual(rolldek.suggest_route("sd-2.0-ch4")["image_count"], 9)
 
     def test_ch3_maps_images_and_fixed_duration(self):
@@ -46,6 +47,24 @@ class RollDekAdapterTests(unittest.TestCase):
         self.assertEqual(payload["audios"], ["https://cdn.example/a.mp3"])
         self.assertEqual(payload["first_image"], "https://cdn.example/start.png")
         self.assertEqual(rolldek.extract_task_fields({"status": "completed", "url": "/result.mp4"})["video_url"], "/result.mp4")
+
+    def test_ch1_fixed_duration_and_limits_are_isolated(self):
+        payload = rolldek.transform_create_payload({
+            "model": "sd-2.5-ch1-15s",
+            "prompt": "参考多种素材",
+            "seconds": 5,
+            "size": "1280x720",
+            "with_audio": False,
+            "images": [f"https://cdn.example/{index}.png" for index in range(35)],
+            "videos": [f"https://cdn.example/{index}.mp4" for index in range(12)],
+            "audios": [f"https://cdn.example/{index}.mp3" for index in range(12)],
+        })
+        self.assertEqual(payload["duration"], 15)
+        self.assertEqual(payload["aspect_ratio"], "16:9")
+        self.assertFalse(payload["with_audio"])
+        self.assertEqual(len(payload["image_urls"]), 30)
+        self.assertEqual(len(payload["video_urls"]), 10)
+        self.assertEqual(len(payload["audio_urls"]), 10)
 
 
 if __name__ == "__main__":

@@ -686,7 +686,7 @@ routeRows.addEventListener('change', (event) => {
   } else if (target.value === 'autodl-comfyui') {
     profile.value = 'autodl-comfyui'
   } else if (target.value === 'rolldek') {
-    profile.value = 'rolldek-sd2-ch4'
+    profile.value = 'rolldek-sd25-ch1-15s'
   } else if (profile.value === 'ark-seedance-2' || profile.value === 'autodl-comfyui' || profile.value.startsWith('funai-') || profile.value.startsWith('rolldek-')) {
     profile.value = 'default'
   }

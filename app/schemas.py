@@ -45,6 +45,7 @@ class RouteInput(BaseModel):
         "autodl-comfyui",
         "rolldek-sd2-ch3",
         "rolldek-sd25-ch3",
+        "rolldek-sd25-ch1-15s",
         "rolldek-sd2-ch4",
     ] = "default"
     durations: list[int] = Field(default_factory=list, max_length=MAX_DURATION_SECONDS)

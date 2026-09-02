@@ -1,7 +1,7 @@
 """RollDek video API adapter.
 
 RollDek exposes an OpenAI-compatible asynchronous video API, but its CH3
-models use ``image_refs`` while CH4 accepts the richer multimodal field set.
+models use ``image_refs`` while CH1 and CH4 accept different multimodal field sets.
 Keeping these mappings here prevents RollDek-specific aliases from leaking
 into the existing upstream adapters.
 """
@@ -18,6 +18,7 @@ CREATE_PATH = "/v1/videos"
 KNOWN_MODELS = (
     "sd-2-ch3",
     "sd-2.5-ch3",
+    "sd-2.5-ch1-15s",
     "sd-2-ch4",
     "sd-2.0-ch4",
 )
@@ -61,6 +62,19 @@ PROFILE_DEFINITIONS: dict[str, dict[str, Any]] = {
             "maxReferences": 15,
         },
     },
+    "rolldek-sd25-ch1-15s": {
+        "label": "RollDek · Seedance 2.5 CH1 15s",
+        "request_format": "rolldek-ch1",
+        "capabilities": {
+            "ratios": ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
+            "durations": [15],
+            "resolutions": ["480p", "720p", "1080p"],
+            "maxImages": 30,
+            "referenceVideo": True,
+            "maxAudios": 10,
+            "maxReferences": 50,
+        },
+    },
 }
 
 
@@ -78,6 +92,8 @@ def suggest_route(model: str) -> dict[str, Any] | None:
         return _route("rolldek-sd2-ch3", [10], 9, False, False)
     if normalized == "sd-2.5-ch3":
         return _route("rolldek-sd25-ch3", [30], 9, False, False)
+    if normalized == "sd-2.5-ch1-15s":
+        return _route("rolldek-sd25-ch1-15s", [15], 30, True, True)
     if normalized in {"sd-2-ch4", "sd-2.0-ch4"}:
         return _route("rolldek-sd2-ch4", list(range(1, 61)), 9, True, True)
     return None
@@ -111,6 +127,8 @@ def transform_create_payload(payload: dict[str, Any]) -> dict[str, Any]:
         or payload.get("ratio")
         or metadata.get("aspect_ratio")
     )
+    if not ratio and payload.get("size"):
+        ratio = _ratio_from_size(payload["size"])
     resolution = payload.get("resolution") or metadata.get("resolution")
     images = _urls(payload, ("image_refs", "images", "image_urls", "reference_image_urls"), ("image_url",))
     videos = _urls(payload, ("videos", "video_refs", "video_urls", "reference_videos"), ("reference_video",))
@@ -120,7 +138,7 @@ def transform_create_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
     consumed = {
         "model", "prompt", "duration", "seconds", "aspect_ratio", "aspectRatio", "ratio", "resolution",
-        "size", "generate_audio", "generateAudio", "metadata", "image_refs", "images", "image_urls",
+        "size", "generate_audio", "generateAudio", "with_audio", "metadata", "image_refs", "images", "image_urls",
         "reference_image_urls", "image_url", "image", "videos", "video_refs", "video_urls",
         "reference_videos", "reference_video", "audios", "audio_refs", "audio_urls", "reference_audios",
         "audio_url", "first_image", "start_image_url", "first_frame_url", "first_frame", "last_image",
@@ -141,6 +159,29 @@ def transform_create_payload(payload: dict[str, Any]) -> dict[str, Any]:
             result["size"] = payload["size"]
         if images:
             result["image_refs"] = images[:9]
+        return result
+
+    if model == "sd-2.5-ch1-15s":
+        result["duration"] = 15
+        if resolution:
+            result["resolution"] = resolution
+        if ratio:
+            result["aspect_ratio"] = ratio
+        with_audio = (
+            payload.get("with_audio")
+            if payload.get("with_audio") is not None
+            else payload.get("generateAudio")
+            if payload.get("generateAudio") is not None
+            else payload.get("generate_audio")
+        )
+        if with_audio is not None:
+            result["with_audio"] = with_audio
+        if images:
+            result["image_urls"] = images[:30]
+        if videos:
+            result["video_urls"] = videos[:10]
+        if audios:
+            result["audio_urls"] = audios[:10]
         return result
 
     if duration is not None:
@@ -209,3 +250,21 @@ def _urls(payload: dict[str, Any], list_keys: tuple[str, ...], single_keys: tupl
                 return values
     value = _first(payload, *single_keys)
     return [value] if value else []
+
+
+def _ratio_from_size(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    if ":" in normalized and normalized.count(":") == 1:
+        left, right = normalized.split(":", 1)
+        if left.isdigit() and right.isdigit() and int(left) > 0 and int(right) > 0:
+            return f"{int(left)}:{int(right)}"
+    if "x" in normalized.lower():
+        left, right = normalized.lower().split("x", 1)
+        if left.isdigit() and right.isdigit() and int(left) > 0 and int(right) > 0:
+            import math
+
+            divisor = math.gcd(int(left), int(right))
+            return f"{int(left) // divisor}:{int(right) // divisor}"
+    return None
