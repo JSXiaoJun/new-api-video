@@ -21,7 +21,30 @@ from .model_profiles import transform_create_payload
 logger = logging.getLogger("uvicorn.error")
 REQUEST_ID_HEADER = "X-Oneapi-Request-Id"
 MAX_UPSTREAM_ERROR_MESSAGE_LENGTH = 1000
-RETRYABLE_POLL_STATUS_CODES = {409, 429, 500, 502, 503, 504}
+# A poll error must not transition a task to ``failed`` when the upstream is
+# only temporarily unavailable.  Cloudflare's 520 response is a common case
+# here: the origin may still be processing the job, but Cloudflare could not
+# parse one response from it (and explicitly marks the error as retryable).
+# Keep this separate from create errors, where a non-2xx response still means
+# that no task was created successfully.
+RETRYABLE_POLL_STATUS_CODES = {409, 429, 500, 502, 503, 504, 520}
+
+
+def is_retryable_poll_error(response: httpx.Response) -> bool:
+    """Return whether a failed poll should leave the task pending.
+
+    Providers (and proxies such as Cloudflare) occasionally include an
+    explicit ``retryable`` marker in their JSON error envelope.  Honor that
+    marker in addition to the known transient HTTP statuses so a temporary
+    origin failure cannot permanently mark an otherwise active task failed.
+    """
+    if response.status_code in RETRYABLE_POLL_STATUS_CODES:
+        return True
+    try:
+        payload = response.json()
+    except ValueError:
+        return False
+    return isinstance(payload, dict) and payload.get("retryable") is True
 
 
 STATUS_MAP = {
@@ -105,8 +128,22 @@ def upstream_error(
         database.record_audit_event(relay_request_id, phase, response.status_code, response.text, payload)
         if mark_failed:
             database.fail_audit_request(relay_request_id, payload["error"]["message"])
-    headers = {REQUEST_ID_HEADER: relay_request_id} if relay_request_id else None
-    return JSONResponse(payload, status_code=response.status_code, headers=headers)
+    headers: dict[str, str] = {}
+    if relay_request_id:
+        headers[REQUEST_ID_HEADER] = relay_request_id
+    # Preserve a provider/Cloudflare backoff hint for callers.  Some upstreams
+    # send it as a standard header, while Cloudflare's 520 envelope uses a JSON
+    # ``retry_after`` field instead.
+    retry_after = response.headers.get("Retry-After")
+    if not retry_after and isinstance(upstream_payload, dict):
+        retry_after_value = upstream_payload.get("retry_after")
+        if isinstance(retry_after_value, (int, float)) and retry_after_value > 0:
+            retry_after = str(int(retry_after_value))
+        elif isinstance(retry_after_value, str) and retry_after_value.strip().isdigit():
+            retry_after = retry_after_value.strip()
+    if retry_after:
+        headers["Retry-After"] = retry_after
+    return JSONResponse(payload, status_code=response.status_code, headers=headers or None)
 
 
 async def create_video(
@@ -389,7 +426,7 @@ async def fetch_task(task_id: str, timeout_seconds: float | None = None) -> JSON
         raise HTTPException(status_code=502, detail=sanitized["detail"], headers=response_headers) from exc
     if not 200 <= response.status_code < 300:
         error_response = upstream_error(response, relay_request_id, "poll")
-        if response.status_code not in RETRYABLE_POLL_STATUS_CODES:
+        if not is_retryable_poll_error(response):
             try:
                 error_payload = response.json()
             except ValueError:

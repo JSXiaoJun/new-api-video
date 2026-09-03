@@ -418,6 +418,56 @@ class FunAIChannelTests(unittest.TestCase):
         self.assertEqual(result.status_code, 404)
         update_task.assert_called_once_with(task_id, "failed", None, "Task expired or does not exist")
 
+    def test_cloudflare_520_poll_error_is_retryable_and_does_not_fail_task(self):
+        """A transient Cloudflare origin error must not end an active job."""
+        task_id = "video_funai_cloudflare_520"
+        task = {
+            "task_id": task_id,
+            "api_key": "funai-secret",
+            "base_url": "https://api.funai.works/v1",
+            "protocol": funai.PROTOCOL,
+            "model": "public-kling",
+            "created_at": 100,
+            "relay_request_id": "vrq_funai_cloudflare_520",
+            "public_task_id": None,
+        }
+        response = httpx.Response(
+            520,
+            request=httpx.Request("GET", f"https://api.funai.works/v1/videos/{task_id}"),
+            json={
+                "status": 520,
+                "error_name": "unknown_origin_error",
+                "retryable": True,
+                "retry_after": 60,
+            },
+        )
+
+        class MockAsyncClient:
+            def __init__(self, **_kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            async def get(self, *_args, **_kwargs):
+                return response
+
+        with (
+            patch("app.proxy.database.get_task", return_value=task),
+            patch("app.proxy.database.touch_task"),
+            patch("app.proxy.database.update_task") as update_task,
+            patch("app.proxy.database.record_audit_event"),
+            patch("app.proxy.httpx.AsyncClient", MockAsyncClient),
+        ):
+            result = asyncio.run(fetch_task(task_id))
+
+        self.assertEqual(result.status_code, 520)
+        self.assertEqual(result.headers.get("retry-after"), "60")
+        update_task.assert_not_called()
+
     def test_reconciler_refreshes_all_stale_pending_tasks(self):
         fetch = AsyncMock()
         with (
