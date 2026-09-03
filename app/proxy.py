@@ -21,24 +21,22 @@ from .model_profiles import transform_create_payload
 logger = logging.getLogger("uvicorn.error")
 REQUEST_ID_HEADER = "X-Oneapi-Request-Id"
 MAX_UPSTREAM_ERROR_MESSAGE_LENGTH = 1000
-# A poll error must not transition a task to ``failed`` when the upstream is
-# only temporarily unavailable.  Cloudflare's 520 response is a common case
-# here: the origin may still be processing the job, but Cloudflare could not
-# parse one response from it (and explicitly marks the error as retryable).
-# Keep this separate from create errors, where a non-2xx response still means
-# that no task was created successfully.
-RETRYABLE_POLL_STATUS_CODES = {409, 429, 500, 502, 503, 504, 520}
+# HTTP errors from the polling transport must not be confused with a terminal
+# task result.  In particular, Cloudflare 52x responses describe a failure
+# between Cloudflare and the origin, not a failed video-generation job.
+PENDING_POLL_STATUS_CODES = {409, 429}
 
 
-def is_retryable_poll_error(response: httpx.Response) -> bool:
-    """Return whether a failed poll should leave the task pending.
+def should_preserve_task_on_poll_error(response: httpx.Response) -> bool:
+    """Return whether a failed poll must leave the task pending.
 
-    Providers (and proxies such as Cloudflare) occasionally include an
-    explicit ``retryable`` marker in their JSON error envelope.  Honor that
-    marker in addition to the known transient HTTP statuses so a temporary
-    origin failure cannot permanently mark an otherwise active task failed.
+    Every 5xx response is an infrastructure/transport failure and therefore
+    cannot authoritatively describe the task's state.  This remains true when
+    a Cloudflare envelope says ``retryable: false``: that flag means retrying
+    will not repair the TLS/origin configuration, not that the video task
+    itself failed.  Explicitly retryable non-5xx responses are also preserved.
     """
-    if response.status_code in RETRYABLE_POLL_STATUS_CODES:
+    if response.status_code >= 500 or response.status_code in PENDING_POLL_STATUS_CODES:
         return True
     try:
         payload = response.json()
@@ -426,7 +424,7 @@ async def fetch_task(task_id: str, timeout_seconds: float | None = None) -> JSON
         raise HTTPException(status_code=502, detail=sanitized["detail"], headers=response_headers) from exc
     if not 200 <= response.status_code < 300:
         error_response = upstream_error(response, relay_request_id, "poll")
-        if not is_retryable_poll_error(response):
+        if not should_preserve_task_on_poll_error(response):
             try:
                 error_payload = response.json()
             except ValueError:

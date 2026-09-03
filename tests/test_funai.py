@@ -468,6 +468,50 @@ class FunAIChannelTests(unittest.TestCase):
         self.assertEqual(result.headers.get("retry-after"), "60")
         update_task.assert_not_called()
 
+    def test_cloudflare_525_poll_error_does_not_fail_completed_upstream_task(self):
+        """A Cloudflare TLS error cannot prove that the provider job failed."""
+        task_id = "video_funai_cloudflare_525"
+        task = {
+            "task_id": task_id,
+            "api_key": "funai-secret",
+            "base_url": "https://api.funai.works/v1",
+            "protocol": funai.PROTOCOL,
+            "model": "public-kling",
+            "created_at": 100,
+            "relay_request_id": "vrq_funai_cloudflare_525",
+            "public_task_id": None,
+        }
+        response = httpx.Response(
+            525,
+            request=httpx.Request("GET", f"https://api.funai.works/v1/videos/{task_id}"),
+            json={"status": 525, "error_name": "ssl_handshake_failed", "retryable": False},
+        )
+
+        class MockAsyncClient:
+            def __init__(self, **_kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            async def get(self, *_args, **_kwargs):
+                return response
+
+        with (
+            patch("app.proxy.database.get_task", return_value=task),
+            patch("app.proxy.database.touch_task"),
+            patch("app.proxy.database.update_task") as update_task,
+            patch("app.proxy.database.record_audit_event"),
+            patch("app.proxy.httpx.AsyncClient", MockAsyncClient),
+        ):
+            result = asyncio.run(fetch_task(task_id))
+
+        self.assertEqual(result.status_code, 525)
+        update_task.assert_not_called()
+
     def test_reconciler_refreshes_all_stale_pending_tasks(self):
         fetch = AsyncMock()
         with (
