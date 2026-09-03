@@ -464,7 +464,8 @@ class FunAIChannelTests(unittest.TestCase):
         ):
             result = asyncio.run(fetch_task(task_id))
 
-        self.assertEqual(result.status_code, 520)
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(json.loads(result.body)["status"], "processing")
         self.assertEqual(result.headers.get("retry-after"), "60")
         update_task.assert_not_called()
 
@@ -509,7 +510,8 @@ class FunAIChannelTests(unittest.TestCase):
         ):
             result = asyncio.run(fetch_task(task_id))
 
-        self.assertEqual(result.status_code, 525)
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(json.loads(result.body)["status"], "processing")
         update_task.assert_not_called()
 
     def test_reconciler_refreshes_all_stale_pending_tasks(self):

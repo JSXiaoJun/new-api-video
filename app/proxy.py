@@ -45,6 +45,48 @@ def should_preserve_task_on_poll_error(response: httpx.Response) -> bool:
     return isinstance(payload, dict) and payload.get("retryable") is True
 
 
+def pending_poll_response(task: dict[str, Any], response: httpx.Response) -> JSONResponse:
+    """Return a successful, still-pending response for transport failures.
+
+    Polling is part of one long-running generation request from New API's
+    perspective.  Propagating a Cloudflare 52x status here makes New API treat
+    the generation as rejected and issue a refund, even when the provider job
+    later completes.  Keep the task pending and let the next poll retry.
+    """
+    status = task.get("status") if task.get("status") in {"queued", "processing"} else "processing"
+    progress = 30 if status == "processing" else 0
+    payload: dict[str, Any] = {
+        "object": "video",
+        "model": task["model"],
+        "status": status,
+        "progress": progress,
+        "created_at": int(task["created_at"]),
+        "updated_at": int(time.time()),
+        "error": None,
+    }
+    retry_after = response.headers.get("Retry-After")
+    if not retry_after:
+        try:
+            upstream_payload = response.json()
+        except ValueError:
+            upstream_payload = None
+        if isinstance(upstream_payload, dict):
+            value = upstream_payload.get("retry_after")
+            if isinstance(value, (int, float)) and value > 0:
+                retry_after = str(int(value))
+            elif isinstance(value, str) and value.strip().isdigit():
+                retry_after = value.strip()
+    if retry_after:
+        payload["retry_after"] = int(retry_after) if retry_after.isdigit() else retry_after
+    relay_request_id = task.get("relay_request_id")
+    headers: dict[str, str] = {}
+    if relay_request_id:
+        headers[REQUEST_ID_HEADER] = relay_request_id
+    if retry_after:
+        headers["Retry-After"] = retry_after
+    return JSONResponse(payload, status_code=200, headers=headers or None)
+
+
 STATUS_MAP = {
     "NOT_START": "queued",
     "PENDING": "queued",
@@ -424,7 +466,9 @@ async def fetch_task(task_id: str, timeout_seconds: float | None = None) -> JSON
         raise HTTPException(status_code=502, detail=sanitized["detail"], headers=response_headers) from exc
     if not 200 <= response.status_code < 300:
         error_response = upstream_error(response, relay_request_id, "poll")
-        if not should_preserve_task_on_poll_error(response):
+        if should_preserve_task_on_poll_error(response):
+            return pending_poll_response(task, response)
+        else:
             try:
                 error_payload = response.json()
             except ValueError:
