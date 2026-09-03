@@ -253,19 +253,39 @@ async def create_video(
             "Accept": "application/json",
         }
     )
-    if protocol == "seedance":
-        explicit_key = str(payload.pop("idempotency_key", "")).strip()
-        headers["Idempotency-Key"] = incoming_idempotency_key or explicit_key or str(uuid.uuid4())
+    # A connection failure after POST leaves the create result ambiguous: the
+    # provider may have accepted the job even though its response was lost.
+    # Pro666/OpenAI-compatible video endpoints support idempotency keys, so use
+    # one for every generic ``videos`` request and safely retry the POST once.
+    # The same key lets the provider return the original task instead of
+    # creating a duplicate generation.
+    if protocol in {"videos", "seedance"}:
+        explicit_key = str(payload.get("idempotency_key", "")).strip()
+        headers["Idempotency-Key"] = incoming_idempotency_key or explicit_key or str(
+            uuid.uuid5(uuid.NAMESPACE_URL, relay_request_id)
+        )
 
-    try:
-        async with httpx.AsyncClient(timeout=settings.upstream_timeout_seconds) as client:
-            url = (
-                funai.api_url(upstream["base_url"], endpoint)
-                if protocol == funai.PROTOCOL
-                else upstream["base_url"] + endpoint
-            )
-            response = await client.post(url, headers=headers, json=upstream_payload)
-    except httpx.RequestError as exc:
+    url = (
+        funai.api_url(upstream["base_url"], endpoint)
+        if protocol == funai.PROTOCOL
+        else upstream["base_url"] + endpoint
+    )
+    response: httpx.Response | None = None
+    last_error: httpx.RequestError | None = None
+    max_attempts = 2 if protocol == "videos" else 1
+    for attempt in range(max_attempts):
+        try:
+            async with httpx.AsyncClient(timeout=settings.upstream_timeout_seconds) as client:
+                response = await client.post(url, headers=headers, json=upstream_payload)
+            if response.status_code < 500 or attempt + 1 >= max_attempts:
+                break
+        except httpx.RequestError as exc:
+            last_error = exc
+            if attempt + 1 >= max_attempts:
+                break
+        await asyncio.sleep(1)
+    if response is None:
+        exc = last_error or httpx.RequestError("upstream create request failed")
         logger.warning("Video upstream create request failed: %s", exc)
         sanitized = {"detail": "Video upstream connection failed"}
         database.record_audit_event(relay_request_id, "create", None, None, sanitized)
