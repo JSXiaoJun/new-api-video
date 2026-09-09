@@ -23,6 +23,10 @@ from app import database
 from app.channels import autodl_comfyui
 from app.main import normalize_discovered_models
 from app.proxy import create_video, fetch_task
+from app.model_profiles import capabilities_for
+
+
+ZM_WORKFLOWS = ("minimax_h3_zm_u24", "minimax_h3_zm_u08")
 
 
 class AutoDLComfyUIAdapterTests(unittest.TestCase):
@@ -66,6 +70,79 @@ class AutoDLComfyUIAdapterTests(unittest.TestCase):
             "duration": 6,
             "resolution": "768p竖",
         })
+
+    def test_zm_models_are_discovered_with_workbench_capabilities(self):
+        routes = normalize_discovered_models(
+            list(autodl_comfyui.KNOWN_MODELS), autodl_comfyui.PROTOCOL
+        )
+        by_model = {route["upstream_model"]: route for route in routes}
+        for model in ZM_WORKFLOWS:
+            with self.subTest(model=model):
+                route = by_model[model]
+                self.assertEqual(route["protocol"], autodl_comfyui.PROTOCOL)
+                self.assertEqual(route["profile"], autodl_comfyui.PROFILE)
+                self.assertTrue(route["supports_image"])
+                self.assertTrue(route["supports_audio"])
+                self.assertFalse(route["supports_video"])
+                self.assertTrue(autodl_comfyui.requires_prompt(model))
+                caps = capabilities_for(
+                    route["profile"], route["durations"], route["supports_image"],
+                    route["supports_video"], route["supports_audio"],
+                    route["image_count"], route["resolutions"],
+                )
+                self.assertEqual(caps["durations"], list(range(1, 16)))
+                self.assertEqual(caps["resolutions"], ["480p", "768p"])
+                self.assertEqual(caps["ratios"], ["16:9", "9:16", "1:1"])
+                self.assertEqual(caps["maxImages"], 9)
+                self.assertEqual(caps["maxAudios"], 3)
+                self.assertFalse(caps["referenceVideo"])
+
+    def test_zm_reference_arrays_and_resolution_variants(self):
+        images = [f"https://cdn.example/{index}.png" for index in range(10)]
+        audios = [f"https://cdn.example/{index}.wav" for index in range(4)]
+        for model in ZM_WORKFLOWS:
+            for resolution in ("480p", "768p"):
+                for ratio, suffix in (("16:9", "横"), ("9:16", "竖"), ("1:1", "(1:1)")):
+                    with self.subTest(model=model, resolution=resolution, ratio=ratio):
+                        result = autodl_comfyui.transform_create_payload({
+                            "model": model, "prompt": " test ", "seconds": 15,
+                            "resolution": resolution, "aspect_ratio": ratio,
+                            "image_urls": images, "audio_urls": audios, "seed": 0,
+                            "video_url": "https://cdn.example/ignored.mp4",
+                        })
+                        self.assertEqual(result, {
+                            "prompt": "test", "duration": 15,
+                            "resolution": resolution + suffix, "seed": 0,
+                            **{f"ref_image_{i}": url for i, url in enumerate(images[:9])},
+                            **{f"ref_audio_{i}": url for i, url in enumerate(audios[:3])},
+                        })
+
+    def test_zm_native_fields_and_optional_defaults(self):
+        for model in ZM_WORKFLOWS:
+            with self.subTest(model=model):
+                native = {
+                    "prompt": "test", "duration": 1, "resolution": "768p横",
+                    "seed": 999999999999999,
+                    **{f"ref_image_{i}": f"https://cdn.example/{i}.png" for i in range(9)},
+                    **{f"ref_audio_{i}": f"https://cdn.example/{i}.flac" for i in range(3)},
+                }
+                self.assertEqual(autodl_comfyui.transform_create_payload({
+                    "model": model, **native,
+                    "ref_audio_0": {"audio_url": {"url": native["ref_audio_0"]}},
+                    "ref_image_0": {"url": native["ref_image_0"]},
+                    "image_urls": ["https://cdn.example/ignored.png"],
+                    "audio_urls": ["https://cdn.example/ignored.wav"],
+                    "ref_image_9": "https://cdn.example/extra.png",
+                    "ref_audio_3": "https://cdn.example/extra.wav",
+                }), native)
+                self.assertEqual(autodl_comfyui.transform_create_payload({
+                    "model": model, "prompt": "test",
+                    "image_url": "https://cdn.example/image.png",
+                }), {"prompt": "test", "ref_image_0": "https://cdn.example/image.png"})
+
+    def test_unknown_workflow_is_still_rejected(self):
+        with self.assertRaisesRegex(ValueError, "Unsupported AutoDL ComfyUI workflow"):
+            autodl_comfyui.transform_create_payload({"model": "unknown-workflow", "prompt": "test"})
 
     def test_multimodal_payload_maps_reference_arrays(self):
         payload = autodl_comfyui.transform_create_payload({
@@ -186,8 +263,20 @@ class AutoDLComfyUIAdapterTests(unittest.TestCase):
         ))
 
     def test_proxy_create_and_poll_use_autodl_paths_and_raw_token(self):
+        self._assert_proxy_create_and_poll("minimax_h3_lightx2v_no_pic")
+
+    def test_zm_proxy_create_and_poll(self):
+        for model in ZM_WORKFLOWS:
+            with self.subTest(model=model):
+                self._assert_proxy_create_and_poll(model)
+
+    def _assert_proxy_create_and_poll(self, workflow_id):
         public_model = f"autodl-public-{time.time_ns()}"
-        workflow_id = "minimax_h3_lightx2v_no_pic"
+        is_zm = workflow_id in ZM_WORKFLOWS
+        media = {
+            "ref_image_0": "https://cdn.example/image.png",
+            "ref_audio_0": "https://cdn.example/voice.wav",
+        } if is_zm else {}
         database.save_upstream({
             "name": public_model,
             "base_url": "https://autodl.art",
@@ -201,10 +290,10 @@ class AutoDLComfyUIAdapterTests(unittest.TestCase):
                 "profile": autodl_comfyui.PROFILE,
                 "durations": [1, 15],
                 "resolutions": ["480p", "768p"],
-                "image_count": 0,
-                "supports_image": False,
+                "image_count": 9 if is_zm else 0,
+                "supports_image": is_zm,
                 "supports_video": False,
-                "supports_audio": False,
+                "supports_audio": is_zm,
             }],
         })
         captured: dict[str, tuple[str, dict]] = {}
@@ -232,7 +321,7 @@ class AutoDLComfyUIAdapterTests(unittest.TestCase):
                 return httpx.Response(200, request=httpx.Request("GET", url), json={
                     "code": "Success",
                     "data": {
-                        "status": "SUCCESS",
+                        "status": "completed" if is_zm else "SUCCESS",
                         "results": [{"url": "https://cdn.example/video.mp4", "type": "video"}],
                     },
                 })
@@ -244,6 +333,10 @@ class AutoDLComfyUIAdapterTests(unittest.TestCase):
                 "duration": 1,
                 "resolution": "480p",
                 "aspect_ratio": "9:16",
+                **({
+                    "image_urls": [media["ref_image_0"]],
+                    "audio_urls": [media["ref_audio_0"]],
+                } if is_zm else {}),
             }, None))
             fetched = asyncio.run(fetch_task(task_id))
 
@@ -257,6 +350,7 @@ class AutoDLComfyUIAdapterTests(unittest.TestCase):
             "prompt": "纸飞机穿过云层",
             "duration": 1,
             "resolution": "480p竖",
+            **media,
         })
         self.assertEqual(captured["get"][0], (
             f"https://autodl.art/api/v1/comfyui/comfyui_workflow/result/{task_id}"

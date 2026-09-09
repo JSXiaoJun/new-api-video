@@ -2,6 +2,7 @@
 
 > 数据来源：<https://autodl.art/large-model/comfyui>、各工作流的“在线调用/API”面板及官方 [ComfyUI API 文档](https://autodl.art/docs/comfyui_api/)。
 > 抓取时间：2026-08-27（页面价格和字段约束可能变更；实际请求以页面在线表单校验为准）。
+> 2026-09-09 补充核对 `minimax_h3_zm_u24` / `minimax_h3_zm_u08` 的页面及公开 `input_rules`；其他旧工作流价格未重新核验。
 
 ## 通用调用方式
 
@@ -161,6 +162,8 @@ while True:
 
 | 名称 | workflow_id | 计费 |
 |---|---|---|
+| H3多图多音频生视频（升级画质） | `minimax_h3_zm_u24` | 480p：高峰 ￥0.02/秒，空闲 ￥0.01/秒；768p：高峰 ￥0.03/秒，空闲 ￥0.02/秒 |
+| H3多图多音频生视频（高速版） | `minimax_h3_zm_u08` | 480p：高峰 ￥0.02/秒，空闲 ￥0.01/秒；768p：高峰 ￥0.03/秒，空闲 ￥0.02/秒 |
 | 动作迁移 | `wan2.2animate-v4-motion_retargeting` | 高峰 ￥0.04/秒；空闲 ￥0.03/秒，按实际视频时长 |
 | H3多图多音频生视频15秒 | `minimax_h3_image_audio_to_video_v2_15s` | 480p/768p：高峰 ￥0.02/秒；空闲 ￥0.01/秒 |
 | H3多图生视频15秒 | `minimax_h3_lightx2v_v5_15s` | 480p/768p：高峰 ￥0.02/秒；空闲 ￥0.01/秒 |
@@ -172,6 +175,45 @@ while True:
 | indextts2 | `indextts2-v1` | ￥0.02/次 |
 
 查询接口对所有工作流相同：`/api/v1/comfyui/comfyui_workflow/result/{task_id}`。
+
+## 新增：H3 升级画质版 / 高速版
+
+- 升级画质版：<https://autodl.art/large-model/comfyui/minimax_h3_zm_u24>
+- 高速版：<https://autodl.art/large-model/comfyui/minimax_h3_zm_u08>
+- 提交接口：`/api/v1/comfyui/comfyui_workflow/{workflow_id}`，请求体无需 `model`。
+- 两者对外参数约束相同；高峰时段为 08:00-24:00，空闲时段为 00:00-08:00，以上为核对当日活动价。
+
+| 参数 | 必填 | 类型/范围 | 说明 |
+|---|---|---|---|
+| `prompt` | 是 | 字符串，1-10000 字符 | 视频提示词 |
+| `duration` | 否 | 整数，1-15 | 默认 5 秒 |
+| `resolution` | 否 | `480p横`、`480p竖`、`480p(1:1)`、`768p横`、`768p竖`、`768p(1:1)` | 默认 `768p竖`；不支持 1080p |
+| `ref_image_0` | 是 | 图片 URL；JPG/PNG/WebP | 第一张参考图 |
+| `ref_image_1` 至 `ref_image_8` | 否 | 图片 URL；JPG/PNG/WebP | 其他参考图 |
+| `ref_audio_0` 至 `ref_audio_2` | 否 | 音频 URL；MP3/WAV/FLAC | 无参考视频参数 |
+| `seed` | 否 | 整数，0-999999999999999 | 上游规则给出各自固定默认值，省略不保证每次随机 |
+
+音频示例文字包含 MP4，但公开 `input_rules.accept_types` 仅包含 `audio/mpeg`、
+`audio/wav`、`audio/flac`，建议按此处理。未进行付费生成实测。
+
+通过本项目标准 `/v1/videos` 请求的示例（另一个模型只需替换 `model`）：
+
+```json
+{
+  "model": "minimax_h3_zm_u24",
+  "prompt": "人物自然说话，镜头缓慢推进",
+  "duration": 5,
+  "resolution": "768p",
+  "aspect_ratio": "16:9",
+  "image_urls": ["https://your-cdn.example/person.png"],
+  "audio_urls": ["https://your-cdn.example/voice.wav"],
+  "seed": 123
+}
+```
+
+`model` 使用管理后台配置的对外名称。适配器将分辨率转换为 `768p横`，
+将数组转换为 `ref_image_0` / `ref_audio_0`，并使用路由中的上游工作流 ID 提交任务。
+参数校验沿用现有通道行为，由上游执行；后台能力配置用于工作台选项展示。
 
 ## 1. 动作迁移
 

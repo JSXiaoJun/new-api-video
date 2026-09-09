@@ -112,7 +112,7 @@ MiniMax、Kling、Runway、Sora、Gemini Omni 和 Veo 的要求分别映射参�
 ### AutoDL.Art ComfyUI Channel
 
 在管理后台新建视频上游，Base URL 填写 `https://autodl.art`，API Key 填写 AutoDL 的 ComfyUI 分组令牌，
-然后点击 `同步上游模型`。AutoDL 没有 OpenAI 风格的模型列表接口，因此适配器会展示内置且经过验证的 8 个
+然后点击 `同步上游模型`。AutoDL 没有 OpenAI 风格的模型列表接口，因此适配器会展示内置的 10 个
 视频工作流；选中需要的工作流后保存即可。同步出的路由会自动使用 `autodl-comfyui` 协议和同名请求格式。
 
 适配代码独立位于 `app/channels/autodl_comfyui.py`。它把标准 `/v1/videos` 请求转换成 AutoDL 的
@@ -121,6 +121,14 @@ MiniMax、Kling、Runway、Sora、Gemini Omni 和 Veo 的要求分别映射参�
 不添加 `Bearer` 前缀。适配器支持文生视频、多图参考、首尾帧、多图多音频、自动对口型和动作迁移工作流，
 并将外部工作台的 `resolution` 与 `aspect_ratio` 组合成 AutoDL 使用的 `480p竖`、`768p横`、
 `768p(1:1)` 等枚举值。
+
+新增支持 `minimax_h3_zm_u24`（升级画质版）和 `minimax_h3_zm_u08`（高速版）：
+均支持 1-15 秒、480p/768p、最多 9 张参考图和 3 段参考音频，不支持参考视频。
+`prompt` 和第一张参考图必填；标准 `image_urls` / `audio_urls` 会映射到上游
+`ref_image_0` 至 `ref_image_8` / `ref_audio_0` 至 `ref_audio_2`，也支持直接传这些原生字段。
+`seed` 可选，范围为 `0-999999999999999`。省略时长、分辨率和 seed 时保留上游默认行为。
+更新部署后，在已有 AutoDL 上游中同步并选中这两个模型，保存后刷新工作台模型列表；
+New API 侧需另行添加对应的对外模型名称及计费配置。参数细节见 `autodl-comfyui-workflows.md`。
 
 The customer-facing video document uses `API_PUBLIC_BASE_URL` for all authenticated New API requests and the
 admin-selected public media domain for downloads. It never includes the middleware admin domain, adapter address, or

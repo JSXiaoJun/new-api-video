@@ -13,6 +13,22 @@ RESULT_PREFIX = f"{CREATE_PREFIX}/result"
 
 
 MODEL_SPECS: dict[str, dict[str, Any]] = {
+    "minimax_h3_zm_u24": {
+        "durations": list(range(1, 16)),
+        "resolutions": ["480p", "768p"],
+        "image_count": 9,
+        "supports_video": False,
+        "supports_audio": True,
+        "requires_prompt": True,
+    },
+    "minimax_h3_zm_u08": {
+        "durations": list(range(1, 16)),
+        "resolutions": ["480p", "768p"],
+        "image_count": 9,
+        "supports_video": False,
+        "supports_audio": True,
+        "requires_prompt": True,
+    },
     "wan2.2animate-v4-motion_retargeting": {
         "durations": [],
         "resolutions": [],
@@ -208,6 +224,8 @@ def transform_create_payload(payload: dict[str, Any]) -> dict[str, Any]:
     for index, image in enumerate(images[:9]):
         _setdefault(result, f"ref_image_{index}", image)
     if workflow_id in {
+        "minimax_h3_zm_u24",
+        "minimax_h3_zm_u08",
         "minimax_h3_image_audio_to_video_v2",
         "minimax_h3_image_audio_to_video_v2_15s",
     }:
@@ -270,6 +288,8 @@ def _native_fields(payload: dict[str, Any], workflow_id: str) -> dict[str, Any]:
         allowed.update({"prompt", "duration", "resolution", "seed"})
         allowed.update({f"ref_image_{index}" for index in range(9)})
         if workflow_id in {
+            "minimax_h3_zm_u24",
+            "minimax_h3_zm_u08",
             "minimax_h3_image_audio_to_video_v2",
             "minimax_h3_image_audio_to_video_v2_15s",
         }:
