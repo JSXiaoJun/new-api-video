@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from . import database, image_database, image_proxy, new_api_gateway, proxy
-from .channels import autodl_comfyui, funai, o10_grok, rolldek
+from .channels import autodl_comfyui, funai, o10_grok, rolldek, sub2api_video
 from .config import PUBLIC_LINK_BASE_URLS, ROOT_DIR, settings
 from .integration_doc import build_integration_document
 from .image_integration_doc import build_image_integration_document
@@ -374,6 +374,12 @@ async def discover_upstream_models(payload: ModelDiscoveryInput, _: dict = Depen
         return {
             "models": normalize_discovered_models(
                 list(autodl_comfyui.KNOWN_MODELS), autodl_comfyui.PROTOCOL
+            )
+        }
+    if sub2api_video.is_sub2api_base_url(payload.base_url):
+        return {
+            "models": normalize_discovered_models(
+                list(sub2api_video.KNOWN_MODELS), sub2api_video.PROTOCOL
             )
         }
 

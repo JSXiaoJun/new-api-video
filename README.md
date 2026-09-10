@@ -99,6 +99,16 @@ enabled public models and their configured capabilities.
 相对 `video.url` 转成同源内容下载；下载请求仅在同源时携带上游密钥。当前报告确认的模型为
 `grok-imagine-video` 和 `grok-imagine-video-1.5`，支持 1-15 秒、480p/720p，以及单张参考图片。
 
+### Sub2API Grok Video Channel
+
+`https://api.pandatk.com` 必须使用独立的 `sub2api-video` 协议，不能配置为 `o10-grok`：
+两者的创建接口和参考图字段不同。新增上游后点击 `同步上游模型`，即可添加
+`grok-imagine-video`（文生视频，480p/720p）和 `grok-imagine-video-1.5`（文生或图生视频，
+480p/720p/1080p）。虽然对接文档把 1080p 列为通用可选项，但前者的上游实测会拒绝 1080p，
+因此能力配置按实际行为隔离。后者会将标准请求的 `image_urls`、`images` 或 `image_url` 转换为上游要求的
+`images: ["公开图片 URL"]`，最多传 7 张；不支持参考视频和音频。任务创建、查询和视频下载分别使用
+`POST /v1/videos`、`GET /v1/videos/{task_id}` 和 `GET /v1/videos/{task_id}/content`。
+
 ### FunAI Channel
 
 为 `https://api.funai.works` 新建视频上游，填写 API key 后使用 `同步上游模型`。FunAI 接入使用独立的

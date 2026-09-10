@@ -4,7 +4,7 @@ from copy import deepcopy
 import re
 from typing import Any
 
-from .channels import autodl_comfyui, funai, o10_grok, pro666, rolldek
+from .channels import autodl_comfyui, funai, o10_grok, pro666, rolldek, sub2api_video
 
 
 MAX_DURATION_SECONDS = 60
@@ -137,6 +137,7 @@ PROFILE_DEFINITIONS: dict[str, dict[str, Any]] = {
     **funai.PROFILE_DEFINITIONS,
     **pro666.PROFILE_DEFINITIONS,
     **autodl_comfyui.PROFILE_DEFINITIONS,
+    **sub2api_video.PROFILE_DEFINITIONS,
     **rolldek.PROFILE_DEFINITIONS,
 }
 
@@ -149,6 +150,8 @@ def suggest_profile(model: str, protocol: str) -> str:
         return autodl_comfyui.PROFILE
     if protocol == o10_grok.PROTOCOL:
         return 'grok-auto'
+    if protocol == sub2api_video.PROTOCOL:
+        return sub2api_video.PROFILE
     if protocol == 'ark-v3':
         return 'ark-seedance-2'
     if protocol == rolldek.PROTOCOL:
@@ -180,6 +183,8 @@ def suggest_protocol(model: str) -> str:
         return autodl_comfyui.PROTOCOL
     if o10_grok.suggest_route(model):
         return o10_grok.PROTOCOL
+    if sub2api_video.suggest_route(model):
+        return sub2api_video.PROTOCOL
     if rolldek.suggest_route(model):
         return rolldek.PROTOCOL
     if pro666.suggest_route(model):
@@ -226,6 +231,16 @@ def suggest_route(model: str, protocol: str) -> dict[str, Any]:
             'durations': list(range(1, 16)),
             'resolutions': ['480p', '720p'],
             'image_count': 1,
+            'supports_image': True,
+            'supports_video': False,
+            'supports_audio': False,
+        }
+    if protocol == sub2api_video.PROTOCOL:
+        return sub2api_video.suggest_route(model) or {
+            'profile': sub2api_video.PROFILE,
+            'durations': list(range(1, 16)),
+            'resolutions': ['480p', '720p', '1080p'],
+            'image_count': 7,
             'supports_image': True,
             'supports_video': False,
             'supports_audio': False,
@@ -298,6 +313,8 @@ def transform_create_payload(payload: dict[str, Any], profile: str) -> dict[str,
         return rolldek.transform_create_payload(payload)
     if request_format == autodl_comfyui.PROFILE:
         return autodl_comfyui.transform_create_payload(payload)
+    if request_format == sub2api_video.PROFILE:
+        return sub2api_video.transform_create_payload(payload)
     if request_format in pro666.REQUEST_FORMATS:
         return pro666.transform_create_payload(payload, request_format)
     metadata = payload.get('metadata') if isinstance(payload.get('metadata'), dict) else {}

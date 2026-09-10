@@ -13,7 +13,7 @@ class RouteInput(BaseModel):
     model: str = Field(min_length=1, max_length=160)
     upstream_model: str = Field(default="", max_length=160)
     protocol: Literal[
-        "videos", "seedance", "ark-v3", "o10-grok", "funai", "autodl-comfyui", "rolldek"
+        "videos", "seedance", "ark-v3", "o10-grok", "sub2api-video", "funai", "autodl-comfyui", "rolldek"
     ] = "videos"
     profile: Literal[
         "default",
@@ -25,6 +25,7 @@ class RouteInput(BaseModel):
         "ark-seedance-2",
         "grok-auto",
         "grok-fast",
+        "sub2api-video",
         "funai-minimax-h3",
         "funai-kling",
         "funai-kling-frames",

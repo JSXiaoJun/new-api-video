@@ -28,7 +28,9 @@ def _ensure_protocol_constraint(conn: sqlite3.Connection) -> None:
     ).fetchone()
     if row is not None and all(
         protocol in (row["sql"] or "")
-        for protocol in ("ark-v3", "o10-grok", "funai", "autodl-comfyui", "rolldek")
+        for protocol in (
+            "ark-v3", "o10-grok", "sub2api-video", "funai", "autodl-comfyui", "rolldek"
+        )
     ):
         return
 
@@ -44,7 +46,7 @@ def _ensure_protocol_constraint(conn: sqlite3.Connection) -> None:
                 upstream_id INTEGER NOT NULL REFERENCES upstreams(id) ON DELETE CASCADE,
                 model TEXT NOT NULL,
                 upstream_model TEXT NOT NULL,
-                protocol TEXT NOT NULL CHECK(protocol IN ('videos', 'seedance', 'ark-v3', 'o10-grok', 'funai', 'autodl-comfyui', 'rolldek')),
+                protocol TEXT NOT NULL CHECK(protocol IN ('videos', 'seedance', 'ark-v3', 'o10-grok', 'sub2api-video', 'funai', 'autodl-comfyui', 'rolldek')),
                 profile TEXT NOT NULL DEFAULT 'default',
                 duration_override INTEGER,
                 durations_json TEXT NOT NULL DEFAULT '[]',
@@ -133,7 +135,7 @@ def initialize() -> None:
                 upstream_id INTEGER NOT NULL REFERENCES upstreams(id) ON DELETE CASCADE,
                 model TEXT NOT NULL,
                 upstream_model TEXT NOT NULL,
-                protocol TEXT NOT NULL CHECK(protocol IN ('videos', 'seedance', 'ark-v3', 'o10-grok', 'funai', 'autodl-comfyui', 'rolldek')),
+                protocol TEXT NOT NULL CHECK(protocol IN ('videos', 'seedance', 'ark-v3', 'o10-grok', 'sub2api-video', 'funai', 'autodl-comfyui', 'rolldek')),
                 profile TEXT NOT NULL DEFAULT 'default',
                 duration_override INTEGER,
                 resolutions_json TEXT NOT NULL DEFAULT '[]',

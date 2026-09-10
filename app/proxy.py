@@ -13,7 +13,7 @@ from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from . import ark_video, database
-from .channels import autodl_comfyui, funai, o10_grok, pro666, rolldek
+from .channels import autodl_comfyui, funai, o10_grok, pro666, rolldek, sub2api_video
 from .config import settings
 from .model_profiles import transform_create_payload
 
@@ -225,6 +225,8 @@ async def create_video(
         upstream_payload = autodl_comfyui.transform_create_payload(routed_payload)
     elif protocol == o10_grok.PROTOCOL:
         upstream_payload = o10_grok.transform_create_payload(routed_payload)
+    elif protocol == sub2api_video.PROTOCOL:
+        upstream_payload = sub2api_video.transform_create_payload(routed_payload)
     elif protocol == rolldek.PROTOCOL:
         upstream_payload = rolldek.transform_create_payload(routed_payload)
     else:
@@ -240,6 +242,8 @@ async def create_video(
         if protocol == autodl_comfyui.PROTOCOL
         else o10_grok.CREATE_PATH
         if protocol == o10_grok.PROTOCOL
+        else sub2api_video.CREATE_PATH
+        if protocol == sub2api_video.PROTOCOL
         else rolldek.CREATE_PATH
         if protocol == rolldek.PROTOCOL
         else "/v1/video/generations" if protocol == "seedance" else "/v1/videos"
@@ -308,6 +312,8 @@ async def create_video(
         if protocol == autodl_comfyui.PROTOCOL
         else o10_grok.extract_create_task_id(upstream_payload)
         if protocol == o10_grok.PROTOCOL
+        else sub2api_video.extract_create_task_id(upstream_payload)
+        if protocol == sub2api_video.PROTOCOL
         else rolldek.extract_create_task_id(upstream_payload)
         if protocol == rolldek.PROTOCOL
         else str(upstream_payload.get("task_id") or upstream_payload.get("id") or "").strip()
@@ -407,6 +413,12 @@ def normalize_task_payload(task: dict[str, Any], payload: dict[str, Any]) -> tup
         video_url = fields["video_url"]
         error_value = fields["error"]
         progress = fields["progress"]
+    elif task["protocol"] == sub2api_video.PROTOCOL:
+        fields = sub2api_video.extract_task_fields(payload)
+        status_value = fields["status"]
+        video_url = fields["video_url"]
+        error_value = fields["error"]
+        progress = fields["progress"]
     elif task["protocol"] == rolldek.PROTOCOL:
         fields = rolldek.extract_task_fields(payload)
         status_value = fields["status"]
@@ -465,6 +477,8 @@ async def fetch_task(task_id: str, timeout_seconds: float | None = None) -> JSON
         if task["protocol"] == autodl_comfyui.PROTOCOL
         else o10_grok.task_path(task_id)
         if task["protocol"] == o10_grok.PROTOCOL
+        else sub2api_video.task_path(task_id)
+        if task["protocol"] == sub2api_video.PROTOCOL
         else rolldek.task_path(task_id)
         if task["protocol"] == rolldek.PROTOCOL
         else f"/v1/videos/{task_id}"
@@ -629,6 +643,8 @@ async def stream_content(task_id: str, request: Request) -> StreamingResponse:
         raise HTTPException(status_code=502, detail=f"{provider} task completed without a video URL")
     elif task["protocol"] == o10_grok.PROTOCOL:
         source_url = f"{task['base_url']}{o10_grok.content_path(task_id)}"
+    elif task["protocol"] == sub2api_video.PROTOCOL:
+        source_url = f"{task['base_url']}{sub2api_video.content_path(task_id)}"
     elif task["protocol"] == funai.PROTOCOL:
         source_url = funai.api_url(task["base_url"], funai.content_path(task_id))
     elif task["protocol"] == rolldek.PROTOCOL:

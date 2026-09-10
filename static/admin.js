@@ -448,7 +448,7 @@ function addRouteRow(route = {}) {
   const mappedUpstreamModel = route.upstream_model || route.mapped_upstream_model || ''
   const selectedDurations = routeDurations(route)
   const protocol = route.protocol || 'videos'
-  const selectedProfile = protocol === 'ark-v3' ? (route.profile || 'ark-seedance-2') : protocol === 'o10-grok' ? (route.profile || 'grok-auto') : protocol === 'funai' ? (route.profile || 'funai-veo') : protocol === 'autodl-comfyui' ? (route.profile || 'autodl-comfyui') : protocol === 'rolldek' ? (route.profile || 'rolldek-sd2-ch4') : (route.profile || 'default')
+  const selectedProfile = protocol === 'ark-v3' ? (route.profile || 'ark-seedance-2') : protocol === 'o10-grok' ? (route.profile || 'grok-auto') : protocol === 'sub2api-video' ? (route.profile || 'sub2api-video') : protocol === 'funai' ? (route.profile || 'funai-veo') : protocol === 'autodl-comfyui' ? (route.profile || 'autodl-comfyui') : protocol === 'rolldek' ? (route.profile || 'rolldek-sd2-ch4') : (route.profile || 'default')
   row.dataset.durations = JSON.stringify(selectedDurations)
   row.innerHTML = `
     <input data-route-field="model" maxlength="160" value="${escapeHtml(route.model || '')}" placeholder="对外模型名" aria-label="对外模型名">
@@ -457,6 +457,7 @@ function addRouteRow(route = {}) {
       <option value="seedance"${protocol === 'seedance' ? ' selected' : ''}>seedance</option>
       <option value="ark-v3"${protocol === 'ark-v3' ? ' selected' : ''}>ark-v3（方舟原生）</option>
       <option value="o10-grok"${protocol === 'o10-grok' ? ' selected' : ''}>o10-grok（Grok）</option>
+      <option value="sub2api-video"${protocol === 'sub2api-video' ? ' selected' : ''}>sub2api-video（Sub2API）</option>
       <option value="funai"${protocol === 'funai' ? ' selected' : ''}>funai（FunAI）</option>
       <option value="autodl-comfyui"${protocol === 'autodl-comfyui' ? ' selected' : ''}>autodl-comfyui（AutoDL）</option>
       <option value="rolldek"${protocol === 'rolldek' ? ' selected' : ''}>rolldek（RollDek）</option>
@@ -681,13 +682,15 @@ routeRows.addEventListener('change', (event) => {
     profile.value = 'ark-seedance-2'
   } else if (target.value === 'o10-grok') {
     profile.value = 'grok-auto'
+  } else if (target.value === 'sub2api-video') {
+    profile.value = 'sub2api-video'
   } else if (target.value === 'funai') {
     profile.value = 'funai-veo'
   } else if (target.value === 'autodl-comfyui') {
     profile.value = 'autodl-comfyui'
   } else if (target.value === 'rolldek') {
     profile.value = 'rolldek-sd25-ch1-15s'
-  } else if (profile.value === 'ark-seedance-2' || profile.value === 'autodl-comfyui' || profile.value.startsWith('funai-') || profile.value.startsWith('rolldek-')) {
+  } else if (profile.value === 'ark-seedance-2' || profile.value === 'autodl-comfyui' || profile.value === 'sub2api-video' || profile.value.startsWith('funai-') || profile.value.startsWith('rolldek-')) {
     profile.value = 'default'
   }
 })
