@@ -93,6 +93,10 @@ profile, duration list, resolution, reference-image count, and audio/video suppo
 The Pro666 adapter is isolated in `app/channels/pro666.py`. It supports the documented `video-v1`, `sd2-431`,
 `sd2.5-480p`, `sd2.5-720p`, `sd2-mini`, Firefly Seedance 2, and `veo-omni` payload families, plus the legacy
 `sd2-5-720p` name and the currently advertised `video-v1-face`, `video-900`, and `sd2-5-vref-720p` aliases.
+It also recognizes `v1-seedance-2.0-480p`, `v1-seedance-2.0-720p`, and
+`v1-seedance-2.0-mini-720p` as Pro666 `/v1/videos` models. These three support 4–15 seconds,
+six aspect ratios, up to 9 images, 3 reference videos, and 3 reference audios; their output
+resolution is fixed by the model name.
 Firefly model names contain `seedance`, but they must keep
 the auto-selected `videos` protocol because Pro666 exposes them through `POST /v1/videos` rather than
 `POST /v1/video/generations`.

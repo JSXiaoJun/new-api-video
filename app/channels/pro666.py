@@ -81,6 +81,42 @@ PROFILE_DEFINITIONS: dict[str, dict[str, Any]] = {
             'maxAudios': 3,
         },
     },
+    'pro666-v1-seedance-480p': {
+        'label': 'Pro666 · v1-seedance-2.0 480p',
+        'request_format': 'pro666-sd2',
+        'capabilities': {
+            'ratios': RATIOS_WIDE,
+            'durations': list(range(4, 16)),
+            'resolutions': ['480p'],
+            'maxImages': 9,
+            'referenceVideo': True,
+            'maxAudios': 3,
+        },
+    },
+    'pro666-v1-seedance-720p': {
+        'label': 'Pro666 · v1-seedance-2.0 720p',
+        'request_format': 'pro666-sd2',
+        'capabilities': {
+            'ratios': RATIOS_WIDE,
+            'durations': list(range(4, 16)),
+            'resolutions': ['720p'],
+            'maxImages': 9,
+            'referenceVideo': True,
+            'maxAudios': 3,
+        },
+    },
+    'pro666-v1-seedance-mini-720p': {
+        'label': 'Pro666 · v1-seedance-2.0 mini 720p',
+        'request_format': 'pro666-sd2',
+        'capabilities': {
+            'ratios': RATIOS_WIDE,
+            'durations': list(range(4, 16)),
+            'resolutions': ['720p'],
+            'maxImages': 9,
+            'referenceVideo': True,
+            'maxAudios': 3,
+        },
+    },
     'pro666-firefly-480p': {
         'label': 'Pro666 · Firefly 480p',
         'request_format': 'pro666-firefly',
@@ -149,6 +185,12 @@ def suggest_route(model: str) -> dict[str, Any] | None:
         return _route('pro666-sd2-5-480p', list(range(4, 31)), 30, True, True)
     if normalized == 'sd2-mini':
         return _route('pro666-sd2-mini', list(range(4, 16)), 9, True, True)
+    if normalized == 'v1-seedance-2.0-480p':
+        return _route('pro666-v1-seedance-480p', list(range(4, 16)), 9, True, True)
+    if normalized == 'v1-seedance-2.0-720p':
+        return _route('pro666-v1-seedance-720p', list(range(4, 16)), 9, True, True)
+    if normalized == 'v1-seedance-2.0-mini-720p':
+        return _route('pro666-v1-seedance-mini-720p', list(range(4, 16)), 9, True, True)
     if normalized == 'sd2-5-vref-720p':
         return _route('pro666-sd2-5', list(range(4, 31)), 30, True, True)
     if normalized.startswith('firefly-seedance2'):

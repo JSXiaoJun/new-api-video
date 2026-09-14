@@ -1606,6 +1606,9 @@ class CoreTests(unittest.TestCase):
             "sd2-mini",
             "sd2-5-720p",
             "sd2-5-vref-720p",
+            "v1-seedance-2.0-480p",
+            "v1-seedance-2.0-720p",
+            "v1-seedance-2.0-mini-720p",
             "veo-omni",
             "video-900",
             "video-v1",
@@ -1621,6 +1624,15 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(routes["sd2.5-480p"]["profile"], "pro666-sd2-5-480p")
         self.assertEqual(routes["sd2.5-720p"]["profile"], "pro666-sd2-5")
         self.assertEqual(routes["sd2-mini"]["profile"], "pro666-sd2-mini")
+        self.assertEqual(routes["v1-seedance-2.0-480p"]["profile"], "pro666-v1-seedance-480p")
+        self.assertEqual(routes["v1-seedance-2.0-720p"]["profile"], "pro666-v1-seedance-720p")
+        self.assertEqual(
+            routes["v1-seedance-2.0-mini-720p"]["profile"],
+            "pro666-v1-seedance-mini-720p",
+        )
+        self.assertEqual(routes["v1-seedance-2.0-480p"]["protocol"], "videos")
+        self.assertEqual(routes["v1-seedance-2.0-720p"]["protocol"], "videos")
+        self.assertEqual(routes["v1-seedance-2.0-mini-720p"]["protocol"], "videos")
         self.assertEqual(routes["sd2-5-vref-720p"]["profile"], "pro666-sd2-5")
         self.assertEqual(routes["veo-omni"]["profile"], "pro666-veo-omni")
         self.assertEqual(routes["video-900"]["profile"], "pro666-video-900")
@@ -1939,6 +1951,41 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(mini["resolutions"], ["720p"])
         self.assertEqual(mini["maxImages"], 9)
         self.assertEqual(mini["maxAudios"], 3)
+
+        v1_480p = capabilities_for("pro666-v1-seedance-480p")
+        v1_720p = capabilities_for("pro666-v1-seedance-720p")
+        v1_mini = capabilities_for("pro666-v1-seedance-mini-720p")
+        for capabilities in (v1_480p, v1_720p, v1_mini):
+            self.assertEqual(capabilities["durations"], list(range(4, 16)))
+            self.assertEqual(capabilities["maxImages"], 9)
+            self.assertEqual(capabilities["maxAudios"], 3)
+            self.assertTrue(capabilities["referenceVideo"])
+        self.assertEqual(v1_480p["resolutions"], ["480p"])
+        self.assertEqual(v1_720p["resolutions"], ["720p"])
+        self.assertEqual(v1_mini["resolutions"], ["720p"])
+
+    def test_pro666_v1_seedance_uses_multimodal_video_payload(self):
+        payload = transform_create_payload(
+            {
+                "model": "v1-seedance-2.0-720p",
+                "prompt": "参考 @Image1 @Video1 @Audio1",
+                "duration": 8,
+                "aspect_ratio": "16:9",
+                "generate_audio": True,
+                "image_urls": ["https://cdn/image.png"],
+                "video_urls": ["https://cdn/video.mp4"],
+                "audio_urls": ["https://cdn/audio.mp3"],
+            },
+            "pro666-v1-seedance-720p",
+        )
+
+        self.assertEqual(payload["model"], "v1-seedance-2.0-720p")
+        self.assertEqual(payload["duration"], 8)
+        self.assertEqual(payload["aspect_ratio"], "16:9")
+        self.assertTrue(payload["generateAudio"])
+        self.assertEqual(payload["images"], ["https://cdn/image.png"])
+        self.assertEqual(payload["videos"], ["https://cdn/video.mp4"])
+        self.assertEqual(payload["audios"], ["https://cdn/audio.mp3"])
 
     def test_pro666_sd2_accepts_current_first_last_image_fields(self):
         payload = transform_create_payload(
