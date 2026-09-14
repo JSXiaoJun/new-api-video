@@ -118,6 +118,7 @@ def build_integration_document(
         "- `model` 和 `prompt` 必填。",
         "- 本接口不接受 `multipart/form-data` 文件上传。",
         "- 参考图片、视频和音频必须是服务端可访问的公网 HTTP/HTTPS URL。",
+        "- 参考图片不支持 Base64、`data:image/...`、本地路径或 `file://` 地址；请先上传图片，再传入公网 HTTP/HTTPS URL。",
         "- 素材 URL 在不带 `Range` 的完整 `GET` 请求下必须返回 `200 OK` 和正确的图片、视频或音频 `Content-Type`；不能要求 Cookie、登录态或临时请求头。",
         "- 时长使用 `duration` 字段，比例使用 `aspect_ratio`，分辨率使用 `resolution`。",
         "- 每个模型支持的分辨率可能不同，请以本文档“当前开放模型”和模型参数表中的动态配置为准。",

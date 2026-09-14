@@ -26,6 +26,88 @@ MAX_UPSTREAM_ERROR_MESSAGE_LENGTH = 1000
 # between Cloudflare and the origin, not a failed video-generation job.
 PENDING_POLL_STATUS_CODES = {409, 429}
 
+_IMAGE_FIELD_NAMES = {
+    "image",
+    "images",
+    "imageurl",
+    "imageurls",
+    "imagebase64",
+    "imageref",
+    "imagerefs",
+    "inputimage",
+    "inputimages",
+    "initimage",
+    "initimages",
+    "referenceimage",
+    "referenceimages",
+    "referenceimageurl",
+    "referenceimageurls",
+    "firstimage",
+    "lastimage",
+    "startimageurl",
+    "endimageurl",
+    "firstframe",
+    "lastframe",
+    "firstframeimage",
+    "lastframeimage",
+}
+_IMAGE_URL_KEYS = {"url", "uri", "href"}
+_INLINE_IMAGE_KEYS = {"data", "base64", "b64json", "bytes", "content", "source"}
+
+
+def validate_online_image_inputs(payload: dict[str, Any]) -> None:
+    """Reject inline/base64 image data before it reaches a video upstream.
+
+    Video providers need to download reference media themselves, so image
+    fields must contain publicly reachable HTTP(S) URLs. The walker accepts
+    URL arrays and common OpenAI-style ``image_url: {url: ...}`` objects.
+    """
+    for value in _iter_image_candidates(payload):
+        if not isinstance(value, str) or not value.strip():
+            continue
+        candidate = value.strip()
+        parsed = urlsplit(candidate)
+        if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "图片必须传入在线链接（http:// 或 https:// URL），不支持 Base64；"
+                    "请先将图片上传到可公开访问的地址后再提交。"
+                ),
+            )
+
+
+def _iter_image_candidates(payload: Any):
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            normalized = re.sub(r"[^a-z0-9]", "", str(key).lower())
+            if normalized in _IMAGE_FIELD_NAMES or normalized.startswith(("imageurl", "imageref", "referenceimage")):
+                yield from _iter_image_field_values(value)
+            elif isinstance(value, (dict, list)):
+                yield from _iter_image_candidates(value)
+    elif isinstance(payload, list):
+        for item in payload:
+            yield from _iter_image_candidates(item)
+
+
+def _iter_image_field_values(value: Any):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, list):
+        for item in value:
+            yield from _iter_image_field_values(item)
+    elif isinstance(value, dict):
+        # OpenAI-style image objects put the actual URL below ``url`` or
+        # ``image_url``; ignore metadata such as ``type``.
+        for key, child in value.items():
+            normalized = re.sub(r"[^a-z0-9]", "", str(key).lower())
+            if normalized in _IMAGE_URL_KEYS:
+                yield from _iter_image_field_values(child)
+            elif normalized in _INLINE_IMAGE_KEYS:
+                yield from _iter_image_field_values(child)
+            elif normalized in _IMAGE_FIELD_NAMES or normalized.startswith(("imageurl", "imageref", "referenceimage")):
+                yield from _iter_image_field_values(child)
+
 
 def should_preserve_task_on_poll_error(response: httpx.Response) -> bool:
     """Return whether a failed poll must leave the task pending.
@@ -199,6 +281,8 @@ async def create_video(
     upstream = database.select_upstream(model)
     if upstream is None:
         raise HTTPException(status_code=404, detail=f"No enabled upstream for model {model}")
+
+    validate_online_image_inputs(payload)
 
     protocol = upstream["protocol"]
     allows_promptless = (
