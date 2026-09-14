@@ -11,6 +11,10 @@ class RollDekAdapterTests(unittest.TestCase):
         self.assertTrue(rolldek.is_rolldek_base_url("https://api.rolldek.com/v1"))
         self.assertFalse(rolldek.is_rolldek_base_url("https://example.com"))
         self.assertEqual(rolldek.suggest_route("sd-2-ch3")["profile"], "rolldek-sd2-ch3")
+        self.assertEqual(rolldek.suggest_route("sd-2.0-ch1")["durations"], list(range(4, 16)))
+        self.assertEqual(rolldek.suggest_route("sd-2.0-ch1")["resolutions"], ["720p"])
+        self.assertEqual(rolldek.suggest_route("sd-2.5-ch1")["image_count"], 30)
+        self.assertEqual(rolldek.suggest_route("sd-2.5-ch2")["image_count"], 10)
         self.assertEqual(rolldek.suggest_route("sd-2.5-ch3")["durations"], [30])
         self.assertEqual(rolldek.suggest_route("sd-2.5-ch1-15s")["image_count"], 30)
         self.assertEqual(rolldek.suggest_route("sd-2.0-ch4")["image_count"], 9)
@@ -65,6 +69,40 @@ class RollDekAdapterTests(unittest.TestCase):
         self.assertEqual(len(payload["image_urls"]), 30)
         self.assertEqual(len(payload["video_urls"]), 10)
         self.assertEqual(len(payload["audio_urls"]), 10)
+
+    def test_new_ch1_and_ch2_models_use_their_field_contracts(self):
+        ch1 = rolldek.transform_create_payload({
+            "model": "sd-2.5-ch1",
+            "prompt": "参考素材",
+            "duration": 20,
+            "resolution": "720p",
+            "generate_audio": True,
+            "images": [f"https://cdn.example/{index}.png" for index in range(35)],
+            "videos": [f"https://cdn.example/{index}.mp4" for index in range(12)],
+            "audios": [f"https://cdn.example/{index}.mp3" for index in range(12)],
+        })
+        self.assertEqual(ch1["duration"], 20)
+        self.assertEqual(ch1["resolution"], "720p")
+        self.assertTrue(ch1["with_audio"])
+        self.assertEqual(len(ch1["image_urls"]), 30)
+        self.assertEqual(len(ch1["video_urls"]), 10)
+        self.assertEqual(len(ch1["audio_urls"]), 10)
+        self.assertNotIn("images", ch1)
+
+        ch2 = rolldek.transform_create_payload({
+            "model": "sd-2.5-ch2",
+            "prompt": "参考素材",
+            "seconds": 12,
+            "with_audio": False,
+            "image_urls": [f"https://cdn.example/{index}.png" for index in range(12)],
+            "video_urls": [f"https://cdn.example/{index}.mp4" for index in range(12)],
+            "audio_urls": [f"https://cdn.example/{index}.mp3" for index in range(12)],
+        })
+        self.assertEqual(ch2["duration"], 12)
+        self.assertFalse(ch2["generateAudio"])
+        self.assertEqual(len(ch2["images"]), 10)
+        self.assertEqual(len(ch2["videos"]), 10)
+        self.assertEqual(len(ch2["audios"]), 10)
 
 
 if __name__ == "__main__":

@@ -1,7 +1,8 @@
 """RollDek video API adapter.
 
-RollDek exposes an OpenAI-compatible asynchronous video API, but its CH3
-models use ``image_refs`` while CH1 and CH4 accept different multimodal field sets.
+RollDek exposes an OpenAI-compatible asynchronous video API, but its Seedance
+families accept different multimodal field sets (CH1 uses ``*_urls``, CH2/CH4
+use plural media fields, and CH3 uses ``image_refs``).
 Keeping these mappings here prevents RollDek-specific aliases from leaking
 into the existing upstream adapters.
 """
@@ -16,6 +17,9 @@ PROTOCOL = "rolldek"
 CREATE_PATH = "/v1/videos"
 
 KNOWN_MODELS = (
+    "sd-2.0-ch1",
+    "sd-2.5-ch1",
+    "sd-2.5-ch2",
     "sd-2-ch3",
     "sd-2.5-ch3",
     "sd-2.5-ch1-15s",
@@ -24,6 +28,48 @@ KNOWN_MODELS = (
 )
 
 PROFILE_DEFINITIONS: dict[str, dict[str, Any]] = {
+    "rolldek-sd20-ch1": {
+        "label": "RollDek · Seedance 2.0 CH1",
+        "request_format": "rolldek-ch1",
+        "capabilities": {
+            "ratios": ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
+            "durations": list(range(4, 16)),
+            "resolutions": ["720p"],
+            "maxImages": 9,
+            "referenceVideo": True,
+            "maxReferenceVideoDuration": 15,
+            "maxAudios": 3,
+            "maxReferences": 15,
+        },
+    },
+    "rolldek-sd25-ch1": {
+        "label": "RollDek · Seedance 2.5 CH1",
+        "request_format": "rolldek-ch1",
+        "capabilities": {
+            "ratios": ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
+            "durations": list(range(4, 31)),
+            "resolutions": ["720p"],
+            "maxImages": 30,
+            "referenceVideo": True,
+            "maxReferenceVideoDuration": 30,
+            "maxAudios": 10,
+            "maxReferences": 50,
+        },
+    },
+    "rolldek-sd25-ch2": {
+        "label": "RollDek · Seedance 2.5 CH2",
+        "request_format": "rolldek-ch2",
+        "capabilities": {
+            "ratios": ["16:9", "9:16", "1:1", "4:3"],
+            "durations": list(range(4, 31)),
+            "resolutions": ["720p"],
+            "maxImages": 10,
+            "referenceVideo": True,
+            "maxReferenceVideoDuration": 30,
+            "maxAudios": 10,
+            "maxReferences": 30,
+        },
+    },
     "rolldek-sd2-ch3": {
         "label": "RollDek · Seedance 2.0 CH3",
         "request_format": "rolldek-ch3",
@@ -88,14 +134,20 @@ def is_rolldek_base_url(base_url: str) -> bool:
 
 def suggest_route(model: str) -> dict[str, Any] | None:
     normalized = model.strip().lower()
+    if normalized == "sd-2.0-ch1":
+        return _route("rolldek-sd20-ch1", list(range(4, 16)), 9, True, True, ["720p"])
+    if normalized == "sd-2.5-ch1":
+        return _route("rolldek-sd25-ch1", list(range(4, 31)), 30, True, True, ["720p"])
+    if normalized == "sd-2.5-ch2":
+        return _route("rolldek-sd25-ch2", list(range(4, 31)), 10, True, True, ["720p"])
     if normalized == "sd-2-ch3":
-        return _route("rolldek-sd2-ch3", [10], 9, False, False)
+        return _route("rolldek-sd2-ch3", [10], 9, False, False, ["720p"])
     if normalized == "sd-2.5-ch3":
-        return _route("rolldek-sd25-ch3", [30], 9, False, False)
+        return _route("rolldek-sd25-ch3", [30], 9, False, False, ["720p"])
     if normalized == "sd-2.5-ch1-15s":
-        return _route("rolldek-sd25-ch1-15s", [15], 30, True, True)
+        return _route("rolldek-sd25-ch1-15s", [15], 30, True, True, ["480p", "720p", "1080p"])
     if normalized in {"sd-2-ch4", "sd-2.0-ch4"}:
-        return _route("rolldek-sd2-ch4", list(range(1, 61)), 9, True, True)
+        return _route("rolldek-sd2-ch4", list(range(1, 61)), 9, True, True, ["720p"])
     return None
 
 
@@ -105,6 +157,7 @@ def _route(
     image_count: int,
     supports_video: bool,
     supports_audio: bool,
+    resolutions: list[str] | None = None,
 ) -> dict[str, Any]:
     return {
         "profile": profile,
@@ -113,6 +166,7 @@ def _route(
         "supports_image": image_count > 0,
         "supports_video": supports_video,
         "supports_audio": supports_audio,
+        "resolutions": list(resolutions or []),
     }
 
 
@@ -159,6 +213,48 @@ def transform_create_payload(payload: dict[str, Any]) -> dict[str, Any]:
             result["size"] = payload["size"]
         if images:
             result["image_refs"] = images[:9]
+        return result
+
+    if model in {"sd-2.0-ch1", "sd-2.5-ch1"}:
+        limits = {
+            "sd-2.0-ch1": (9, 3, 3),
+            "sd-2.5-ch1": (30, 10, 10),
+        }[model]
+        result["duration"] = duration if duration is not None else 4
+        # These catalog entries are fixed to 720p.  Do not forward an
+        # incompatible client resolution to the upstream.
+        result["resolution"] = "720p"
+        if ratio:
+            result["aspect_ratio"] = ratio
+        with_audio = _audio_flag(payload)
+        if with_audio is not None:
+            result["with_audio"] = with_audio
+        if images:
+            result["image_urls"] = images[:limits[0]]
+        if videos:
+            result["video_urls"] = videos[:limits[1]]
+        if audios:
+            result["audio_urls"] = audios[:limits[2]]
+        return result
+
+    if model == "sd-2.5-ch2":
+        result["duration"] = duration if duration is not None else 4
+        result["resolution"] = "720p"
+        if ratio:
+            result["aspect_ratio"] = ratio
+        with_audio = _audio_flag(payload)
+        if with_audio is not None:
+            result["generateAudio"] = with_audio
+        if images:
+            result["images"] = images[:10]
+        if videos:
+            result["videos"] = videos[:10]
+        if audios:
+            result["audios"] = audios[:10]
+        if first_image:
+            result["first_image"] = first_image
+        if last_image:
+            result["last_image"] = last_image
         return result
 
     if model == "sd-2.5-ch1-15s":
@@ -238,6 +334,13 @@ def _first(payload: dict[str, Any], *keys: str) -> Any:
         value = payload.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip()
+    return None
+
+
+def _audio_flag(payload: dict[str, Any]) -> Any:
+    for key in ("with_audio", "generateAudio", "generate_audio"):
+        if payload.get(key) is not None:
+            return payload[key]
     return None
 
 

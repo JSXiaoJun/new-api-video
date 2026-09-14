@@ -309,7 +309,7 @@ def capabilities_for(
 
 def transform_create_payload(payload: dict[str, Any], profile: str) -> dict[str, Any]:
     request_format = PROFILE_DEFINITIONS[profile]['request_format']
-    if request_format in {'rolldek-ch3', 'rolldek-ch4'}:
+    if request_format in {'rolldek-ch1', 'rolldek-ch2', 'rolldek-ch3', 'rolldek-ch4'}:
         return rolldek.transform_create_payload(payload)
     if request_format == autodl_comfyui.PROFILE:
         return autodl_comfyui.transform_create_payload(payload)

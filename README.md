@@ -75,6 +75,15 @@ discovery suggests a format only for new rows; editing and later synchronization
 Synchronization is non-destructive: models missing from a later discovery response remain in the editor. If an upstream
 renames a model, update that route's `映射上游模型名` manually, verify its saved `请求格式`, then save the upstream.
 
+### RollDek Seedance Channel
+
+为 `https://rolldek.com` 新建视频上游并点击 `同步上游模型`。RollDek 使用独立的 `rolldek` 协议和
+`POST /v1/videos`、`GET /v1/videos/{task_id}` 接口；适配器会按模型自动选择请求字段和能力范围。
+当前适配器覆盖截图中的 `sd-2.0-ch1`（4–15 秒、9 图/3 视频/3 音频）、`sd-2.5-ch1`
+（4–30 秒、30 图/10 视频/10 音频）和 `sd-2.5-ch2`（4–30 秒、10 图/10 视频/10 音频），三者固定
+使用 720p。CH1 模型转发 `image_urls`、`video_urls`、`audio_urls`，CH2 模型转发
+`images`、`videos`、`audios`；旧的 CH3、CH4 和 `sd-2.5-ch1-15s` 兼容路径保持不变。
+
 ### Pro666 Channel
 
 Add Pro666 as a regular video upstream with `https://api.pro666.top` as its Base URL and the channel API key, then use
