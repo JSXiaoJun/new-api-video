@@ -384,6 +384,8 @@ async def create_video(
 
     try:
         upstream_payload = response.json()
+        if not isinstance(upstream_payload, dict):
+            raise ValueError("upstream create payload is not a JSON object")
     except ValueError as exc:
         sanitized = {"detail": "Upstream returned invalid JSON"}
         database.record_audit_event(relay_request_id, "create", response.status_code, response.text, sanitized)
@@ -596,6 +598,8 @@ async def fetch_task(task_id: str, timeout_seconds: float | None = None) -> JSON
         return error_response
     try:
         payload = response.json()
+        if not isinstance(payload, dict):
+            raise ValueError("upstream task payload is not a JSON object")
     except ValueError as exc:
         sanitized = {"detail": "Upstream returned invalid JSON"}
         if relay_request_id:
@@ -625,6 +629,11 @@ async def reconcile_pending_tasks(limit: int = 8, stale_seconds: int = 3) -> Non
             except HTTPException:
                 # Connection and malformed-response errors are recorded by fetch_task and retried later.
                 pass
+            except Exception:
+                # This refresh is a side effect of a read-only console request.
+                # Any other failure is logged here instead of being returned to
+                # a caller that only asked for the dashboard.
+                logger.exception("Pending task refresh failed for %s", task_id)
 
     await asyncio.gather(*(refresh(task_id) for task_id in task_ids))
 

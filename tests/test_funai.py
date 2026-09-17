@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 import httpx
+from fastapi import HTTPException
 
 os.environ.setdefault("ADMIN_USERNAME", "admin")
 os.environ.setdefault("ADMIN_PASSWORD", "test-password")
@@ -524,6 +525,66 @@ class FunAIChannelTests(unittest.TestCase):
 
         self.assertEqual({call.args[0] for call in fetch.await_args_list}, {"task_one", "task_two"})
         self.assertTrue(all(call.kwargs["timeout_seconds"] <= 5 for call in fetch.await_args_list))
+
+    def test_poll_of_non_object_json_body_is_reported_as_an_upstream_error(self):
+        task_id = "video_funai_non_object"
+        task = {
+            "task_id": task_id,
+            "api_key": "funai-secret",
+            "base_url": "https://api.funai.works/v1",
+            "protocol": funai.PROTOCOL,
+            "model": "public-kling",
+            "created_at": 100,
+            "relay_request_id": "vrq_funai_non_object",
+            "public_task_id": None,
+        }
+
+        for body in (b"[]", b"null", b'"done"'):
+            with self.subTest(body=body):
+                def build_client(_body=body):
+                    class MockAsyncClient:
+                        def __init__(self, **_kwargs):
+                            pass
+
+                        async def __aenter__(self):
+                            return self
+
+                        async def __aexit__(self, *_args):
+                            return None
+
+                        async def get(self, url, **_kwargs):
+                            return httpx.Response(
+                                200,
+                                content=_body,
+                                headers={"Content-Type": "application/json"},
+                                request=httpx.Request("GET", url),
+                            )
+
+                    return MockAsyncClient
+
+                with (
+                    patch("app.proxy.database.get_task", return_value=task),
+                    patch("app.proxy.database.touch_task"),
+                    patch("app.proxy.database.update_task") as update_task,
+                    patch("app.proxy.database.record_audit_event") as record_audit_event,
+                    patch("app.proxy.httpx.AsyncClient", build_client()),
+                ):
+                    with self.assertRaises(HTTPException) as raised:
+                        asyncio.run(fetch_task(task_id))
+
+                self.assertEqual(raised.exception.status_code, 502)
+                update_task.assert_not_called()
+                record_audit_event.assert_called_once()
+
+    def test_reconciler_logs_unexpected_refresh_failure_instead_of_failing_the_console(self):
+        with (
+            patch("app.proxy.database.list_pending_task_ids", return_value=["task_boom"]),
+            patch("app.proxy.fetch_task", AsyncMock(side_effect=AttributeError("boom"))),
+            patch("app.proxy.logger") as logger,
+        ):
+            asyncio.run(reconcile_pending_tasks(limit=1, stale_seconds=5))
+
+        logger.exception.assert_called_once()
 
 
 if __name__ == "__main__":
