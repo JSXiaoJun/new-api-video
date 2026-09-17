@@ -141,7 +141,14 @@ def asset_links_requested(request: Request | None) -> bool:
 
 
 def public_asset_url(asset_id: str) -> str:
-    return f"{settings.image_public_base_url}/public/images/assets/{asset_id}"
+    """Public link for a stored image.
+
+    Images share the video link base URL, so one runtime setting on the console
+    controls every public link this middleware hands out. That base URL must
+    resolve to this middleware: it is the host that serves both
+    /public/images/assets/... and /public/videos/.../content.
+    """
+    return f"{database.get_public_link_base_url()}/public/images/assets/{asset_id}"
 
 
 def sniff_image_mime(data: bytes) -> str:

@@ -73,14 +73,19 @@ async def retention_cleanup_loop() -> None:
 
     Every step frees disk space, is idempotent, and is safe to run from more
     than one worker. A failed pass never stops later passes.
+
+    Both sweeps are synchronous file and SQLite work, so they run in a worker
+    thread. Walking the storage tree on the event loop would freeze every
+    in-flight request for as long as the pass takes, which on a large store is
+    long enough to fail requests that have nothing to do with retention.
     """
     while True:
         try:
-            image_database.cleanup_storage()
+            await asyncio.to_thread(image_database.cleanup_storage)
         except Exception as exc:
             logger.warning("image storage cleanup failed: %s", exc)
         try:
-            database.purge_history(settings.history_retention_seconds)
+            await asyncio.to_thread(database.purge_history, settings.history_retention_seconds)
         except Exception as exc:
             logger.warning("relay history cleanup failed: %s", exc)
         await asyncio.sleep(settings.image_cleanup_interval_seconds)

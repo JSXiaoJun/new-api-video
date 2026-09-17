@@ -22,7 +22,6 @@ os.environ.setdefault("ADAPTER_API_KEY", "test-adapter-key")
 os.environ.setdefault("ENCRYPTION_KEY", "IougsRYbjtzQcNSrzLV2O-TQ3k1PDP69XcfdR3Lxp3I=")
 os.environ.setdefault("NEW_API_PUBLIC_BASE_URL", "https://zl.yyapi.cloud")
 os.environ.setdefault("PUBLIC_BASE_URL", "https://video-admin.yyapi.cloud")
-os.environ.setdefault("IMAGE_PUBLIC_BASE_URL", "https://image-cdn.yyapi.cloud")
 TEST_DATA_DIR = tempfile.TemporaryDirectory()
 os.environ["DATA_DIR"] = TEST_DATA_DIR.name
 
@@ -280,7 +279,9 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(result.status_code, 200)
         self.assertEqual(captured["payload"]["model"], "native-image-model")
         public_url = json.loads(result.body)["data"][0]["url"]
-        self.assertTrue(public_url.startswith(f"{settings.image_public_base_url}/public/images/assets/img_"))
+        self.assertTrue(
+            public_url.startswith(f"{database.get_public_link_base_url()}/public/images/assets/img_")
+        )
         self.assertNotIn("/v1/images/assets/", public_url)
         self.assertNotIn("cdn.example", public_url)
 
@@ -610,7 +611,7 @@ class CoreTests(unittest.TestCase):
         self.assertNotIn("asset_url", linked_item)
         asset_url = json.loads(linked.headers[ASSET_LINK_HEADER])[0]
         self.assertTrue(
-            asset_url.startswith(f"{settings.image_public_base_url}/public/images/assets/img_")
+            asset_url.startswith(f"{database.get_public_link_base_url()}/public/images/assets/img_")
         )
         served = TestClient(app).get(f"/public/images/assets/{asset_url.rsplit('/', 1)[-1]}")
         self.assertEqual(served.status_code, 200)

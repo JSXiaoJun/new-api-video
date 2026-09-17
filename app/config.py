@@ -62,7 +62,6 @@ class Settings:
     port: int
     api_public_base_url: str
     public_base_url: str
-    image_public_base_url: str
     new_api_public_base_url: str
     new_api_gateway_base_url: str
     workbench_origin: str
@@ -124,9 +123,6 @@ def load_settings() -> Settings:
         port=int(os.getenv("PORT", "8787")),
         api_public_base_url=os.getenv("API_PUBLIC_BASE_URL", DEFAULT_PUBLIC_LINK_BASE_URL).rstrip("/"),
         public_base_url=public_base_url,
-        # Image links are served by this middleware, so they must be advertised
-        # under its own public address rather than a New API host.
-        image_public_base_url=os.getenv("IMAGE_PUBLIC_BASE_URL", public_base_url).rstrip("/"),
         new_api_public_base_url=os.getenv(
             "NEW_API_PUBLIC_BASE_URL",
             DEFAULT_PUBLIC_LINK_BASE_URL,
