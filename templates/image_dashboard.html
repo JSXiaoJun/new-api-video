@@ -44,6 +44,19 @@
         <div><span>24 小时请求</span><strong id="stat-image-requests">0</strong></div>
       </section>
 
+      <section class="table-section" aria-label="图片存储">
+        <div class="section-heading">
+          <div><h2>图片存储</h2><span id="image-storage-detail">正在读取…</span></div>
+          <button id="image-storage-cleanup" class="quiet-button" type="button">立即清理</button>
+        </div>
+        <div class="stats-band storage-band">
+          <div><span>已存图片</span><strong id="storage-files">0</strong></div>
+          <div><span>占用容量</span><strong id="storage-used">0 MB</strong></div>
+          <div><span>容量上限</span><strong id="storage-cap">0 MB</strong></div>
+          <div><span>剩余磁盘</span><strong id="storage-free">0 MB</strong></div>
+        </div>
+      </section>
+
       <section class="table-section">
         <div class="section-heading">
           <h2>画图上游</h2>
@@ -51,7 +64,7 @@
         </div>
         <div class="table-wrap">
           <table class="image-upstream-table">
-            <thead><tr><th>状态</th><th>健康</th><th>名称</th><th>地址</th><th>参数路由</th><th>优先级</th><th class="align-right">操作</th></tr></thead>
+            <thead><tr><th>状态</th><th>健康</th><th>名称</th><th>地址</th><th>模型路由</th><th>优先级</th><th class="align-right">操作</th></tr></thead>
             <tbody id="image-upstream-rows"></tbody>
           </table>
           <div id="image-upstream-empty" class="empty-state" hidden>尚未配置画图上游</div>
@@ -95,18 +108,22 @@
           <label><span>优先级</span><input id="image-upstream-priority" type="number" min="0" max="9999" value="100" required></label>
           <label class="span-two"><span>Base URL</span><input id="image-upstream-base-url" type="url" required placeholder="https://api.example.com"></label>
           <label class="span-two"><span>API Key</span><input id="image-upstream-api-key" type="password" autocomplete="off" placeholder="编辑时留空可保留原密钥"></label>
+          <label><span>接口格式</span><select id="image-upstream-api-format">
+            <option value="openai">OpenAI Images</option>
+            <option value="gemini">Gemini 原生</option>
+          </select></label>
         </div>
 
         <section class="route-editor">
           <div class="field-heading">
-            <div><strong>参数路由</strong></div>
+            <div><strong>模型路由</strong></div>
             <div class="route-editor-actions">
               <button id="discover-image-models" class="quiet-button compact" type="button">获取模型</button>
               <button id="add-image-route" class="quiet-button compact" type="button">添加路由</button>
             </div>
           </div>
           <div class="route-grid route-grid-heading" aria-hidden="true">
-            <span>公开模型</span><span>上游模型</span><span>尺寸</span><span>质量</span><span>接口</span><span>成本 / 次</span><span></span>
+            <span>公开模型</span><span>上游模型</span><span>成本 / 次</span><span></span>
           </div>
           <div id="image-route-rows" class="image-route-rows"></div>
           <datalist id="image-model-suggestions"></datalist>

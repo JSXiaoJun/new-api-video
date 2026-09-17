@@ -37,6 +37,19 @@ def env_bool(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def env_int(name: str, default: int, minimum: int = 0, maximum: int = 2**31 - 1) -> int:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return default
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be an integer") from exc
+    if not minimum <= parsed <= maximum:
+        raise RuntimeError(f"{name} must be between {minimum} and {maximum}")
+    return parsed
+
+
 @dataclass(frozen=True)
 class Settings:
     app_version: str
@@ -49,6 +62,7 @@ class Settings:
     port: int
     api_public_base_url: str
     public_base_url: str
+    image_public_base_url: str
     new_api_public_base_url: str
     new_api_gateway_base_url: str
     workbench_origin: str
@@ -58,6 +72,14 @@ class Settings:
     image_upstream_timeout_seconds: float
     new_api_gateway_timeout_seconds: float
     data_dir: Path
+    history_retention_seconds: int
+    image_storage_dir: Path
+    image_asset_retention_seconds: int
+    image_request_log_retention_seconds: int
+    image_storage_max_bytes: int
+    image_storage_min_free_bytes: int
+    image_max_upstream_response_bytes: int
+    image_cleanup_interval_seconds: int
 
 
 def load_settings() -> Settings:
@@ -85,6 +107,12 @@ def load_settings() -> Settings:
     if not data_dir.is_absolute():
         data_dir = ROOT_DIR / data_dir
 
+    image_storage_dir = Path(os.getenv("IMAGE_STORAGE_DIR", "image-assets"))
+    if not image_storage_dir.is_absolute():
+        image_storage_dir = data_dir / image_storage_dir
+
+    public_base_url = os.getenv("PUBLIC_BASE_URL", "http://127.0.0.1:8787").rstrip("/")
+
     return Settings(
         app_version=os.getenv("APP_VERSION", "dev"),
         admin_username=required["ADMIN_USERNAME"],
@@ -95,7 +123,10 @@ def load_settings() -> Settings:
         host=os.getenv("HOST", "0.0.0.0"),
         port=int(os.getenv("PORT", "8787")),
         api_public_base_url=os.getenv("API_PUBLIC_BASE_URL", DEFAULT_PUBLIC_LINK_BASE_URL).rstrip("/"),
-        public_base_url=os.getenv("PUBLIC_BASE_URL", "http://127.0.0.1:8787").rstrip("/"),
+        public_base_url=public_base_url,
+        # Image links are served by this middleware, so they must be advertised
+        # under its own public address rather than a New API host.
+        image_public_base_url=os.getenv("IMAGE_PUBLIC_BASE_URL", public_base_url).rstrip("/"),
         new_api_public_base_url=os.getenv(
             "NEW_API_PUBLIC_BASE_URL",
             DEFAULT_PUBLIC_LINK_BASE_URL,
@@ -111,6 +142,21 @@ def load_settings() -> Settings:
         image_upstream_timeout_seconds=float(os.getenv("IMAGE_UPSTREAM_TIMEOUT_SECONDS", "360")),
         new_api_gateway_timeout_seconds=float(os.getenv("NEW_API_GATEWAY_TIMEOUT_SECONDS", "930")),
         data_dir=data_dir,
+        history_retention_seconds=env_int("HISTORY_RETENTION_HOURS", 72, 1, 24 * 365) * 3600,
+        image_storage_dir=image_storage_dir,
+        image_asset_retention_seconds=env_int("IMAGE_ASSET_RETENTION_HOURS", 24, 1, 24 * 365) * 3600,
+        image_request_log_retention_seconds=env_int(
+            "IMAGE_REQUEST_LOG_RETENTION_HOURS", 72, 1, 24 * 365
+        )
+        * 3600,
+        image_storage_max_bytes=env_int("IMAGE_STORAGE_MAX_GB", 100, 1, 102400) * 1024**3,
+        image_storage_min_free_bytes=env_int("IMAGE_STORAGE_MIN_FREE_GB", 5, 0, 102400) * 1024**3,
+        # Buffering the upstream reply is what lets us rewrite its URLs and
+        # store its images, so this ceiling is the memory guarantee: peak usage
+        # runs about three times the reply size, and an oversized reply is
+        # refused rather than held in RAM.
+        image_max_upstream_response_bytes=env_int("IMAGE_MAX_RESPONSE_MB", 128, 1, 2048) * 1024**2,
+        image_cleanup_interval_seconds=env_int("IMAGE_CLEANUP_INTERVAL_SECONDS", 600, 30, 86400),
     )
 
 

@@ -883,6 +883,42 @@ def set_public_video_download_limit(value: int) -> int:
     return value
 
 
+def purge_history(retention_seconds: int, now: int | None = None) -> dict[str, int]:
+    """Drop video task and audit history older than the retention window.
+
+    These three tables grow with every relayed task and are never trimmed
+    otherwise. Only settled work is removed: a task that is still queued or
+    processing is kept so an in-flight poll can resolve, and a request whose
+    public video link is still alive is kept until that link expires.
+    """
+    current = int(time.time()) if now is None else now
+    cutoff = current - retention_seconds
+    with connection() as conn:
+        requests = conn.execute(
+            """
+            DELETE FROM audit_requests
+            WHERE created_at < ?
+              AND (public_download_expires_at IS NULL OR public_download_expires_at <= ?)
+            """,
+            (cutoff, current),
+        ).rowcount
+        # audit_events cascade from audit_requests; the sweep only catches rows
+        # orphaned before that relationship existed.
+        events = conn.execute(
+            "DELETE FROM audit_events WHERE relay_request_id NOT IN "
+            "(SELECT relay_request_id FROM audit_requests)"
+        ).rowcount
+        tasks = conn.execute(
+            "DELETE FROM tasks WHERE created_at < ? AND status NOT IN ('queued', 'processing')",
+            (cutoff,),
+        ).rowcount
+    return {
+        "audit_events": max(0, events or 0),
+        "audit_requests": max(0, requests or 0),
+        "tasks": max(0, tasks or 0),
+    }
+
+
 def get_task_by_public_task_id(public_task_id: str) -> dict[str, Any] | None:
     with connection() as conn:
         row = conn.execute(

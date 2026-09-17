@@ -57,6 +57,10 @@ function operationLabel(operation) {
   return operation === 'edit' ? '图生图' : '文生图'
 }
 
+function apiFormatLabel(apiFormat) {
+  return apiFormat === 'gemini' ? 'Gemini 原生' : 'OpenAI Images'
+}
+
 function resultLabel(item) {
   if (item.success) return '成功'
   if (item.error === 'No usable image data returned') return '无图片结果'
@@ -64,10 +68,8 @@ function resultLabel(item) {
 }
 
 function routeBadges(route) {
-  const params = [...route.sizes.map((value) => `尺寸 ${value}`), ...route.qualities.map((value) => `质量 ${value}`)]
   return `
-    <span>${escapeHtml(route.public_model)} → ${escapeHtml(route.upstream_model)}<small>${formatCost(route.cost_per_request)}</small></span>
-    ${params.map((value) => `<span class="parameter-badge">${escapeHtml(value)}</span>`).join('')}`
+    <span>${escapeHtml(route.public_model)} → ${escapeHtml(route.upstream_model)}<small>${formatCost(route.cost_per_request)}</small></span>`
 }
 
 function render() {
@@ -84,7 +86,7 @@ function render() {
         <td><span class="state ${upstream.enabled ? 'enabled' : 'disabled'}">${upstream.enabled ? '启用' : '停用'}</span></td>
         <td><span class="health-state ${escapeHtml(health.state)}">${escapeHtml(healthLabel(health.state))}</span><small class="health-detail">${rate}</small></td>
         <td><strong>${escapeHtml(upstream.name)}</strong></td>
-        <td><code>${escapeHtml(upstream.base_url)}</code></td>
+        <td><code>${escapeHtml(upstream.base_url)}</code><small class="health-detail">${escapeHtml(apiFormatLabel(upstream.api_format))}</small></td>
         <td><div class="route-list image-route-list">${upstream.routes.map(routeBadges).join('')}</div></td>
         <td>${upstream.priority}</td>
         <td class="align-right"><button class="table-action" data-edit-image="${upstream.id}" type="button">编辑</button></td>
@@ -121,6 +123,22 @@ function render() {
     </article>`).join('')
 }
 
+function formatMegabytes(value) {
+  const megabytes = Number(value || 0)
+  if (megabytes >= 1024) return `${(megabytes / 1024).toFixed(2)} GB`
+  return `${megabytes.toFixed(1)} MB`
+}
+
+async function loadStorage() {
+  const report = await api('/admin/api/images/storage')
+  document.querySelector('#storage-files').textContent = report.files
+  document.querySelector('#storage-used').textContent = formatMegabytes(report.tracked_megabytes)
+  document.querySelector('#storage-cap').textContent = formatMegabytes(report.max_megabytes)
+  document.querySelector('#storage-free').textContent = formatMegabytes(report.free_disk_bytes / 1024 / 1024)
+  document.querySelector('#image-storage-detail').textContent =
+    `图片 ${report.asset_retention_seconds / 3600} 小时过期 · 日志保留 ${report.log_retention_seconds / 3600} 小时 · 上限 ${formatMegabytes(report.max_megabytes)}（超出后先删除最早的图片）`
+}
+
 async function loadDashboard() {
   dashboard = await api('/admin/api/images/dashboard')
   render()
@@ -137,24 +155,12 @@ async function loadLogs() {
   render()
 }
 
-function operationMode(operations = ['generation']) {
-  if (operations.includes('generation') && operations.includes('edit')) return 'both'
-  return operations.includes('edit') ? 'edit' : 'generation'
-}
-
 function addRouteRow(route = {}) {
   const row = document.createElement('div')
   row.className = 'route-grid image-route-row'
   row.innerHTML = `
     <input data-route-field="public_model" required maxlength="160" value="${escapeHtml(route.public_model || '')}" placeholder="gpt-image-2" aria-label="公开模型">
     <input data-route-field="upstream_model" required maxlength="160" list="image-model-suggestions" value="${escapeHtml(route.upstream_model || '')}" placeholder="gpt-image-2-pro" aria-label="上游模型">
-    <input data-route-field="sizes" required maxlength="300" value="${escapeHtml((route.sizes || ['*']).join(', '))}" placeholder="1k, 2k, 4k" aria-label="支持尺寸">
-    <input data-route-field="qualities" required maxlength="300" value="${escapeHtml((route.qualities || ['*']).join(', '))}" placeholder="low, medium, high" aria-label="支持质量">
-    <select data-route-field="operation" aria-label="支持接口">
-      <option value="generation"${operationMode(route.operations) === 'generation' ? ' selected' : ''}>文生图</option>
-      <option value="edit"${operationMode(route.operations) === 'edit' ? ' selected' : ''}>图生图</option>
-      <option value="both"${operationMode(route.operations) === 'both' ? ' selected' : ''}>两者</option>
-    </select>
     <input data-route-field="cost" type="number" min="0" max="100000" step="0.000001" required value="${Number(route.cost_per_request || 0)}" aria-label="每次成本">
     <button class="route-remove" type="button" aria-label="删除路由">×</button>`
   routeRows.appendChild(row)
@@ -173,6 +179,7 @@ function openDialog(upstream = null) {
   document.querySelector('#image-upstream-priority').value = upstream?.priority ?? 100
   document.querySelector('#image-upstream-base-url').value = upstream?.base_url || ''
   document.querySelector('#image-upstream-api-key').value = ''
+  document.querySelector('#image-upstream-api-format').value = upstream?.api_format || 'openai'
   document.querySelector('#image-upstream-enabled').checked = upstream?.enabled ?? true
   document.querySelector('#delete-image-upstream').hidden = !upstream
   document.querySelector('#image-form-error').hidden = true
@@ -182,23 +189,12 @@ function openDialog(upstream = null) {
   document.querySelector('#image-upstream-name').focus()
 }
 
-function parseList(value) {
-  const result = [...new Set(value.split(',').map((item) => item.trim().toLowerCase()).filter(Boolean))]
-  return result.length ? result : ['*']
-}
-
 function collectRoutes() {
-  return [...document.querySelectorAll('.image-route-row')].map((row) => {
-    const mode = row.querySelector('[data-route-field="operation"]').value
-    return {
-      public_model: row.querySelector('[data-route-field="public_model"]').value.trim(),
-      upstream_model: row.querySelector('[data-route-field="upstream_model"]').value.trim(),
-      sizes: parseList(row.querySelector('[data-route-field="sizes"]').value),
-      qualities: parseList(row.querySelector('[data-route-field="qualities"]').value),
-      operations: mode === 'both' ? ['generation', 'edit'] : [mode],
-      cost_per_request: Number(row.querySelector('[data-route-field="cost"]').value),
-    }
-  })
+  return [...document.querySelectorAll('.image-route-row')].map((row) => ({
+    public_model: row.querySelector('[data-route-field="public_model"]').value.trim(),
+    upstream_model: row.querySelector('[data-route-field="upstream_model"]').value.trim(),
+    cost_per_request: Number(row.querySelector('[data-route-field="cost"]').value),
+  }))
 }
 
 document.querySelector('#add-image-upstream').addEventListener('click', () => openDialog())
@@ -221,9 +217,25 @@ document.querySelector('#image-upstream-cards').addEventListener('click', (event
   if (id) openDialog(dashboard.upstreams.find((item) => item.id === id))
 })
 
+document.querySelector('#image-storage-cleanup').addEventListener('click', async (event) => {
+  const button = event.currentTarget
+  button.disabled = true
+  try {
+    const result = await api('/admin/api/images/storage/cleanup', { method: 'POST' })
+    const cleaned = result.cleaned
+    await loadStorage()
+    showToast(`已清理：过期图片 ${cleaned.expired_files} 个、容量淘汰 ${cleaned.evicted_files} 个、日志 ${cleaned.request_logs} 条`)
+  } catch (error) {
+    showToast(error.message, 'error')
+  } finally {
+    button.disabled = false
+  }
+})
+
 document.querySelector('#refresh-image-button').addEventListener('click', async () => {
   try {
     await loadDashboard()
+    await loadStorage()
     showToast('数据已刷新')
   } catch (error) {
     showToast(error.message, 'error')
@@ -275,7 +287,7 @@ form.addEventListener('submit', async (event) => {
     const id = document.querySelector('#image-upstream-id').value
     const routes = collectRoutes()
     if (!routes.length || routes.some((route) => !route.public_model || !route.upstream_model)) {
-      throw new Error('请完整填写至少一条参数路由')
+      throw new Error('请完整填写至少一条模型路由')
     }
     await api(id ? `/admin/api/images/upstreams/${id}` : '/admin/api/images/upstreams', {
       method: id ? 'PUT' : 'POST',
@@ -285,6 +297,7 @@ form.addEventListener('submit', async (event) => {
         priority: Number(document.querySelector('#image-upstream-priority').value),
         base_url: document.querySelector('#image-upstream-base-url').value,
         api_key: document.querySelector('#image-upstream-api-key').value,
+        api_format: document.querySelector('#image-upstream-api-format').value,
         enabled: document.querySelector('#image-upstream-enabled').checked,
         routes,
       }),
@@ -318,3 +331,4 @@ document.querySelector('#logout-button').addEventListener('click', async () => {
 })
 
 loadDashboard().catch((error) => showToast(error.message, 'error'))
+loadStorage().catch((error) => showToast(error.message, 'error'))

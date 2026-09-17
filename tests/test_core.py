@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
 import sqlite3
 import tempfile
 import time
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -20,6 +22,7 @@ os.environ.setdefault("ADAPTER_API_KEY", "test-adapter-key")
 os.environ.setdefault("ENCRYPTION_KEY", "IougsRYbjtzQcNSrzLV2O-TQ3k1PDP69XcfdR3Lxp3I=")
 os.environ.setdefault("NEW_API_PUBLIC_BASE_URL", "https://zl.yyapi.cloud")
 os.environ.setdefault("PUBLIC_BASE_URL", "https://video-admin.yyapi.cloud")
+os.environ.setdefault("IMAGE_PUBLIC_BASE_URL", "https://image-cdn.yyapi.cloud")
 TEST_DATA_DIR = tempfile.TemporaryDirectory()
 os.environ["DATA_DIR"] = TEST_DATA_DIR.name
 
@@ -27,12 +30,66 @@ from app import database, image_database
 from app.channels import o10_grok
 from app.config import settings
 from app.main import app, normalize_discovered_models
-from app.image_proxy import classify_health_outcome, forward_json
+from app.image_proxy import ASSET_LINK_HEADER, classify_health_outcome, forward_json
 from app.model_profiles import capabilities_for, transform_create_payload
 from app.proxy import create_video, fetch_task, normalize_status, normalize_task_payload, stream_content, upstream_error
 from app.security import SESSION_COOKIE, create_session, csrf_token, read_session, secret_box
 from fastapi.responses import Response
 from fastapi.testclient import TestClient
+
+
+class FakeImageUpstreamClient:
+    """Mixin that adapts a fake `post` to the bounded streaming read path.
+
+    Production code streams the upstream reply so an oversized body can be
+    refused before it reaches memory, so it calls build_request/send rather than
+    post. Subclasses only need to implement post().
+    """
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_):
+        return None
+
+    def build_request(self, method, url, **kwargs):
+        self._fake_url = url
+        self._fake_kwargs = kwargs
+        return httpx.Request(method, url)
+
+    async def send(self, request, **_kwargs):
+        response = await self.post(self._fake_url, **self._fake_kwargs)
+        return FakeImageUpstreamStream(response)
+
+
+class CannedImageReply:
+    """A reply whose body httpx has already decoded.
+
+    httpx yields decoded bytes from aiter_bytes while leaving the framing
+    headers from the wire format in place, so this is the shape a compressed
+    upstream actually produces.
+    """
+
+    def __init__(self, status_code, headers, body):
+        self.status_code = status_code
+        self.headers = httpx.Headers(headers)
+        self.content = body
+
+
+class FakeImageUpstreamStream:
+    """The streamed view of a canned upstream response."""
+
+    def __init__(self, response):
+        self.status_code = response.status_code
+        self.headers = response.headers
+        self._body = response.content
+
+    async def aiter_bytes(self, chunk_size=65536):
+        for start in range(0, len(self._body), chunk_size):
+            yield self._body[start : start + chunk_size]
+
+    async def aclose(self):
+        return None
 
 
 class CoreTests(unittest.TestCase):
@@ -92,6 +149,10 @@ class CoreTests(unittest.TestCase):
         response = client.get("/admin/images")
         self.assertEqual(response.status_code, 200)
         self.assertIn('id="image-upstream-rows"', response.text)
+        self.assertIn('id="image-storage-cleanup"', response.text)
+        report = client.get("/admin/api/images/storage")
+        self.assertEqual(report.status_code, 200)
+        self.assertIn("max_megabytes", report.json())
 
     def test_image_router_prefers_health_adjusted_low_cost_route(self):
         model = f"image-route-{time.time_ns()}"
@@ -105,9 +166,6 @@ class CoreTests(unittest.TestCase):
                 "routes": [{
                     "public_model": model,
                     "upstream_model": "cheap-native",
-                    "sizes": ["1k"],
-                    "qualities": ["medium"],
-                    "operations": ["generation"],
                     "cost_per_request": 0.04,
                 }],
             }
@@ -122,21 +180,18 @@ class CoreTests(unittest.TestCase):
                 "routes": [{
                     "public_model": model,
                     "upstream_model": "reliable-native",
-                    "sizes": ["1k"],
-                    "qualities": ["medium"],
-                    "operations": ["generation"],
                     "cost_per_request": 0.11,
                 }],
             }
         )
-        selected = image_database.select_route(model, "1024x1024", "medium", "generation")
+        selected = image_database.select_route(model)
         self.assertEqual(selected["upstream_id"], cheap["id"])
         for _ in range(3):
             image_database.record_request(
                 selected, "generation", model, "1k", "medium", False, 503, 10, "failure"
             )
         self.assertEqual(
-            image_database.select_route(model, "1024x1024", "medium", "generation")["upstream_model"],
+            image_database.select_route(model)["upstream_model"],
             "reliable-native",
         )
         self.assertEqual(classify_health_outcome(400, "内容审核未通过"), "neutral")
@@ -146,54 +201,43 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(classify_health_outcome(403, "service unavailable"), "failure")
         self.assertEqual(classify_health_outcome(503), "failure")
 
-    def test_image_router_tracks_generation_and_edit_health_separately(self):
-        model = f"image-operation-health-{time.time_ns()}"
-        preferred = image_database.save_upstream(
+    def test_image_route_forwards_on_the_model_name_alone(self):
+        model = f"image-auto-forward-{time.time_ns()}"
+        gemini_upstream = image_database.save_upstream(
             {
-                "name": "preferred-both-operations",
-                "base_url": "https://preferred-both.example",
-                "api_key": "preferred-key",
+                "name": "gemini-image",
+                "base_url": "https://gemini-image.example",
+                "api_key": "gemini-key",
                 "enabled": True,
                 "priority": 1,
+                "api_format": "gemini",
                 "routes": [{
                     "public_model": model,
-                    "upstream_model": "preferred-native",
-                    "sizes": ["1k"],
-                    "qualities": ["medium"],
-                    "operations": ["generation", "edit"],
+                    "upstream_model": "imagen-4.0-generate-001",
                     "cost_per_request": 0.04,
                 }],
             }
         )
+
+        route = image_database.select_route(model)
+        self.assertEqual(route["upstream_id"], gemini_upstream["id"])
+        self.assertEqual(route["api_format"], "gemini")
+        self.assertEqual(route["api_key"], "gemini-key")
+        self.assertIsNone(image_database.select_route(f"{model}-unknown"))
+
+    def test_image_upstream_defaults_to_the_openai_format(self):
+        model = f"image-default-format-{time.time_ns()}"
         image_database.save_upstream(
             {
-                "name": "generation-fallback",
-                "base_url": "https://generation-fallback.example",
-                "api_key": "fallback-key",
+                "name": "default-format-image",
+                "base_url": "https://default-format.example",
+                "api_key": "default-key",
                 "enabled": True,
                 "priority": 1,
-                "routes": [{
-                    "public_model": model,
-                    "upstream_model": "fallback-native",
-                    "sizes": ["1k"],
-                    "qualities": ["medium"],
-                    "operations": ["generation"],
-                    "cost_per_request": 0.11,
-                }],
+                "routes": [{"public_model": model, "upstream_model": "native", "cost_per_request": 0}],
             }
         )
-
-        selected = image_database.select_route(model, "1024x1024", "medium", "edit")
-        self.assertEqual(selected["upstream_id"], preferred["id"])
-        for _ in range(3):
-            image_database.record_request(
-                selected, "edit", model, "1k", "medium", False, 503, 10, "failure"
-            )
-
-        generation_route = image_database.select_route(
-            model, "1024x1024", "medium", "generation"
-        )
-        self.assertEqual(generation_route["upstream_model"], "preferred-native")
+        self.assertEqual(image_database.select_route(model)["api_format"], "openai")
 
     def test_image_proxy_rewrites_model_and_anonymizes_url(self):
         model = f"image-proxy-{time.time_ns()}"
@@ -207,9 +251,6 @@ class CoreTests(unittest.TestCase):
                 "routes": [{
                     "public_model": model,
                     "upstream_model": "native-image-model",
-                    "sizes": ["*"],
-                    "qualities": ["*"],
-                    "operations": ["generation"],
                     "cost_per_request": 0.08,
                 }],
             }
@@ -221,7 +262,7 @@ class CoreTests(unittest.TestCase):
             json={"data": [{"url": "https://cdn.example/image.png"}]},
         )
 
-        class MockAsyncClient:
+        class MockAsyncClient(FakeImageUpstreamClient):
             async def __aenter__(self):
                 return self
 
@@ -239,7 +280,7 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(result.status_code, 200)
         self.assertEqual(captured["payload"]["model"], "native-image-model")
         public_url = json.loads(result.body)["data"][0]["url"]
-        self.assertTrue(public_url.startswith(f"{database.get_public_link_base_url()}/public/images/assets/img_"))
+        self.assertTrue(public_url.startswith(f"{settings.image_public_base_url}/public/images/assets/img_"))
         self.assertNotIn("/v1/images/assets/", public_url)
         self.assertNotIn("cdn.example", public_url)
 
@@ -255,9 +296,6 @@ class CoreTests(unittest.TestCase):
                 "routes": [{
                     "public_model": model,
                     "upstream_model": "error-native",
-                    "sizes": ["*"],
-                    "qualities": ["*"],
-                    "operations": ["generation"],
                     "cost_per_request": 0.05,
                 }],
             }
@@ -268,7 +306,7 @@ class CoreTests(unittest.TestCase):
             json={"error": {"message": "error-image.example private upstream message"}},
         )
 
-        class MockAsyncClient:
+        class MockAsyncClient(FakeImageUpstreamClient):
             async def __aenter__(self):
                 return self
 
@@ -297,9 +335,6 @@ class CoreTests(unittest.TestCase):
                 "routes": [{
                     "public_model": model,
                     "upstream_model": "native-edit-model",
-                    "sizes": ["1k"],
-                    "qualities": ["high"],
-                    "operations": ["edit"],
                     "cost_per_request": 0.08,
                 }],
             }
@@ -311,7 +346,7 @@ class CoreTests(unittest.TestCase):
             json={"created": 123, "data": [{"b64_json": "aW1hZ2U="}]},
         )
 
-        class MockAsyncClient:
+        class MockAsyncClient(FakeImageUpstreamClient):
             async def __aenter__(self):
                 return self
 
@@ -356,7 +391,7 @@ class CoreTests(unittest.TestCase):
 
     def test_image_asset_endpoint_uses_saved_source_url(self):
         source_url = "https://cdn.example/generated/image.png"
-        asset_id = image_database.create_image_asset(source_url)
+        asset_id = image_database.create_image_url_asset(source_url)
         captured = {}
 
         async def mock_stream(url, request, **kwargs):
@@ -379,6 +414,409 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(captured["timeout"], settings.image_upstream_timeout_seconds)
         self.assertTrue(captured["validator"](source_url))
 
+    def test_streamed_image_assets_expire_under_our_own_cache_rule(self):
+        """A URL asset is served by streaming the upstream copy, which carries
+        its own cache headers. Those must not outlive the link, so the response
+        is rewritten to the remaining lifetime."""
+        asset_id = image_database.create_image_url_asset("https://cdn.example/generated/image.png")
+
+        async def mock_stream(url, request, **kwargs):
+            return Response(
+                content=b"png-bytes",
+                media_type="image/png",
+                headers={"Cache-Control": "public, max-age=31536000"},
+            )
+
+        with patch("app.image_proxy.proxy.stream_upstream_content", new=mock_stream):
+            response = TestClient(app).get(f"/public/images/assets/{asset_id}")
+
+        self.assertEqual(response.status_code, 200)
+        cache_control = response.headers["cache-control"]
+        self.assertTrue(cache_control.startswith("private, max-age="), cache_control)
+        self.assertNotIn("public", cache_control)
+        remaining = int(cache_control.removeprefix("private, max-age="))
+        self.assertGreater(remaining, 0)
+        self.assertLessEqual(remaining, settings.image_asset_retention_seconds)
+
+    def test_image_blob_assets_are_served_and_expire(self):
+        storage = tempfile.TemporaryDirectory()
+        self.addCleanup(storage.cleanup)
+        override = replace(settings, image_storage_dir=Path(storage.name))
+        png = b"\x89PNG\r\n\x1a\nstored-image"
+
+        with patch.object(image_database, "settings", override):
+            asset_id = image_database.create_image_blob_asset(png, "image/png")
+            self.assertIsNotNone(asset_id)
+            stored = image_database.get_image_asset(asset_id)
+            self.assertEqual(stored["storage_kind"], "local_file")
+            self.assertIsNone(stored["source_url"])
+
+            client = TestClient(app)
+            response = client.get(f"/public/images/assets/{asset_id}")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.content, png)
+            self.assertEqual(response.headers["content-type"], "image/png")
+
+            with database.connection() as conn:
+                conn.execute(
+                    "UPDATE image_assets SET expires_at = ? WHERE asset_id = ?",
+                    (int(time.time()) - 1, asset_id),
+                )
+            self.assertIsNone(image_database.get_image_asset(asset_id))
+            self.assertEqual(client.get(f"/public/images/assets/{asset_id}").status_code, 404)
+
+    def test_image_storage_cleanup_removes_expired_and_orphan_files(self):
+        storage = tempfile.TemporaryDirectory()
+        self.addCleanup(storage.cleanup)
+        root = Path(storage.name)
+        override = replace(settings, image_storage_dir=root)
+
+        with patch.object(image_database, "settings", override):
+            asset_id = image_database.create_image_blob_asset(b"\x89PNG\r\n\x1a\ncleanup", "image/png")
+            self.assertIsNotNone(asset_id)
+            with database.connection() as conn:
+                relative = conn.execute(
+                    "SELECT storage_path FROM image_assets WHERE asset_id = ?", (asset_id,)
+                ).fetchone()["storage_path"]
+            stored = root / relative
+            self.assertTrue(stored.is_file())
+
+            orphan = root / "2024" / "01" / "img_orphan.png"
+            orphan.parent.mkdir(parents=True, exist_ok=True)
+            orphan.write_bytes(b"orphan-bytes")
+            stale = time.time() - image_database.ORPHAN_FILE_GRACE_SECONDS - 60
+            os.utime(orphan, (stale, stale))
+
+            summary = image_database.cleanup_storage()
+            self.assertEqual(summary["orphan_files"], 1)
+            self.assertFalse(orphan.exists())
+            self.assertTrue(stored.is_file())
+
+            with database.connection() as conn:
+                conn.execute(
+                    "UPDATE image_assets SET expires_at = ? WHERE asset_id = ?",
+                    (int(time.time()) - 1, asset_id),
+                )
+            summary = image_database.cleanup_storage()
+            self.assertEqual(summary["expired_assets"], 1)
+            self.assertEqual(summary["expired_files"], 1)
+            self.assertFalse(stored.exists())
+            with database.connection() as conn:
+                self.assertIsNone(
+                    conn.execute(
+                        "SELECT 1 FROM image_assets WHERE asset_id = ?", (asset_id,)
+                    ).fetchone()
+                )
+
+    def test_image_storage_evicts_oldest_blob_when_over_capacity(self):
+        storage = tempfile.TemporaryDirectory()
+        self.addCleanup(storage.cleanup)
+        payload = b"\x89PNG\r\n\x1a\n" + b"x" * 48
+        override = replace(
+            settings,
+            image_storage_dir=Path(storage.name),
+            image_storage_max_bytes=len(payload) + 8,
+            image_storage_min_free_bytes=0,
+        )
+
+        with patch.object(image_database, "settings", override):
+            oldest = image_database.create_image_blob_asset(payload, "image/png")
+            newest = image_database.create_image_blob_asset(payload, "image/png")
+            self.assertIsNotNone(oldest)
+            self.assertIsNotNone(newest)
+
+            with database.connection() as conn:
+                remaining = {
+                    row["asset_id"]
+                    for row in conn.execute(
+                        "SELECT asset_id FROM image_assets WHERE storage_kind = 'local_file'"
+                    ).fetchall()
+                }
+            self.assertNotIn(oldest, remaining)
+            self.assertIn(newest, remaining)
+
+    def test_image_request_logs_are_trimmed_to_the_retention_window(self):
+        request_id = f"irq_legacy_{time.time_ns()}"
+        with database.connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO image_request_logs(
+                    request_id, upstream_name, operation, public_model, upstream_model,
+                    success, health_outcome, latency_ms, created_at
+                ) VALUES (?, 'legacy-image', 'generation', 'legacy-model', 'legacy-model', 1,
+                          'success', 5, ?)
+                """,
+                (
+                    request_id,
+                    int(time.time()) - settings.image_request_log_retention_seconds - 60,
+                ),
+            )
+
+        image_database.purge_request_logs()
+
+        with database.connection() as conn:
+            self.assertIsNone(
+                conn.execute(
+                    "SELECT 1 FROM image_request_logs WHERE request_id = ?", (request_id,)
+                ).fetchone()
+            )
+
+    def test_image_proxy_exposes_asset_link_for_base64_only_on_request(self):
+        model = f"image-b64-{time.time_ns()}"
+        image_database.save_upstream(
+            {
+                "name": "b64-image",
+                "base_url": "https://b64-image.example/v1",
+                "api_key": "b64-key",
+                "enabled": True,
+                "priority": 1,
+                "routes": [{
+                    "public_model": model,
+                    "upstream_model": "native-b64-model",
+                    "cost_per_request": 0.05,
+                }],
+            }
+        )
+        encoded = base64.b64encode(b"\x89PNG\r\n\x1a\ninline-image").decode()
+        upstream_response = httpx.Response(
+            200,
+            request=httpx.Request("POST", "https://b64-image.example/v1/images/generations"),
+            json={"data": [{"b64_json": encoded}]},
+        )
+
+        class MockAsyncClient(FakeImageUpstreamClient):
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_):
+                return None
+
+            async def post(self, url, **kwargs):
+                return upstream_response
+
+        with patch("app.image_proxy.httpx.AsyncClient", return_value=MockAsyncClient()):
+            plain = asyncio.run(forward_json({"model": model, "prompt": "test"}, "generation"))
+            linked = asyncio.run(
+                forward_json({"model": model, "prompt": "test"}, "generation", None, True)
+            )
+
+        plain_item = json.loads(plain.body)["data"][0]
+        self.assertEqual(plain_item["b64_json"], encoded)
+        self.assertNotIn("asset_url", plain_item)
+        self.assertNotIn(ASSET_LINK_HEADER, plain.headers)
+
+        linked_item = json.loads(linked.body)["data"][0]
+        self.assertEqual(linked_item["b64_json"], encoded)
+        self.assertNotIn("asset_url", linked_item)
+        asset_url = json.loads(linked.headers[ASSET_LINK_HEADER])[0]
+        self.assertTrue(
+            asset_url.startswith(f"{settings.image_public_base_url}/public/images/assets/img_")
+        )
+        served = TestClient(app).get(f"/public/images/assets/{asset_url.rsplit('/', 1)[-1]}")
+        self.assertEqual(served.status_code, 200)
+        self.assertEqual(served.content, b"\x89PNG\r\n\x1a\ninline-image")
+
+    def test_image_proxy_relays_a_compressed_upstream_reply(self):
+        model = f"image-compressed-{time.time_ns()}"
+        image_database.save_upstream(
+            {
+                "name": "compressed-image",
+                "base_url": "https://compressed-image.example",
+                "api_key": "compressed-key",
+                "enabled": True,
+                "priority": 1,
+                "routes": [{
+                    "public_model": model,
+                    "upstream_model": "compressed-native",
+                    "cost_per_request": 0.04,
+                }],
+            }
+        )
+        encoded = base64.b64encode(b"\x89PNG\r\n\x1a\ncompressed-image").decode()
+        payload = json.dumps({"created": 1, "data": [{"b64_json": encoded}]}).encode()
+
+        class MockAsyncClient(FakeImageUpstreamClient):
+            async def post(self, url, **kwargs):
+                return CannedImageReply(
+                    200,
+                    {
+                        "content-type": "application/json",
+                        "content-encoding": "zstd",
+                        "content-length": "41",
+                    },
+                    payload,
+                )
+
+        with patch("app.image_proxy.httpx.AsyncClient", return_value=MockAsyncClient()):
+            result = asyncio.run(forward_json({"model": model, "prompt": "test"}, "generation"))
+
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(json.loads(result.body)["data"][0]["b64_json"], encoded)
+
+    def test_gemini_image_endpoint_forwards_and_stores_generated_images(self):
+        model = f"gemini-image-{time.time_ns()}"
+        image_database.save_upstream(
+            {
+                "name": "gemini-image",
+                "base_url": "https://gemini-image.example/v1beta",
+                "api_key": "gemini-key",
+                "enabled": True,
+                "priority": 1,
+                "api_format": "gemini",
+                "routes": [{
+                    "public_model": model,
+                    "upstream_model": "imagen-4.0-generate-001",
+                    "cost_per_request": 0.02,
+                }],
+            }
+        )
+        encoded = base64.b64encode(b"\x89PNG\r\n\x1a\npredicted-image").decode()
+        captured = {}
+
+        class MockAsyncClient(FakeImageUpstreamClient):
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_):
+                return None
+
+            async def post(self, url, **kwargs):
+                captured["url"] = url
+                captured["headers"] = kwargs["headers"]
+                return httpx.Response(
+                    200,
+                    request=httpx.Request("POST", url),
+                    json={
+                        "predictions": [
+                            {"bytesBase64Encoded": encoded, "mimeType": "image/png"},
+                        ]
+                    },
+                )
+
+        client = TestClient(app)
+        body = {"instances": [{"prompt": "一只猫"}], "parameters": {"sampleCount": 1}}
+        with patch("app.image_proxy.httpx.AsyncClient", return_value=MockAsyncClient()):
+            plain = client.post(
+                f"/v1beta/models/{model}:predict",
+                json=body,
+                headers={"x-goog-api-key": "test-adapter-key"},
+            )
+            linked = client.post(
+                f"/v1beta/models/{model}:predict",
+                json=body,
+                headers={"x-goog-api-key": "test-adapter-key", ASSET_LINK_HEADER: "1"},
+            )
+
+        self.assertEqual(
+            captured["url"],
+            "https://gemini-image.example/v1beta/models/imagen-4.0-generate-001:predict",
+        )
+        self.assertEqual(captured["headers"]["x-goog-api-key"], "gemini-key")
+
+        self.assertEqual(plain.status_code, 200)
+        self.assertEqual(plain.json()["predictions"][0]["bytesBase64Encoded"], encoded)
+        self.assertNotIn(ASSET_LINK_HEADER, plain.headers)
+
+        asset_url = json.loads(linked.headers[ASSET_LINK_HEADER])[0]
+        served = TestClient(app).get(f"/public/images/assets/{asset_url.rsplit('/', 1)[-1]}")
+        self.assertEqual(served.status_code, 200)
+        self.assertEqual(served.content, b"\x89PNG\r\n\x1a\npredicted-image")
+        self.assertEqual(image_database.list_requests(model)[0]["operation"], "generation")
+
+    def test_gemini_image_endpoint_rejects_unknown_actions_and_models(self):
+        model = f"gemini-unknown-{time.time_ns()}"
+        client = TestClient(app)
+        headers = {"x-goog-api-key": "test-adapter-key"}
+        self.assertEqual(
+            client.post(f"/v1beta/models/{model}:countTokens", json={}, headers=headers).status_code, 404
+        )
+        self.assertEqual(
+            client.post("/v1beta/models/no-such-model:predict", json={}, headers=headers).status_code, 404
+        )
+        self.assertEqual(
+            client.post(f"/v1beta/models/{model}:predict", json={}).status_code, 401
+        )
+
+    def test_relay_history_purge_keeps_in_flight_work_and_live_public_links(self):
+        now = int(time.time())
+        stale = now - 10 * 86400
+        upstream_id = self.upstream["id"]
+        rows = (
+            (
+                "INSERT INTO tasks(task_id, upstream_id, model, protocol, status, created_at, updated_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                ("task-old-done", upstream_id, "video-model", "videos", "completed", stale, stale),
+            ),
+            (
+                "INSERT INTO tasks(task_id, upstream_id, model, protocol, status, created_at, updated_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                # updated_at stays current so the reconciler does not pick this
+                # deliberately stale row up and poll a live upstream.
+                ("task-old-running", upstream_id, "video-model", "videos", "processing", stale, now),
+            ),
+            (
+                "INSERT INTO audit_requests(relay_request_id, upstream_id, model, protocol, status,"
+                " created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                ("vrq_old_closed", upstream_id, "video-model", "videos", "completed", stale, stale),
+            ),
+            (
+                "INSERT INTO audit_requests(relay_request_id, upstream_id, model, protocol, status,"
+                " created_at, updated_at, public_download_expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "vrq_old_public",
+                    upstream_id,
+                    "video-model",
+                    "videos",
+                    "completed",
+                    stale,
+                    stale,
+                    now + 3600,
+                ),
+            ),
+        )
+        try:
+            with database.connection() as conn:
+                for statement, parameters in rows:
+                    conn.execute(statement, parameters)
+                conn.execute(
+                    "INSERT INTO audit_events(relay_request_id, phase, created_at) VALUES (?, ?, ?)",
+                    ("vrq_old_closed", "request", stale),
+                )
+
+            summary = database.purge_history(72 * 3600, now)
+
+            with database.connection() as conn:
+                remaining = {
+                    "tasks": {row["task_id"] for row in conn.execute("SELECT task_id FROM tasks")},
+                    "audit_requests": {
+                        row["relay_request_id"]
+                        for row in conn.execute("SELECT relay_request_id FROM audit_requests")
+                    },
+                    "audit_events": {
+                        row["relay_request_id"]
+                        for row in conn.execute("SELECT relay_request_id FROM audit_events")
+                    },
+                }
+            self.assertNotIn("task-old-done", remaining["tasks"])
+            self.assertIn("task-old-running", remaining["tasks"])
+            self.assertNotIn("vrq_old_closed", remaining["audit_requests"])
+            self.assertIn("vrq_old_public", remaining["audit_requests"])
+            self.assertNotIn("vrq_old_closed", remaining["audit_events"])
+            self.assertGreaterEqual(summary["tasks"], 1)
+            self.assertGreaterEqual(summary["audit_requests"], 1)
+        finally:
+            # These rows are deliberately stale; leaving them behind would make
+            # later tests reconcile a queued task against a live upstream.
+            with database.connection() as conn:
+                conn.execute(
+                    "DELETE FROM audit_requests WHERE relay_request_id IN (?, ?)",
+                    ("vrq_old_closed", "vrq_old_public"),
+                )
+                conn.execute(
+                    "DELETE FROM tasks WHERE task_id IN (?, ?)",
+                    ("task-old-done", "task-old-running"),
+                )
+
     def test_image_admin_upstream_crud_preserves_existing_api_key(self):
         client = TestClient(app)
         session = create_session("admin")
@@ -394,9 +832,6 @@ class CoreTests(unittest.TestCase):
             "routes": [{
                 "public_model": model,
                 "upstream_model": "admin-native",
-                "sizes": ["1k"],
-                "qualities": ["medium"],
-                "operations": ["generation"],
                 "cost_per_request": 0.05,
             }],
         }
@@ -507,9 +942,6 @@ class CoreTests(unittest.TestCase):
                 "routes": [{
                     "public_model": f"discover-placeholder-{time.time_ns()}",
                     "upstream_model": "discover-placeholder-native",
-                    "sizes": ["*"],
-                    "qualities": ["*"],
-                    "operations": ["generation"],
                     "cost_per_request": 0.01,
                 }],
             }

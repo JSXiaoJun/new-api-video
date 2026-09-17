@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+import hmac
+import logging
 import time
 from pathlib import Path
 from typing import Any
@@ -38,6 +41,8 @@ from .security import (
 )
 
 
+logger = logging.getLogger("uvicorn.error")
+
 app = FastAPI(title="Video Relay Console", docs_url=None, redoc_url=None, openapi_url=None)
 app.add_middleware(
     CORSMiddleware,
@@ -57,9 +62,28 @@ templates = Jinja2Templates(directory=ROOT_DIR / "templates")
 
 
 @app.on_event("startup")
-def startup() -> None:
+async def startup() -> None:
     database.initialize()
     image_database.initialize()
+    asyncio.create_task(retention_cleanup_loop())
+
+
+async def retention_cleanup_loop() -> None:
+    """Expire stored images, request logs and relay history on a fixed cadence.
+
+    Every step frees disk space, is idempotent, and is safe to run from more
+    than one worker. A failed pass never stops later passes.
+    """
+    while True:
+        try:
+            image_database.cleanup_storage()
+        except Exception as exc:
+            logger.warning("image storage cleanup failed: %s", exc)
+        try:
+            database.purge_history(settings.history_retention_seconds)
+        except Exception as exc:
+            logger.warning("relay history cleanup failed: %s", exc)
+        await asyncio.sleep(settings.image_cleanup_interval_seconds)
 
 
 @app.middleware("http")
@@ -100,6 +124,22 @@ def admin_mutation(
 def adapter_auth(authorization: str | None = Header(default=None)) -> None:
     if not verify_adapter_key(authorization):
         raise HTTPException(status_code=401, detail="Invalid adapter API key")
+
+
+def gemini_adapter_auth(
+    api_key: str | None = Header(default=None, alias="x-goog-api-key"),
+    authorization: str | None = Header(default=None),
+) -> None:
+    """Authenticate a native Gemini call.
+
+    Gemini clients send `x-goog-api-key`; our own OpenAI-compatible routes use
+    `Authorization: Bearer`. Either credential is accepted.
+    """
+    if api_key and hmac.compare_digest(api_key.strip(), settings.adapter_api_key):
+        return
+    if verify_adapter_key(authorization):
+        return
+    raise HTTPException(status_code=401, detail="Invalid adapter API key")
 
 
 def normalize_discovered_models(payload: Any, protocol_override: str | None = None) -> list[dict[str, Any]]:
@@ -455,6 +495,16 @@ def image_dashboard_api(_: tuple[str, dict] = Depends(admin_session)):
     return image_database.dashboard_data()
 
 
+@app.get("/admin/api/images/storage")
+def image_storage_api(_: tuple[str, dict] = Depends(admin_session)):
+    return image_database.storage_report()
+
+
+@app.post("/admin/api/images/storage/cleanup")
+def run_image_storage_cleanup(_: dict = Depends(admin_mutation)):
+    return {"cleaned": image_database.cleanup_storage()}
+
+
 @app.get("/admin/api/images/requests")
 def image_requests(
     q: str = Query(default="", max_length=191),
@@ -583,7 +633,9 @@ async def create_image(
         raise HTTPException(status_code=400, detail="Invalid JSON") from exc
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="JSON body must be an object")
-    return await image_proxy.forward_json(payload, "generation", idempotency_key)
+    return await image_proxy.forward_json(
+        payload, "generation", idempotency_key, image_proxy.asset_links_requested(request)
+    )
 
 
 @app.post("/v1/images/edits", dependencies=[Depends(adapter_auth)])
@@ -594,6 +646,55 @@ async def edit_image(
     if not request.headers.get("content-type", "").lower().startswith("multipart/form-data"):
         raise HTTPException(status_code=415, detail="Content-Type must be multipart/form-data")
     return await image_proxy.forward_edit(request, idempotency_key)
+
+
+@app.post("/v1beta/models/{model_action}", dependencies=[Depends(gemini_adapter_auth)])
+@app.post("/v1/models/{model_action}", dependencies=[Depends(gemini_adapter_auth)])
+async def gemini_image(
+    model_action: str,
+    request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+):
+    """Serve the native Gemini image endpoints New API relays to.
+
+    The middleware is the channel's base URL, so an imagen channel calls
+    `{base}/v1beta/models/{model}:predict` and a nano-banana channel calls
+    `{base}/v1beta/models/{model}:generateContent`.
+    """
+    public_model, separator, action = model_action.rpartition(":")
+    if not separator or not public_model or action not in image_proxy.GEMINI_IMAGE_ACTIONS:
+        raise HTTPException(status_code=404, detail="Unsupported Gemini model action")
+    if not request.headers.get("content-type", "").lower().startswith("application/json"):
+        raise HTTPException(status_code=415, detail="Content-Type must be application/json")
+    try:
+        payload = await request.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid JSON") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="JSON body must be an object")
+    return await image_proxy.forward_gemini(
+        payload,
+        public_model,
+        action,
+        image_proxy.asset_links_requested(request),
+        request.url.query if action == "streamGenerateContent" else "",
+        idempotency_key,
+    )
+
+
+@app.get("/v1beta/models", dependencies=[Depends(gemini_adapter_auth)])
+def gemini_models() -> dict:
+    """Model list in the shape the Gemini SDK and New API discovery expect."""
+    return {
+        "models": [
+            {
+                "name": f"models/{model}",
+                "displayName": model,
+                "supportedGenerationMethods": ["predict", "generateContent"],
+            }
+            for model in image_database.list_models()
+        ]
+    }
 
 
 @app.post("/v1/videos", dependencies=[Depends(adapter_auth)])

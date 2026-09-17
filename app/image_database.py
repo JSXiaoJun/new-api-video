@@ -1,15 +1,19 @@
 from __future__ import annotations
 
-import json
+import logging
 import math
-import re
+import shutil
 import time
 import uuid
 from decimal import Decimal, ROUND_HALF_UP
+from pathlib import Path
 from typing import Any
 
 from . import database
+from .config import settings
 from .security import secret_box
+
+logger = logging.getLogger("uvicorn.error")
 
 
 HEALTH_SHORT_WINDOW_SECONDS = 90 * 60
@@ -20,7 +24,20 @@ HEALTH_DEFAULT_SCORE = 0.90
 HEALTH_STREAK_PENALTY = 0.08
 HEALTH_MAX_STREAK_PENALTY = 0.45
 HEALTH_COST_EXPONENT = 4
-IMAGE_ASSET_RETENTION_SECONDS = 7 * 24 * 60 * 60
+
+# Stored image blobs are only reachable through their DB row, so a file younger
+# than this grace window is never treated as an orphan: it may still belong to a
+# row that is being committed by another request right now.
+ORPHAN_FILE_GRACE_SECONDS = 3600
+MAX_CLEANUP_BATCH = 1000
+IMAGE_BLOB_EXTENSIONS = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+    "image/avif": ".avif",
+}
 
 
 def initialize() -> None:
@@ -34,6 +51,7 @@ def initialize() -> None:
                 api_key_encrypted TEXT NOT NULL,
                 enabled INTEGER NOT NULL DEFAULT 1,
                 priority INTEGER NOT NULL DEFAULT 100,
+                api_format TEXT NOT NULL DEFAULT 'openai',
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL
             );
@@ -81,11 +99,40 @@ def initialize() -> None:
             CREATE TABLE IF NOT EXISTS image_assets (
                 asset_id TEXT PRIMARY KEY,
                 source_url_encrypted TEXT NOT NULL,
-                created_at INTEGER NOT NULL
+                storage_kind TEXT NOT NULL DEFAULT 'upstream_url',
+                storage_path TEXT,
+                mime_type TEXT,
+                byte_size INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS idx_image_assets_created
                 ON image_assets(created_at);
             """
+        )
+        upstream_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(image_upstreams)").fetchall()
+        }
+        if "api_format" not in upstream_columns:
+            conn.execute("ALTER TABLE image_upstreams ADD COLUMN api_format TEXT NOT NULL DEFAULT 'openai'")
+        asset_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(image_assets)").fetchall()
+        }
+        for column, definition in (
+            ("storage_kind", "TEXT NOT NULL DEFAULT 'upstream_url'"),
+            ("storage_path", "TEXT"),
+            ("mime_type", "TEXT"),
+            ("byte_size", "INTEGER NOT NULL DEFAULT 0"),
+            ("expires_at", "INTEGER NOT NULL DEFAULT 0"),
+        ):
+            if column not in asset_columns:
+                conn.execute(f"ALTER TABLE image_assets ADD COLUMN {column} {definition}")
+        conn.execute(
+            "UPDATE image_assets SET expires_at = created_at + ? WHERE expires_at = 0",
+            (settings.image_asset_retention_seconds,),
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_image_assets_expires ON image_assets(expires_at)"
         )
         log_columns = {
             row["name"] for row in conn.execute("PRAGMA table_info(image_request_logs)").fetchall()
@@ -99,28 +146,312 @@ def initialize() -> None:
             )
 
 
-def create_image_asset(source_url: str) -> str:
+def image_storage_root() -> Path:
+    return settings.image_storage_dir
+
+
+def _asset_expiry(now: int) -> int:
+    return now + settings.image_asset_retention_seconds
+
+
+def create_image_url_asset(source_url: str) -> str:
+    """Register an upstream image URL under an opaque, unguessable public id.
+
+    Only the URL is recorded: the bytes stay on the upstream host, so a link
+    stops working as soon as that host expires it.
+    """
     now = int(time.time())
     asset_id = f"img_{uuid.uuid4().hex}"
     with database.connection() as conn:
         conn.execute(
-            "DELETE FROM image_assets WHERE created_at < ?",
-            (now - IMAGE_ASSET_RETENTION_SECONDS,),
-        )
-        conn.execute(
-            "INSERT INTO image_assets(asset_id, source_url_encrypted, created_at) VALUES (?, ?, ?)",
-            (asset_id, secret_box.encrypt(source_url), now),
+            """
+            INSERT INTO image_assets(
+                asset_id, source_url_encrypted, storage_kind, created_at, expires_at
+            ) VALUES (?, ?, 'upstream_url', ?, ?)
+            """,
+            (asset_id, secret_box.encrypt(source_url), now, _asset_expiry(now)),
         )
     return asset_id
 
 
-def get_image_asset(asset_id: str) -> str | None:
+def _blob_relative_path(asset_id: str, mime_type: str, now: int) -> Path:
+    extension = IMAGE_BLOB_EXTENSIONS.get(mime_type.split(";")[0].strip().lower(), ".bin")
+    stamp = time.gmtime(now)
+    return Path(f"{stamp.tm_year:04d}") / f"{stamp.tm_mon:02d}" / f"{asset_id}{extension}"
+
+
+def _free_disk_bytes(root: Path) -> int:
+    probe = root
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    try:
+        return shutil.disk_usage(probe).free
+    except OSError:
+        return 0
+
+
+def _blob_bytes(conn) -> int:
+    row = conn.execute(
+        """
+        SELECT COALESCE(SUM(byte_size), 0) AS total
+        FROM image_assets WHERE storage_kind = 'local_file'
+        """
+    ).fetchone()
+    return int(row["total"] or 0)
+
+
+def _delete_blob_rows(conn, rows) -> tuple[int, int]:
+    """Delete stored files and their rows. A file that cannot be removed keeps
+    its row, so the next cleanup pass retries instead of orphaning the file."""
+    deleted_rows = 0
+    deleted_files = 0
+    root = image_storage_root()
+    for row in rows:
+        relative = row["storage_path"]
+        if relative:
+            try:
+                (root / relative).unlink()
+                deleted_files += 1
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                logger.warning("image asset file delete failed: %s", exc)
+                continue
+        conn.execute("DELETE FROM image_assets WHERE asset_id = ?", (row["asset_id"],))
+        deleted_rows += 1
+    return deleted_rows, deleted_files
+
+
+def _evict_oldest_blobs(conn, required_bytes: int) -> tuple[int, int]:
+    """Free space for an incoming blob by dropping the oldest stored images.
+
+    This is the capacity rule agreed for image storage: the retention window
+    expires images, and the size ceiling expires the oldest ones early so the
+    newest images stay viewable.
+    """
+    limit = settings.image_storage_max_bytes
+    if not limit:
+        return 0, 0
+    total = _blob_bytes(conn)
+    if total + required_bytes <= limit:
+        return 0, 0
+    selected = []
+    for row in conn.execute(
+        """
+        SELECT asset_id, storage_path, byte_size FROM image_assets
+        WHERE storage_kind = 'local_file'
+        ORDER BY created_at, rowid LIMIT ?
+        """,
+        (MAX_CLEANUP_BATCH,),
+    ).fetchall():
+        selected.append(row)
+        total -= int(row["byte_size"] or 0)
+        if total + required_bytes <= limit:
+            break
+    return _delete_blob_rows(conn, selected)
+
+
+def create_image_blob_asset(data: bytes, mime_type: str) -> str | None:
+    """Persist generated image bytes and return the opaque public asset id.
+
+    Returns None when the payload is empty or storage cannot take it. Callers
+    must keep returning the upstream payload to the client unchanged either way.
+    """
+    if not data:
+        return None
+    size = len(data)
+    limit = settings.image_storage_max_bytes
+    if limit and size > limit:
+        logger.warning("image blob refused: %s bytes exceed the storage ceiling", size)
+        return None
+    root = image_storage_root()
+    if settings.image_storage_min_free_bytes and _free_disk_bytes(root) < settings.image_storage_min_free_bytes:
+        logger.warning("image blob refused: free disk space below the configured floor")
+        return None
+
+    now = int(time.time())
+    asset_id = f"img_{uuid.uuid4().hex}"
+    relative = _blob_relative_path(asset_id, mime_type, now)
+    path = root / relative
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    except OSError as exc:
+        logger.warning("image blob write failed: %s", exc)
+        return None
+    try:
+        with database.connection() as conn:
+            _evict_oldest_blobs(conn, size)
+            if limit and _blob_bytes(conn) + size > limit:
+                path.unlink(missing_ok=True)
+                logger.warning("image blob refused: storage capacity still exhausted")
+                return None
+            conn.execute(
+                """
+                INSERT INTO image_assets(
+                    asset_id, source_url_encrypted, storage_kind, storage_path,
+                    mime_type, byte_size, created_at, expires_at
+                ) VALUES (?, ?, 'local_file', ?, ?, ?, ?, ?)
+                """,
+                (
+                    asset_id,
+                    secret_box.encrypt(""),
+                    relative.as_posix(),
+                    mime_type,
+                    size,
+                    now,
+                    _asset_expiry(now),
+                ),
+            )
+    except Exception:
+        path.unlink(missing_ok=True)
+        raise
+    return asset_id
+
+
+def get_image_asset(asset_id: str) -> dict[str, Any] | None:
+    """Resolve a public asset id. Returns None when unknown or expired.
+
+    Expiry is enforced on read so a link stops working at its deadline even if
+    the cleanup pass has not run yet.
+    """
     with database.connection() as conn:
         row = conn.execute(
-            "SELECT source_url_encrypted FROM image_assets WHERE asset_id = ? AND created_at >= ?",
-            (asset_id, int(time.time()) - IMAGE_ASSET_RETENTION_SECONDS),
+            """
+            SELECT asset_id, source_url_encrypted, storage_kind, storage_path,
+                   mime_type, byte_size, created_at, expires_at
+            FROM image_assets WHERE asset_id = ?
+            """,
+            (asset_id,),
         ).fetchone()
-    return secret_box.decrypt(row["source_url_encrypted"]) if row else None
+    if row is None:
+        return None
+    asset = dict(row)
+    expires_at = int(asset.pop("expires_at") or 0)
+    if expires_at and expires_at <= int(time.time()):
+        return None
+    asset["expires_at"] = expires_at
+    if asset["storage_kind"] == "local_file":
+        stored = asset.pop("storage_path")
+        asset["source_url"] = None
+        asset["mime_type"] = asset["mime_type"] or "application/octet-stream"
+        asset["local_path"] = image_storage_root() / stored if stored else None
+    else:
+        asset["storage_path"] = None
+        asset["source_url"] = secret_box.decrypt(asset.pop("source_url_encrypted"))
+        asset["local_path"] = None
+    asset.pop("source_url_encrypted", None)
+    return asset
+
+
+def purge_expired_assets(now: int | None = None) -> tuple[int, int]:
+    current = int(time.time()) if now is None else now
+    with database.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT asset_id, storage_path FROM image_assets
+            WHERE expires_at > 0 AND expires_at <= ?
+            ORDER BY expires_at, rowid LIMIT ?
+            """,
+            (current, MAX_CLEANUP_BATCH),
+        ).fetchall()
+        return _delete_blob_rows(conn, rows)
+
+
+def purge_over_capacity() -> tuple[int, int]:
+    with database.connection() as conn:
+        return _evict_oldest_blobs(conn, 0)
+
+
+def purge_orphan_files(now: int | None = None) -> int:
+    """Delete stored files no live row references.
+
+    Covers blobs written by a process that died before committing its row and
+    files whose row was removed elsewhere. Files newer than the grace window are
+    skipped so an in-flight upload is never deleted.
+    """
+    current = int(time.time()) if now is None else now
+    root = image_storage_root()
+    if not root.exists():
+        return 0
+    with database.connection() as conn:
+        known = {
+            row["storage_path"]
+            for row in conn.execute(
+                "SELECT storage_path FROM image_assets WHERE storage_path IS NOT NULL"
+            ).fetchall()
+        }
+    removed = 0
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        if path.relative_to(root).as_posix() in known:
+            continue
+        try:
+            if current - int(path.stat().st_mtime) < ORPHAN_FILE_GRACE_SECONDS:
+                continue
+            path.unlink()
+            removed += 1
+        except OSError as exc:
+            logger.warning("orphan image file delete failed: %s", exc)
+    return removed
+
+
+def purge_request_logs(now: int | None = None) -> int:
+    current = int(time.time()) if now is None else now
+    cutoff = current - settings.image_request_log_retention_seconds
+    with database.connection() as conn:
+        cursor = conn.execute("DELETE FROM image_request_logs WHERE created_at < ?", (cutoff,))
+        return max(0, cursor.rowcount or 0)
+
+
+def cleanup_storage() -> dict[str, int]:
+    """Run one retention pass over image assets and image request logs."""
+    now = int(time.time())
+    expired_rows, expired_files = purge_expired_assets(now)
+    evicted_rows, evicted_files = purge_over_capacity()
+    summary = {
+        "expired_assets": expired_rows,
+        "expired_files": expired_files,
+        "evicted_assets": evicted_rows,
+        "evicted_files": evicted_files,
+        "orphan_files": purge_orphan_files(now),
+        "request_logs": purge_request_logs(now),
+    }
+    if any(summary.values()):
+        logger.info("image storage cleanup: %s", summary)
+    return summary
+
+
+def storage_report() -> dict[str, Any]:
+    root = image_storage_root()
+    with database.connection() as conn:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) AS files, COALESCE(SUM(byte_size), 0) AS total,
+                   MIN(created_at) AS oldest, MAX(created_at) AS newest
+            FROM image_assets WHERE storage_kind = 'local_file'
+            """
+        ).fetchone()
+        urls = conn.execute(
+            "SELECT COUNT(*) AS total FROM image_assets WHERE storage_kind = 'upstream_url'"
+        ).fetchone()
+    tracked = int(row["total"] or 0)
+    return {
+        "root": str(root),
+        "files": int(row["files"] or 0),
+        "tracked_bytes": tracked,
+        "tracked_megabytes": round(tracked / 1024 / 1024, 2),
+        "max_bytes": settings.image_storage_max_bytes,
+        "max_megabytes": round(settings.image_storage_max_bytes / 1024 / 1024, 2),
+        "free_disk_bytes": _free_disk_bytes(root),
+        "min_free_bytes": settings.image_storage_min_free_bytes,
+        "url_assets": int(urls["total"] or 0),
+        "oldest_created_at": row["oldest"],
+        "newest_created_at": row["newest"],
+        "asset_retention_seconds": settings.image_asset_retention_seconds,
+        "log_retention_seconds": settings.image_request_log_retention_seconds,
+    }
 
 
 def _cost_to_micros(value: Any) -> int:
@@ -139,9 +470,8 @@ def _route_rows(conn, upstream_id: int) -> list[dict[str, Any]]:
     result = []
     for row in rows:
         item = dict(row)
-        item["sizes"] = json.loads(item.pop("sizes_json"))
-        item["qualities"] = json.loads(item.pop("qualities_json"))
-        item["operations"] = json.loads(item.pop("operations_json"))
+        for legacy in ("sizes_json", "qualities_json", "operations_json"):
+            item.pop(legacy, None)
         item["cost_per_request"] = _cost_from_micros(item.pop("cost_micros"))
         result.append(item)
     return result
@@ -182,13 +512,15 @@ def get_upstream(upstream_id: int, include_key: bool = False) -> dict[str, Any] 
 def save_upstream(payload: dict[str, Any], upstream_id: int | None = None) -> dict[str, Any]:
     now = int(time.time())
     routes = payload["routes"]
+    api_format = payload.get("api_format") or "openai"
     with database.connection() as conn:
         if upstream_id is None:
             cursor = conn.execute(
                 """
                 INSERT INTO image_upstreams(
-                    name, base_url, api_key_encrypted, enabled, priority, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    name, base_url, api_key_encrypted, enabled, priority, api_format,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     payload["name"],
@@ -196,6 +528,7 @@ def save_upstream(payload: dict[str, Any], upstream_id: int | None = None) -> di
                     secret_box.encrypt(payload["api_key"]),
                     int(payload["enabled"]),
                     payload["priority"],
+                    api_format,
                     now,
                     now,
                 ),
@@ -213,7 +546,8 @@ def save_upstream(payload: dict[str, Any], upstream_id: int | None = None) -> di
             conn.execute(
                 """
                 UPDATE image_upstreams
-                SET name = ?, base_url = ?, api_key_encrypted = ?, enabled = ?, priority = ?, updated_at = ?
+                SET name = ?, base_url = ?, api_key_encrypted = ?, enabled = ?,
+                    priority = ?, api_format = ?, updated_at = ?
                 WHERE id = ?
                 """,
                 (
@@ -222,27 +556,29 @@ def save_upstream(payload: dict[str, Any], upstream_id: int | None = None) -> di
                     encrypted_key,
                     int(payload["enabled"]),
                     payload["priority"],
+                    api_format,
                     now,
                     upstream_id,
                 ),
             )
             conn.execute("DELETE FROM image_routes WHERE upstream_id = ?", (upstream_id,))
 
+        # sizes_json / qualities_json / operations_json are legacy constraint
+        # columns from the parameter-matching router. Routing is now a plain
+        # model -> upstream forward, so they stay at the neutral "anything"
+        # value and are never read.
         conn.executemany(
             """
             INSERT INTO image_routes(
                 upstream_id, public_model, upstream_model, sizes_json, qualities_json,
                 operations_json, cost_micros
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, '["*"]', '["*"]', '["*"]', ?)
             """,
             [
                 (
                     upstream_id,
                     route["public_model"],
                     route["upstream_model"],
-                    json.dumps(route["sizes"], separators=(",", ":")),
-                    json.dumps(route["qualities"], separators=(",", ":")),
-                    json.dumps(route["operations"], separators=(",", ":")),
                     _cost_to_micros(route["cost_per_request"]),
                 )
                 for route in routes
@@ -261,34 +597,10 @@ def delete_upstream(upstream_id: int) -> None:
             raise KeyError("image_upstream_not_found")
 
 
-def _matches(value: str, constraints: list[str]) -> bool:
-    normalized = value.strip().lower()
-    return not normalized or "*" in constraints or normalized in constraints
-
-
-def _matches_size(value: str, constraints: list[str]) -> bool:
-    if _matches(value, constraints):
-        return True
-    dimensions = re.fullmatch(r"\s*(\d{1,5})\s*x\s*(\d{1,5})\s*", value, flags=re.IGNORECASE)
-    if dimensions is None:
-        return False
-    longest_edge = max(int(dimensions.group(1)), int(dimensions.group(2)))
-    if longest_edge <= 1024:
-        tier = "1k"
-    elif longest_edge <= 2048:
-        tier = "2k"
-    elif longest_edge <= 4096:
-        tier = "4k"
-    else:
-        return False
-    return tier in constraints
-
-
 def _health_for_route(
     conn,
     route: dict[str, Any],
     now: int | None = None,
-    operation: str | None = None,
 ) -> dict[str, Any]:
     current_time = int(time.time()) if now is None else now
     rows = conn.execute(
@@ -298,7 +610,6 @@ def _health_for_route(
         WHERE upstream_id = ?
           AND public_model = ?
           AND upstream_model = ?
-          AND (? IS NULL OR operation = ?)
           AND created_at >= ?
           AND health_outcome IN ('success', 'failure')
         ORDER BY created_at DESC, rowid DESC LIMIT ?
@@ -307,8 +618,6 @@ def _health_for_route(
             route["upstream_id"],
             route["public_model"],
             route["upstream_model"],
-            operation,
-            operation,
             current_time - HEALTH_LONG_WINDOW_SECONDS,
             HEALTH_LONG_SAMPLE_LIMIT,
         ),
@@ -353,38 +662,38 @@ def _health_for_route(
     }
 
 
-def select_route(public_model: str, size: str, quality: str, operation: str) -> dict[str, Any] | None:
+def select_route(public_model: str) -> dict[str, Any] | None:
+    """Resolve the upstream route for a public model.
+
+    Routing is a plain forward: the request parameters are passed upstream
+    untouched, so any enabled route registered for the model is a candidate.
+    Among the candidates the healthiest one wins, with cost, priority and
+    latency breaking ties.
+    """
     with database.connection() as conn:
         rows = conn.execute(
             """
-            SELECT r.*, u.name AS upstream_name, u.base_url, u.api_key_encrypted, u.priority
+            SELECT r.*, u.name AS upstream_name, u.base_url, u.api_key_encrypted,
+                   u.priority, u.api_format
             FROM image_routes r
             JOIN image_upstreams u ON u.id = r.upstream_id
             WHERE u.enabled = 1 AND r.public_model = ?
             """,
             (public_model,),
         ).fetchall()
-        candidates = []
+        if not rows:
+            return None
         now = int(time.time())
+        candidates = []
         for row in rows:
             item = dict(row)
-            sizes = json.loads(item["sizes_json"])
-            qualities = json.loads(item["qualities_json"])
-            operations = json.loads(item["operations_json"])
-            if operation not in operations or not _matches_size(size, sizes) or not _matches(quality, qualities):
-                continue
-            health = _health_for_route(conn, item, now, operation)
-            item["health"] = health
+            item["health"] = _health_for_route(conn, item, now)
             item["health_adjusted_cost"] = item["cost_micros"] / math.pow(
-                health["score"], HEALTH_COST_EXPONENT
+                item["health"]["score"], HEALTH_COST_EXPONENT
             )
-            item["sizes"] = sizes
-            item["qualities"] = qualities
-            item["operations"] = operations
             candidates.append(item)
-        if not candidates:
-            return None
-        candidates.sort(
+        selected = min(
+            candidates,
             key=lambda item: (
                 item["health_adjusted_cost"],
                 -item["health"]["score"],
@@ -393,11 +702,11 @@ def select_route(public_model: str, size: str, quality: str, operation: str) -> 
                 item["health"]["average_latency_ms"] or 0,
                 item["last_used_at"] or 0,
                 item["id"],
-            )
+            ),
         )
-        selected = candidates[0]
         conn.execute("UPDATE image_routes SET last_used_at = ? WHERE id = ?", (now, selected["id"]))
     selected["api_key"] = secret_box.decrypt(selected.pop("api_key_encrypted"))
+    selected["api_format"] = selected.get("api_format") or "openai"
     selected["cost_per_request"] = _cost_from_micros(selected["cost_micros"])
     return selected
 

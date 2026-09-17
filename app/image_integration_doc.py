@@ -10,39 +10,15 @@ def _inline(value: Any) -> str:
 
 
 def _configured_models(upstreams: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    models: dict[str, dict[str, set[str]]] = {}
+    models: set[str] = set()
     for upstream in upstreams:
         if not upstream.get("enabled"):
             continue
         for route in upstream.get("routes", []):
             public_model = str(route.get("public_model", "")).strip()
-            if not public_model:
-                continue
-            item = models.setdefault(public_model, {"sizes": set(), "qualities": set(), "operations": set()})
-            item["sizes"].update(str(value) for value in route.get("sizes", []))
-            item["qualities"].update(str(value) for value in route.get("qualities", []))
-            item["operations"].update(str(value) for value in route.get("operations", []))
-    return [
-        {
-            "model": model,
-            "sizes": sorted(values["sizes"]),
-            "qualities": sorted(values["qualities"]),
-            "operations": sorted(values["operations"]),
-        }
-        for model, values in sorted(models.items())
-    ]
-
-
-def _display_constraints(values: list[str]) -> str:
-    if not values or "*" in values:
-        return "由模型决定"
-    return ", ".join(_inline(value) for value in values)
-
-
-def _display_operations(values: list[str]) -> str:
-    labels = {"generation": "图片生成", "edit": "图片编辑"}
-    ordered = [name for name in ("generation", "edit") if name in values]
-    return ", ".join(labels.get(value, _inline(value)) for value in ordered) or "-"
+            if public_model:
+                models.add(public_model)
+    return [{"model": model} for model in sorted(models)]
 
 
 def _example_model(models: list[dict[str, Any]]) -> str:
@@ -196,7 +172,7 @@ def build_image_integration_document(
         json.dumps(url_response, ensure_ascii=False, indent=2),
         "```",
         "",
-        "`data[].url` 为免鉴权公开图片地址，可以直接用于浏览器、`<img>` 或下载程序。链接默认保留 7 天。",
+        "`data[].url` 为免鉴权公开图片地址，可以直接用于浏览器、`<img>` 或下载程序。链接自创建起 24 小时后失效。",
         "",
         "### Base64 响应",
         "",
@@ -264,19 +240,16 @@ def build_image_integration_document(
         "",
         "## 已开放模型",
         "",
-        "下表只展示对外公开模型能力；`由模型决定` 表示接口会接受该字段，但最终可用值取决于所选模型。",
+        "`size`、`quality`、`n` 等参数会原样转发，是否生效取决于所选模型本身。",
         "",
-        "| 对外模型名 | 支持尺寸 | 支持质量 | 支持操作 |",
-        "| --- | --- | --- | --- |",
+        "| 对外模型名 |",
+        "| --- |",
     ]
     if models:
         for model in models:
-            lines.append(
-                f"| `{_inline(model['model'])}` | {_display_constraints(model['sizes'])} | "
-                f"{_display_constraints(model['qualities'])} | {_display_operations(model['operations'])} |"
-            )
+            lines.append(f"| `{_inline(model['model'])}` |")
     else:
-        lines.append("| 暂无启用模型 | - | - | - |")
+        lines.append("| 暂无启用模型 |")
     lines.extend(
         [
             "",
@@ -287,7 +260,7 @@ def build_image_integration_document(
             "| `400` | JSON 无效、缺少模型或字段类型错误 | 检查请求体是否为有效 JSON 对象，并确认参数类型 |",
             "| `401` | API Key 缺失、错误或已失效 | 检查 `Authorization: Bearer <API_KEY>` |",
             "| `402` | 余额或额度不足 | 充值或调整可用额度 |",
-            "| `404` | 没有匹配的模型、尺寸或质量，或公开图片已失效 | 对照模型表检查参数；图片链接超过 7 天后需重新生成 |",
+            "| `404` | 模型未配置，或公开图片已失效 | 对照模型表检查模型名；图片链接超过 24 小时后需重新生成 |",
             "| `415` | Content-Type 不正确 | 图片生成使用 JSON；图片编辑使用 multipart/form-data |",
             "| `422` | 表单字段或上传文件不符合要求 | 检查字段名、文件类型和模型能力 |",
             "| `429` | 请求频率或并发超过限制 | 降低并发并按 `Retry-After` 稍后重试 |",

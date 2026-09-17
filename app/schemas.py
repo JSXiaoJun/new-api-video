@@ -173,11 +173,6 @@ class PublicVideoDownloadSettingsInput(BaseModel):
 class ImageRouteInput(BaseModel):
     public_model: str = Field(min_length=1, max_length=160)
     upstream_model: str = Field(min_length=1, max_length=160)
-    sizes: list[str] = Field(default_factory=lambda: ["*"], max_length=50)
-    qualities: list[str] = Field(default_factory=lambda: ["*"], max_length=50)
-    operations: list[Literal["generation", "edit"]] = Field(
-        default_factory=lambda: ["generation"], min_length=1, max_length=2
-    )
     cost_per_request: Decimal = Field(default=Decimal("0"), ge=0, le=100000)
 
     @field_validator("public_model", "upstream_model")
@@ -187,19 +182,6 @@ class ImageRouteInput(BaseModel):
         if not normalized:
             raise ValueError("image model names cannot be empty")
         return normalized
-
-    @field_validator("sizes", "qualities")
-    @classmethod
-    def normalize_constraints(cls, values: list[str]) -> list[str]:
-        normalized = list(dict.fromkeys(value.strip().lower() for value in values if value.strip()))
-        if any(len(value) > 64 for value in normalized):
-            raise ValueError("image route constraints must not exceed 64 characters")
-        return normalized or ["*"]
-
-    @field_validator("operations")
-    @classmethod
-    def unique_operations(cls, values: list[str]) -> list[str]:
-        return list(dict.fromkeys(values))
 
     @field_validator("cost_per_request")
     @classmethod
@@ -215,6 +197,7 @@ class ImageUpstreamInput(BaseModel):
     api_key: str = Field(default="", max_length=1000)
     enabled: bool = True
     priority: int = Field(default=100, ge=0, le=9999)
+    api_format: Literal["openai", "gemini"] = "openai"
     routes: list[ImageRouteInput] = Field(min_length=1, max_length=200)
 
     @field_validator("name")
