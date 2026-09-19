@@ -3,7 +3,24 @@ const dialog = document.querySelector('#image-upstream-dialog')
 const form = document.querySelector('#image-upstream-form')
 const toast = document.querySelector('#toast')
 const routeRows = document.querySelector('#image-route-rows')
+const modelSelectionDialog = document.querySelector('#image-model-selection-dialog')
+const modelSelectionSearch = document.querySelector('#image-model-selection-search')
+const modelSelectionList = document.querySelector('#image-model-selection-list')
+const modelSelectionSelectAll = document.querySelector('#image-model-selection-select-all')
+const modelSelectionConfirm = document.querySelector('#image-model-selection-confirm')
+const logSummary = document.querySelector('#image-log-summary')
+const logPagination = document.querySelector('#image-log-pagination')
+const logPageTotal = document.querySelector('#image-log-page-total')
+const logPageIndicator = document.querySelector('#image-log-page-indicator')
+const logPagePrev = document.querySelector('#image-log-page-prev')
+const logPageNext = document.querySelector('#image-log-page-next')
+const logPageSizeSelect = document.querySelector('#image-log-page-size')
 let dashboard = { upstreams: [], requests: [], stats: {} }
+let pendingSyncEntries = []
+let pendingRouteSnapshot = []
+let selectedAddedModels = new Set()
+let selectedRemovedIndexes = new Set()
+let logPage = 1
 
 function updateResponsiveClass() {
   document.documentElement.classList.toggle('is-mobile', window.matchMedia('(max-width: 760px)').matches)
@@ -16,12 +33,25 @@ function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[char])
 }
 
+const toastIsPopover = typeof toast.showPopover === 'function'
+if (toastIsPopover) toast.removeAttribute('hidden')
+
 function showToast(message, tone = 'default') {
   toast.textContent = message
   toast.dataset.tone = tone
-  toast.hidden = false
+  if (toastIsPopover) {
+    if (!toast.matches(':popover-open')) toast.showPopover()
+  } else {
+    toast.hidden = false
+  }
   clearTimeout(showToast.timer)
-  showToast.timer = setTimeout(() => { toast.hidden = true }, 2800)
+  showToast.timer = setTimeout(() => {
+    if (!toastIsPopover) {
+      toast.hidden = true
+      return
+    }
+    if (toast.matches(':popover-open')) toast.hidePopover()
+  }, 2800)
 }
 
 async function api(url, options = {}) {
@@ -121,6 +151,23 @@ function render() {
       <div class="task-summary"><strong>${escapeHtml(item.public_model)} → ${escapeHtml(item.upstream_model)}</strong><span>${escapeHtml(item.upstream_name)}</span></div>
       <div class="mobile-item-footer"><time>${formatTime(item.created_at)}</time><span>${formatCost(item.cost_per_request)} · ${item.latency_ms} ms</span></div>
     </article>`).join('')
+  renderLogPagination()
+}
+
+function renderLogPagination() {
+  const page = dashboard.pagination
+  const total = page?.total ?? dashboard.requests.length
+  logSummary.textContent = total ? `共 ${total} 条记录` : '暂无记录'
+  if (!total) {
+    logPagination.hidden = true
+    return
+  }
+  logPagination.hidden = false
+  const first = (page.page - 1) * page.page_size + 1
+  logPageTotal.textContent = `第 ${first} – ${first + dashboard.requests.length - 1} 条`
+  logPageIndicator.textContent = `${page.page} / ${page.pages}`
+  logPagePrev.disabled = page.page <= 1
+  logPageNext.disabled = page.page >= page.pages
 }
 
 function formatMegabytes(value) {
@@ -141,6 +188,7 @@ async function loadStorage() {
 
 async function loadDashboard() {
   dashboard = await api('/admin/api/images/dashboard')
+  logPage = dashboard.pagination?.page || 1
   render()
 }
 
@@ -150,9 +198,22 @@ async function loadLogs() {
   const outcome = document.querySelector('#image-log-outcome').value
   if (query) params.set('q', query)
   if (outcome) params.set('outcome', outcome)
+  params.set('page', logPage)
+  params.set('page_size', logPageSizeSelect.value)
   const result = await api(`/admin/api/images/requests?${params}`)
   dashboard.requests = result.requests
+  dashboard.pagination = result.pagination
+  logPage = result.pagination.page
   render()
+}
+
+async function goToLogPage(page) {
+  logPage = page
+  try {
+    await loadLogs()
+  } catch (error) {
+    showToast(error.message, 'error')
+  }
 }
 
 function addRouteRow(route = {}) {
@@ -170,6 +231,119 @@ function closeDialog() {
   dialog.close()
   form.reset()
   routeRows.innerHTML = ''
+}
+
+function routeUpstreamName(route) {
+  return route.upstream_model || route.public_model
+}
+
+function matchesSyncQuery(entry, query) {
+  return !query || entry.model.toLowerCase().includes(query)
+}
+
+function visibleSyncCheckboxes() {
+  return [...modelSelectionList.querySelectorAll('.model-selection-item:not(.sync-hidden) [data-image-sync-select]')]
+}
+
+function updateImageModelSelectionState() {
+  const checkboxes = visibleSyncCheckboxes()
+  const addedCount = selectedAddedModels.size
+  const removedCount = selectedRemovedIndexes.size
+  const selectedCount = addedCount + removedCount
+  modelSelectionConfirm.disabled = selectedCount === 0
+  modelSelectionConfirm.textContent = addedCount || removedCount
+    ? `同步选中项（新增 ${addedCount} · 移除 ${removedCount}）`
+    : '同步选中项'
+  const visibleSelected = checkboxes.filter((checkbox) => checkbox.checked).length
+  modelSelectionSelectAll.checked = checkboxes.length > 0 && visibleSelected === checkboxes.length
+  modelSelectionSelectAll.indeterminate = visibleSelected > 0 && visibleSelected < checkboxes.length
+}
+
+function syncEntryMarkup(entry, hidden) {
+  const rowClass = `model-selection-item${hidden ? ' sync-hidden' : ''}`
+  if (entry.kind === 'added') {
+    return `
+      <label class="${rowClass}">
+        <input type="checkbox" data-image-sync-select data-image-sync-add="${escapeHtml(entry.model)}"${selectedAddedModels.has(entry.model) ? ' checked' : ''}>
+        <span><strong>${escapeHtml(entry.model)}</strong><small>公开模型与上游模型同名，可稍后修改</small></span>
+      </label>`
+  }
+  const detail = entry.route.public_model === entry.route.upstream_model
+    ? '上游已不返回该模型'
+    : `当前别名 ${escapeHtml(entry.route.public_model)} · 上游已不返回`
+  return `
+      <label class="${rowClass}">
+        <input type="checkbox" data-image-sync-select data-image-sync-remove="${entry.index}"${selectedRemovedIndexes.has(entry.index) ? ' checked' : ''}>
+        <span><strong>${escapeHtml(entry.model)}</strong><small class="sync-removal">${detail}</small></span>
+      </label>`
+}
+
+function renderImageModelSelection() {
+  const query = modelSelectionSearch.value.trim().toLowerCase()
+  const isHidden = (entry) => !matchesSyncQuery(entry, query)
+  if (pendingSyncEntries.every(isHidden)) {
+    modelSelectionList.innerHTML = '<p class="model-selection-empty">没有匹配的模型</p>'
+    updateImageModelSelectionState()
+    return
+  }
+  const added = pendingSyncEntries.filter((entry) => entry.kind === 'added')
+  const removed = pendingSyncEntries.filter((entry) => entry.kind === 'removed')
+  const groups = []
+  if (added.length) {
+    const visibleAdded = added.some((entry) => !isHidden(entry))
+    groups.push(`<p class="model-selection-group"${visibleAdded ? '' : ' hidden'}>尚未加入路由 · 勾选后新增</p>`)
+    groups.push(added.map((entry) => syncEntryMarkup(entry, isHidden(entry))).join(''))
+  }
+  if (removed.length) {
+    const visibleRemoved = removed.some((entry) => !isHidden(entry))
+    groups.push(`<p class="model-selection-group"${visibleRemoved ? '' : ' hidden'}>上游已不返回 · 默认移除，取消勾选可保留</p>`)
+    groups.push(removed.map((entry) => syncEntryMarkup(entry, isHidden(entry))).join(''))
+  }
+  modelSelectionList.innerHTML = groups.join('')
+  modelSelectionList.querySelectorAll('[data-image-sync-select]').forEach((checkbox) => {
+    checkbox.addEventListener('change', () => {
+      if (checkbox.dataset.imageSyncAdd) {
+        if (checkbox.checked) selectedAddedModels.add(checkbox.dataset.imageSyncAdd)
+        else selectedAddedModels.delete(checkbox.dataset.imageSyncAdd)
+      } else if (checkbox.checked) {
+        selectedRemovedIndexes.add(Number(checkbox.dataset.imageSyncRemove))
+      } else {
+        selectedRemovedIndexes.delete(Number(checkbox.dataset.imageSyncRemove))
+      }
+      updateImageModelSelectionState()
+    })
+  })
+  updateImageModelSelectionState()
+}
+
+function openImageModelSelection({ additions, removals, snapshot }) {
+  pendingSyncEntries = [
+    ...additions.map((model) => ({ kind: 'added', model, index: null, route: null })),
+    ...removals.map(({ route, index }) => ({ kind: 'removed', model: routeUpstreamName(route), index, route })),
+  ]
+  pendingRouteSnapshot = snapshot
+  selectedAddedModels = new Set()
+  selectedRemovedIndexes = new Set(removals.map(({ index }) => index))
+  modelSelectionSearch.value = ''
+  modelSelectionSelectAll.checked = false
+  modelSelectionSelectAll.indeterminate = false
+  renderImageModelSelection()
+  modelSelectionDialog.showModal()
+  modelSelectionSearch.focus()
+}
+
+function closeImageModelSelection() {
+  pendingSyncEntries = []
+  pendingRouteSnapshot = []
+  selectedAddedModels = new Set()
+  selectedRemovedIndexes = new Set()
+  modelSelectionDialog.close()
+}
+
+function renderImageRoutes(routes) {
+  routeRows.innerHTML = ''
+  for (const route of routes) addRouteRow(route)
+  if (!routeRows.children.length) addRouteRow()
 }
 
 function openDialog(upstream = null) {
@@ -201,6 +375,38 @@ document.querySelector('#add-image-upstream').addEventListener('click', () => op
 document.querySelector('#add-image-route').addEventListener('click', () => addRouteRow())
 document.querySelector('#close-image-dialog').addEventListener('click', closeDialog)
 document.querySelector('#cancel-image-dialog').addEventListener('click', closeDialog)
+document.querySelector('#close-image-model-selection').addEventListener('click', closeImageModelSelection)
+document.querySelector('#cancel-image-model-selection').addEventListener('click', closeImageModelSelection)
+modelSelectionSearch.addEventListener('input', renderImageModelSelection)
+modelSelectionSelectAll.addEventListener('change', () => {
+  visibleSyncCheckboxes().forEach((checkbox) => {
+    checkbox.checked = modelSelectionSelectAll.checked
+    const addModel = checkbox.dataset.imageSyncAdd
+    const removeIndex = Number(checkbox.dataset.imageSyncRemove)
+    if (addModel) {
+      if (checkbox.checked) selectedAddedModels.add(addModel)
+      else selectedAddedModels.delete(addModel)
+    } else if (checkbox.checked) {
+      selectedRemovedIndexes.add(removeIndex)
+    } else {
+      selectedRemovedIndexes.delete(removeIndex)
+    }
+  })
+  updateImageModelSelectionState()
+})
+modelSelectionConfirm.addEventListener('click', () => {
+  const additions = pendingSyncEntries
+    .filter((entry) => entry.kind === 'added' && selectedAddedModels.has(entry.model))
+    .map((entry) => ({ public_model: entry.model, upstream_model: entry.model, cost_per_request: 0 }))
+  const kept = pendingRouteSnapshot.filter((_, index) => !selectedRemovedIndexes.has(index))
+  const removedCount = selectedRemovedIndexes.size
+  closeImageModelSelection()
+  renderImageRoutes([...kept, ...additions])
+  showToast(`已同步路由：新增 ${additions.length} 条、移除 ${removedCount} 条`)
+})
+modelSelectionDialog.addEventListener('click', (event) => {
+  if (event.target === modelSelectionDialog) closeImageModelSelection()
+})
 dialog.addEventListener('click', (event) => { if (event.target === dialog) closeDialog() })
 routeRows.addEventListener('click', (event) => {
   if (!event.target.classList.contains('route-remove')) return
@@ -244,8 +450,11 @@ document.querySelector('#refresh-image-button').addEventListener('click', async 
 
 document.querySelector('#image-log-filter').addEventListener('submit', async (event) => {
   event.preventDefault()
-  try { await loadLogs() } catch (error) { showToast(error.message, 'error') }
+  await goToLogPage(1)
 })
+logPagePrev.addEventListener('click', () => goToLogPage(logPage - 1))
+logPageNext.addEventListener('click', () => goToLogPage(logPage + 1))
+logPageSizeSelect.addEventListener('change', () => goToLogPage(1))
 
 document.querySelector('#discover-image-models').addEventListener('click', async (event) => {
   const button = event.currentTarget
@@ -269,7 +478,19 @@ document.querySelector('#discover-image-models').addEventListener('click', async
       }),
     })
     document.querySelector('#image-model-suggestions').innerHTML = result.models.map((model) => `<option value="${escapeHtml(model)}"></option>`).join('')
-    showToast(`已获取 ${result.models.length} 个上游模型`)
+    const snapshot = collectRoutes().filter((route) => route.public_model || route.upstream_model)
+    const routed = new Set(snapshot.map(routeUpstreamName))
+    const discovered = new Set(result.models)
+    const additions = result.models.filter((model) => !routed.has(model))
+    const removals = snapshot
+      .map((route, index) => ({ route, index }))
+      .filter(({ route }) => !discovered.has(routeUpstreamName(route)))
+    if (!additions.length && !removals.length) {
+      showToast(`已获取 ${result.models.length} 个上游模型，路由已是最新`)
+    } else {
+      openImageModelSelection({ additions, removals, snapshot })
+      showToast(`上游返回 ${result.models.length} 个模型：新增 ${additions.length} 个、已不返回 ${removals.length} 个`)
+    }
   } catch (error) {
     document.querySelector('#image-form-error').textContent = error.message
     document.querySelector('#image-form-error').hidden = false

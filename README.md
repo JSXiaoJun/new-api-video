@@ -19,6 +19,8 @@ Independent video upstream adapter for New API. It exposes a normalized `/v1/vid
 - Admin login, signed sessions, CSRF protection, and login rate limiting
 - Configurable persistent admin sessions (`SESSION_TTL_DAYS`, default 30 days)
 - Video content proxy with Range forwarding
+- Image generation and editing relay with per-request cost routing
+- Image model discovery that preserves route aliases and flags upstream removals
 
 ## Run Locally
 
@@ -221,6 +223,12 @@ Image generation and editing responses replace upstream image URLs with
 `/public/images/assets/{asset_id}` links. These links do not require the adapter API key and are retained for 7
 days; `b64_json` response data is returned unchanged.
 
+Image upstreams are configured on `/admin/images`. Each route maps a public model to an upstream model and a
+per-request cost. `获取模型` reads `/v1/models` from the upstream and opens a sync dialog: routes whose upstream model is
+still returned keep their existing public alias and cost, newly discovered models are listed as additions, and routes
+whose upstream model disappeared are pre-selected as removals (clear the checkbox to keep one). Nothing changes until
+the upstream is saved.
+
 Task polling responses intentionally omit upstream `id`, `task_id`, and raw `video_url` fields. New API sends its
 opaque task ID to the adapter in `X-Public-Task-ID` when creating a video. The adapter binds that ID after successful
 creation and returns `/public/videos/{public_task_id}/content` on the selected public media domain. This public link is
@@ -249,3 +257,22 @@ Updated New API versions pass the public `task_...` ID automatically. The audit 
 legacy tasks. For completed tasks, the audit view adds the public media URL to `url`, `video_url`, `result_url`, and
 `download_url` in the sanitized response. Audit payloads and source URLs are stored encrypted with `ENCRYPTION_KEY`;
 keep that key and `data/adapter.db` backed up together.
+
+## Console Logs
+
+The video console (`任务审计`) and the image console (`使用日志`) page through their history: ten rows per page by
+default, switchable to 20 or 50, with the row range and the filter result count shown above the controls. Search and
+status/outcome filters apply across the whole history, not just the current page. A page number past the end resolves
+to the last page instead of an empty table, so a stale tab cannot look like "no records".
+
+Both views are trimmed automatically on the retention sweep (`IMAGE_CLEANUP_INTERVAL_SECONDS`, default every 10
+minutes):
+
+- Video `tasks` / `audit_requests` / `audit_events` older than `HISTORY_RETENTION_HOURS` (default 72, i.e. three days)
+  are deleted. Only settled work is removed: a task still queued or processing is kept so an in-flight poll can resolve,
+  and a request whose public video link is still alive is kept until that link expires (at most 24 hours past the
+  window).
+- Image request logs older than `IMAGE_REQUEST_LOG_RETENTION_HOURS` (default 72 hours) are deleted, alongside the image
+  asset sweep.
+
+Both variables are clamped to a minimum of one hour.

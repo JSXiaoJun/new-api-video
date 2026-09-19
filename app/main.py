@@ -362,10 +362,12 @@ def image_integration_document(_: tuple[str, dict] = Depends(admin_session)):
 async def audit_tasks(
     q: str = Query(default="", max_length=191),
     status: str = Query(default="", pattern="^(|queued|processing|completed|failed)$"),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=database.DEFAULT_LOG_PAGE_SIZE, ge=1, le=database.MAX_LOG_PAGE_SIZE),
     _: tuple[str, dict] = Depends(admin_session),
 ):
     await proxy.reconcile_pending_tasks()
-    return {"tasks": database.list_audit_requests(q.strip(), status)}
+    return database.audit_task_page(q.strip(), status, page, page_size)
 
 
 @app.get("/admin/api/tasks/{relay_request_id}")
@@ -514,9 +516,11 @@ def run_image_storage_cleanup(_: dict = Depends(admin_mutation)):
 def image_requests(
     q: str = Query(default="", max_length=191),
     outcome: str = Query(default="", pattern="^(|success|failed)$"),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=database.DEFAULT_LOG_PAGE_SIZE, ge=1, le=database.MAX_LOG_PAGE_SIZE),
     _: tuple[str, dict] = Depends(admin_session),
 ):
-    return {"requests": image_database.list_requests(q.strip(), outcome)}
+    return image_database.request_page(q.strip(), outcome, page, page_size)
 
 
 @app.post("/admin/api/images/upstreams/models")

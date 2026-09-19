@@ -5,7 +5,7 @@ import sqlite3
 import time
 import uuid
 from contextlib import contextmanager
-from typing import Any, Iterator
+from typing import Any, Iterator, NamedTuple
 
 from .config import DEFAULT_PUBLIC_LINK_BASE_URL, PUBLIC_LINK_BASE_URLS, settings
 from .model_profiles import MAX_DURATION_SECONDS, capabilities_for, suggest_profile
@@ -16,6 +16,12 @@ PUBLIC_VIDEO_DOWNLOAD_LIMIT = 50
 PUBLIC_VIDEO_DOWNLOAD_LIMIT_MIN = 1
 PUBLIC_VIDEO_DOWNLOAD_LIMIT_MAX = 10_000
 PUBLIC_VIDEO_LINK_TTL_SECONDS = 24 * 60 * 60
+
+# Both log views page through their history. Ten rows keeps the audit table
+# readable without scrolling, and the ceiling bounds how much a single admin
+# request can pull out of SQLite.
+DEFAULT_LOG_PAGE_SIZE = 10
+MAX_LOG_PAGE_SIZE = 200
 
 
 settings.data_dir.mkdir(parents=True, exist_ok=True)
@@ -719,7 +725,38 @@ def update_task(task_id: str, status: str, source_video_url: str | None, error: 
             )
 
 
-def list_audit_requests(query: str = "", status: str = "", limit: int = 50) -> list[dict[str, Any]]:
+class Page(NamedTuple):
+    """A clamped slice of a paginated log view.
+
+    The page number is clamped to the available range so a stale browser tab
+    that asks for page 9 of 2 pages gets the last page instead of an empty
+    table, and `offset` is what the SQL query actually needs.
+    """
+
+    page: int
+    page_size: int
+    pages: int
+    total: int
+    offset: int
+
+    def as_dict(self) -> dict[str, int]:
+        return {
+            "page": self.page,
+            "page_size": self.page_size,
+            "pages": self.pages,
+            "total": self.total,
+        }
+
+
+def paginate(total: int, page: int, page_size: int) -> Page:
+    size = max(1, min(int(page_size or DEFAULT_LOG_PAGE_SIZE), MAX_LOG_PAGE_SIZE))
+    pages = max(1, -(-max(0, int(total)) // size))
+    number = max(1, min(int(page or 1), pages))
+    return Page(number, size, pages, max(0, int(total)), (number - 1) * size)
+
+
+def _audit_request_filter(query: str, status: str) -> tuple[str, list[Any]]:
+    """Build the WHERE clause shared by the count and the page query."""
     clauses = []
     params: list[Any] = []
     if query:
@@ -732,7 +769,22 @@ def list_audit_requests(query: str = "", status: str = "", limit: int = 50) -> l
         clauses.append("a.status = ?")
         params.append(status)
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-    params.append(max(1, min(limit, 200)))
+    return where, params
+
+
+def count_audit_requests(query: str = "", status: str = "") -> int:
+    where, params = _audit_request_filter(query, status)
+    with connection() as conn:
+        return conn.execute(
+            f"SELECT COUNT(*) FROM audit_requests a {where}", params
+        ).fetchone()[0]
+
+
+def list_audit_requests(
+    query: str = "", status: str = "", limit: int = DEFAULT_LOG_PAGE_SIZE, offset: int = 0
+) -> list[dict[str, Any]]:
+    where, params = _audit_request_filter(query, status)
+    params.extend([max(1, min(limit, MAX_LOG_PAGE_SIZE)), max(0, offset)])
     with connection() as conn:
         rows = conn.execute(
             f"""
@@ -740,11 +792,24 @@ def list_audit_requests(query: str = "", status: str = "", limit: int = 50) -> l
                    a.status, a.error, a.created_at, a.updated_at, u.name AS upstream_name
             FROM audit_requests a JOIN upstreams u ON u.id = a.upstream_id
             {where}
-            ORDER BY a.created_at DESC LIMIT ?
+            ORDER BY a.created_at DESC, a.relay_request_id DESC LIMIT ? OFFSET ?
             """,
             params,
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+def audit_task_page(
+    query: str = "",
+    status: str = "",
+    page: int = 1,
+    page_size: int = DEFAULT_LOG_PAGE_SIZE,
+) -> dict[str, Any]:
+    page_info = paginate(count_audit_requests(query, status), page, page_size)
+    return {
+        "tasks": list_audit_requests(query, status, page_info.page_size, page_info.offset),
+        "pagination": page_info.as_dict(),
+    }
 
 
 def get_audit_request(relay_request_id: str) -> dict[str, Any] | None:
@@ -1030,7 +1095,7 @@ def dashboard_data() -> dict[str, Any]:
     return {
         "stats": {"upstreams": upstreams, "enabled": enabled, "models": models, "tasks": tasks},
         "upstreams": list_upstreams(),
-        "tasks": list_audit_requests(),
+        **audit_task_page(),
     }
 
 

@@ -135,6 +135,7 @@ class CoreTests(unittest.TestCase):
         self.assertIn('id="model-selection-search"', response.text)
         self.assertIn('id="model-selection-select-all"', response.text)
         self.assertIn('id="model-selection-confirm"', response.text)
+        self.assertIn('popover="manual"', response.text)
         admin_script = client.get("/static/admin.js")
         self.assertEqual(admin_script.status_code, 200)
         self.assertIn('max="50"', admin_script.text)
@@ -149,6 +150,14 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn('id="image-upstream-rows"', response.text)
         self.assertIn('id="image-storage-cleanup"', response.text)
+        self.assertIn('id="image-model-selection-dialog"', response.text)
+        self.assertIn('id="image-model-selection-confirm"', response.text)
+        self.assertIn('popover="manual"', response.text)
+        image_script = client.get("/static/image_admin.js")
+        self.assertEqual(image_script.status_code, 200)
+        self.assertIn("renderImageRoutes", image_script.text)
+        self.assertIn("data-image-sync-remove", image_script.text)
+        self.assertIn("showPopover", image_script.text)
         report = client.get("/admin/api/images/storage")
         self.assertEqual(report.status_code, 200)
         self.assertIn("max_megabytes", report.json())
@@ -3065,6 +3074,105 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(detail["public_task_id"], "task_public_create")
         self.assertIsNotNone(detail["public_download_expires_at"])
         self.assertIn("pixellelabs", detail["events"][0]["upstream_body"])
+
+    def test_log_pagination_clamps_page_and_page_size(self):
+        page = database.paginate(total=25, page=9, page_size=10)
+        self.assertEqual((page.page, page.pages, page.total, page.offset), (3, 3, 25, 20))
+        page = database.paginate(total=25, page=0, page_size=10)
+        self.assertEqual((page.page, page.pages, page.offset), (1, 3, 0))
+        page = database.paginate(total=0, page=4, page_size=10)
+        self.assertEqual((page.page, page.pages, page.total, page.offset), (1, 1, 0, 0))
+        # A page size beyond the ceiling is clamped rather than rejected.
+        page = database.paginate(total=10, page=1, page_size=10_000)
+        self.assertEqual(page.page_size, database.MAX_LOG_PAGE_SIZE)
+        self.assertEqual(database.DEFAULT_LOG_PAGE_SIZE, 10)
+
+    def test_image_log_endpoint_pages_and_filters(self):
+        model = f"image-page-{time.time_ns()}"
+        upstream = image_database.save_upstream(
+            {
+                "name": "page-image",
+                "base_url": "https://page-image.example",
+                "api_key": "page-key",
+                "enabled": True,
+                "priority": 1,
+                "routes": [{
+                    "public_model": model,
+                    "upstream_model": model,
+                    "cost_per_request": 0.01,
+                }],
+            }
+        )
+        route = image_database.select_route(model)
+        self.assertIsNotNone(route)
+        try:
+            for index in range(12):
+                image_database.record_request(
+                    route,
+                    "generation",
+                    model,
+                    "1024x1024",
+                    "high",
+                    success=index % 2 == 0,
+                    http_status=200 if index % 2 == 0 else 500,
+                    latency_ms=100 + index,
+                    health_outcome="success" if index % 2 == 0 else "failure",
+                )
+
+            client = TestClient(app)
+            client.cookies.set(SESSION_COOKIE, create_session("admin"))
+
+            first = client.get("/admin/api/images/requests", params={"q": model}).json()
+            self.assertEqual(first["pagination"], {"page": 1, "page_size": 10, "pages": 2, "total": 12})
+            self.assertEqual(len(first["requests"]), 10)
+
+            second = client.get(
+                "/admin/api/images/requests", params={"q": model, "page": 2}
+            ).json()
+            self.assertEqual(second["pagination"]["page"], 2)
+            self.assertEqual(len(second["requests"]), 2)
+            # The two pages never repeat a row.
+            first_ids = {item["request_id"] for item in first["requests"]}
+            self.assertFalse(first_ids & {item["request_id"] for item in second["requests"]})
+
+            # A page past the end falls back to the last page instead of 404.
+            overshoot = client.get(
+                "/admin/api/images/requests", params={"q": model, "page": 99}
+            ).json()
+            self.assertEqual(overshoot["pagination"]["page"], 2)
+            self.assertEqual(len(overshoot["requests"]), 2)
+
+            page_size = client.get(
+                "/admin/api/images/requests", params={"q": model, "page_size": 50}
+            ).json()
+            self.assertEqual(page_size["pagination"]["page_size"], 50)
+            self.assertEqual(len(page_size["requests"]), 12)
+
+            failures = client.get(
+                "/admin/api/images/requests", params={"q": model, "outcome": "failed"}
+            ).json()
+            self.assertEqual(failures["pagination"]["total"], 6)
+            self.assertTrue(all(not item["success"] for item in failures["requests"]))
+        finally:
+            with database.connection() as conn:
+                conn.execute("DELETE FROM image_request_logs WHERE public_model = ?", (model,))
+            image_database.delete_upstream(upstream["id"])
+
+    def test_task_log_endpoint_pages(self):
+        client = TestClient(app)
+        client.cookies.set(SESSION_COOKIE, create_session("admin"))
+
+        first = client.get("/admin/api/tasks", params={"page": 1, "page_size": 10}).json()
+        self.assertEqual(first["pagination"]["page"], 1)
+        self.assertEqual(first["pagination"]["page_size"], 10)
+        self.assertLessEqual(len(first["tasks"]), 10)
+
+        # An empty result set still reports one page so the control can hide cleanly.
+        empty = client.get(
+            "/admin/api/tasks", params={"q": f"vrq_absent_{time.time_ns()}"}
+        ).json()
+        self.assertEqual(empty["pagination"], {"page": 1, "page_size": 10, "pages": 1, "total": 0})
+        self.assertEqual(empty["tasks"], [])
 
 
 if __name__ == "__main__":

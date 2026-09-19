@@ -757,7 +757,8 @@ def record_request(
     return request_id
 
 
-def list_requests(query: str = "", outcome: str = "", limit: int = 50) -> list[dict[str, Any]]:
+def _request_log_filter(query: str, outcome: str) -> tuple[str, list[Any]]:
+    """Build the WHERE clause shared by the count and the page query."""
     clauses = []
     params: list[Any] = []
     if query:
@@ -771,7 +772,23 @@ def list_requests(query: str = "", outcome: str = "", limit: int = 50) -> list[d
     elif outcome == "failed":
         clauses.append("success = 0")
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-    params.append(max(1, min(limit, 200)))
+    return where, params
+
+
+def count_requests(query: str = "", outcome: str = "") -> int:
+    where, params = _request_log_filter(query, outcome)
+    with database.connection() as conn:
+        return conn.execute(f"SELECT COUNT(*) FROM image_request_logs {where}", params).fetchone()[0]
+
+
+def list_requests(
+    query: str = "",
+    outcome: str = "",
+    limit: int = database.DEFAULT_LOG_PAGE_SIZE,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    where, params = _request_log_filter(query, outcome)
+    params.extend([max(1, min(limit, database.MAX_LOG_PAGE_SIZE)), max(0, offset)])
     with database.connection() as conn:
         rows = conn.execute(
             f"""
@@ -779,7 +796,7 @@ def list_requests(query: str = "", outcome: str = "", limit: int = 50) -> list[d
                    size, quality, cost_micros, success, http_status, health_outcome,
                    latency_ms, error, created_at
             FROM image_request_logs {where}
-            ORDER BY created_at DESC LIMIT ?
+            ORDER BY created_at DESC, request_id DESC LIMIT ? OFFSET ?
             """,
             params,
         ).fetchall()
@@ -790,6 +807,19 @@ def list_requests(query: str = "", outcome: str = "", limit: int = 50) -> list[d
         item["cost_per_request"] = _cost_from_micros(item.pop("cost_micros"))
         result.append(item)
     return result
+
+
+def request_page(
+    query: str = "",
+    outcome: str = "",
+    page: int = 1,
+    page_size: int = database.DEFAULT_LOG_PAGE_SIZE,
+) -> dict[str, Any]:
+    page_info = database.paginate(count_requests(query, outcome), page, page_size)
+    return {
+        "requests": list_requests(query, outcome, page_info.page_size, page_info.offset),
+        "pagination": page_info.as_dict(),
+    }
 
 
 def dashboard_data() -> dict[str, Any]:
@@ -833,7 +863,7 @@ def dashboard_data() -> dict[str, Any]:
                 "success_rate": round(weighted_successes / samples, 4) if samples else None,
                 "score": round(weighted_score / sum(max(1, item["samples"]) for item in route_health), 4),
             }
-    return {"stats": stats, "upstreams": upstreams, "requests": list_requests()}
+    return {"stats": stats, "upstreams": upstreams, **request_page()}
 
 
 def list_models() -> list[str]:

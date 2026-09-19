@@ -6,7 +6,7 @@
     <meta name="csrf-token" content="{{ csrf_token }}">
     <link rel="icon" href="data:,">
     <title>Video Relay Console</title>
-    <link rel="stylesheet" href="/static/admin.css?v=20260827-1">
+    <link rel="stylesheet" href="/static/admin.css?v=20260918-3">
   </head>
   <body>
     <header class="app-header">
@@ -76,7 +76,7 @@
 
       <section class="table-section task-section">
         <div class="section-heading task-heading">
-          <div><h2>任务审计</h2><span>最近 50 条</span></div>
+          <div><h2>任务审计</h2><span id="task-summary">正在读取…</span></div>
           <form id="task-filter" class="task-filter" role="search">
             <input id="task-search" type="search" maxlength="191" placeholder="关联 ID、任务 ID 或模型" aria-label="搜索任务">
             <select id="task-status" aria-label="任务状态">
@@ -97,6 +97,21 @@
           <div id="task-empty" class="empty-state" hidden>暂无转接任务</div>
         </div>
         <div id="task-cards" class="mobile-list" aria-label="最近任务列表"></div>
+        <div id="task-pagination" class="log-pagination" hidden>
+          <span id="task-page-total" class="log-page-total"></span>
+          <div class="log-page-controls">
+            <label class="log-page-size">每页
+              <select id="task-page-size" aria-label="每页条数">
+                <option value="10" selected>10 条</option>
+                <option value="20">20 条</option>
+                <option value="50">50 条</option>
+              </select>
+            </label>
+            <button id="task-page-prev" class="quiet-button compact" type="button">上一页</button>
+            <span id="task-page-indicator" class="log-page-indicator"></span>
+            <button id="task-page-next" class="quiet-button compact" type="button">下一页</button>
+          </div>
+        </div>
       </section>
     </main>
 
@@ -209,7 +224,7 @@
         </div>
       </div>
     </dialog>
-    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
-    <script src="/static/admin.js?v=20260902-2" defer></script>
+    <div id="toast" class="toast" role="status" aria-live="polite" popover="manual" hidden></div>
+    <script src="/static/admin.js?v=20260918-3" defer></script>
   </body>
 </html>

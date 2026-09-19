@@ -6,7 +6,7 @@
     <meta name="csrf-token" content="{{ csrf_token }}">
     <link rel="icon" href="data:,">
     <title>Image Relay Console</title>
-    <link rel="stylesheet" href="/static/admin.css?v=20260814-2">
+    <link rel="stylesheet" href="/static/admin.css?v=20260918-3">
   </head>
   <body>
     <header class="app-header">
@@ -74,7 +74,7 @@
 
       <section class="table-section task-section">
         <div class="section-heading task-heading">
-          <div><h2>使用日志</h2><span>最近 50 条</span></div>
+          <div><h2>使用日志</h2><span id="image-log-summary">正在读取…</span></div>
           <form id="image-log-filter" class="task-filter" role="search">
             <input id="image-log-search" type="search" maxlength="191" placeholder="请求 ID、模型或上游" aria-label="搜索使用日志">
             <select id="image-log-outcome" aria-label="请求结果">
@@ -93,6 +93,21 @@
           <div id="image-log-empty" class="empty-state" hidden>暂无画图请求</div>
         </div>
         <div id="image-log-cards" class="mobile-list" aria-label="画图使用日志"></div>
+        <div id="image-log-pagination" class="log-pagination" hidden>
+          <span id="image-log-page-total" class="log-page-total"></span>
+          <div class="log-page-controls">
+            <label class="log-page-size">每页
+              <select id="image-log-page-size" aria-label="每页条数">
+                <option value="10" selected>10 条</option>
+                <option value="20">20 条</option>
+                <option value="50">50 条</option>
+              </select>
+            </label>
+            <button id="image-log-page-prev" class="quiet-button compact" type="button">上一页</button>
+            <span id="image-log-page-indicator" class="log-page-indicator"></span>
+            <button id="image-log-page-next" class="quiet-button compact" type="button">下一页</button>
+          </div>
+        </div>
       </section>
     </main>
 
@@ -139,7 +154,26 @@
         </div>
       </form>
     </dialog>
-    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
-    <script src="/static/image_admin.js?v=20260807-2" defer></script>
+    <dialog id="image-model-selection-dialog" class="model-selection-dialog">
+      <form method="dialog" class="model-selection-form">
+        <div class="dialog-heading">
+          <div><p class="eyebrow">MODEL DISCOVERY</p><h2>同步上游模型</h2></div>
+          <button id="close-image-model-selection" class="close-button" type="button" aria-label="关闭">×</button>
+        </div>
+        <p class="model-selection-hint">已存在路由中的模型会保留原有别名与成本。新增的路由使用同名公开模型，默认移除上游已不返回的路由；改动在保存画图上游后才写入。</p>
+        <div class="model-selection-toolbar">
+          <input id="image-model-selection-search" type="search" placeholder="筛选上游模型名" aria-label="筛选上游模型">
+          <label><input id="image-model-selection-select-all" type="checkbox"> 全选</label>
+        </div>
+        <div id="image-model-selection-list" class="model-selection-list"></div>
+        <div class="dialog-actions">
+          <button id="cancel-image-model-selection" class="quiet-button compact" type="button">取消</button>
+          <span class="action-spacer"></span>
+          <button id="image-model-selection-confirm" class="primary-button compact" type="button" disabled>同步选中项</button>
+        </div>
+      </form>
+    </dialog>
+    <div id="toast" class="toast" role="status" aria-live="polite" popover="manual" hidden></div>
+    <script src="/static/image_admin.js?v=20260918-3" defer></script>
   </body>
 </html>

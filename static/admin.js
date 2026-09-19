@@ -22,6 +22,13 @@ const publicLinkBaseUrl = document.querySelector('#public-link-base-url')
 const publicVideoSettingsForm = document.querySelector('#public-video-settings-form')
 const publicVideoDownloadLimit = document.querySelector('#public-video-download-limit')
 const integrationDocumentButton = document.querySelector('#integration-document-button')
+const taskSummary = document.querySelector('#task-summary')
+const taskPagination = document.querySelector('#task-pagination')
+const taskPageTotal = document.querySelector('#task-page-total')
+const taskPageIndicator = document.querySelector('#task-page-indicator')
+const taskPagePrev = document.querySelector('#task-page-prev')
+const taskPageNext = document.querySelector('#task-page-next')
+const taskPageSizeSelect = document.querySelector('#task-page-size')
 let dashboard = { upstreams: [], tasks: [], stats: {} }
 let activeAudit = null
 let activeAuditView = 'request'
@@ -29,6 +36,7 @@ let activeDurationMenu = null
 let pendingDiscoveredModels = []
 let selectedDiscoveredModels = new Set()
 let taskRefreshInFlight = false
+let taskPage = 1
 
 function updateResponsiveClass() {
   document.documentElement.classList.toggle('is-mobile', window.matchMedia('(max-width: 760px)').matches)
@@ -41,12 +49,25 @@ function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[char])
 }
 
+const toastIsPopover = typeof toast.showPopover === 'function'
+if (toastIsPopover) toast.removeAttribute('hidden')
+
 function showToast(message, tone = 'default') {
   toast.textContent = message
   toast.dataset.tone = tone
-  toast.hidden = false
+  if (toastIsPopover) {
+    if (!toast.matches(':popover-open')) toast.showPopover()
+  } else {
+    toast.hidden = false
+  }
   clearTimeout(showToast.timer)
-  showToast.timer = setTimeout(() => { toast.hidden = true }, 2800)
+  showToast.timer = setTimeout(() => {
+    if (!toastIsPopover) {
+      toast.hidden = true
+      return
+    }
+    if (toast.matches(':popover-open')) toast.hidePopover()
+  }, 2800)
 }
 
 function profileLabel(profile) {
@@ -189,10 +210,28 @@ function render() {
       <div class="task-summary"><strong>${escapeHtml(task.model)}</strong><span>${escapeHtml(task.upstream_name)}</span></div>
       <div class="mobile-item-footer"><time>${formatTime(task.created_at)}</time><button class="table-action" data-audit="${escapeHtml(task.relay_request_id)}" type="button">详情</button></div>
     </article>`).join('')
+  renderTaskPagination()
+}
+
+function renderTaskPagination() {
+  const page = dashboard.pagination
+  const total = page?.total ?? dashboard.tasks.length
+  taskSummary.textContent = total ? `共 ${total} 条记录` : '暂无记录'
+  if (!total) {
+    taskPagination.hidden = true
+    return
+  }
+  taskPagination.hidden = false
+  const first = (page.page - 1) * page.page_size + 1
+  taskPageTotal.textContent = `第 ${first} – ${first + dashboard.tasks.length - 1} 条`
+  taskPageIndicator.textContent = `${page.page} / ${page.pages}`
+  taskPagePrev.disabled = page.page <= 1
+  taskPageNext.disabled = page.page >= page.pages
 }
 
 async function loadDashboard() {
   dashboard = await api('/admin/api/dashboard')
+  taskPage = dashboard.pagination?.page || 1
   render()
 }
 
@@ -202,9 +241,22 @@ async function loadTasks() {
   const status = document.querySelector('#task-status').value
   if (query) params.set('q', query)
   if (status) params.set('status', status)
+  params.set('page', taskPage)
+  params.set('page_size', taskPageSizeSelect.value)
   const result = await api(`/admin/api/tasks?${params}`)
   dashboard.tasks = result.tasks
+  dashboard.pagination = result.pagination
+  taskPage = result.pagination.page
   render()
+}
+
+async function goToTaskPage(page) {
+  taskPage = page
+  try {
+    await loadTasks()
+  } catch (error) {
+    showToast(error.message, 'error')
+  }
 }
 
 async function refreshPendingTasks() {
@@ -750,8 +802,11 @@ publicVideoSettingsForm.addEventListener('submit', async (event) => {
 })
 document.querySelector('#task-filter').addEventListener('submit', async (event) => {
   event.preventDefault()
-  try { await loadTasks() } catch (error) { showToast(error.message, 'error') }
+  await goToTaskPage(1)
 })
+taskPagePrev.addEventListener('click', () => goToTaskPage(taskPage - 1))
+taskPageNext.addEventListener('click', () => goToTaskPage(taskPage + 1))
+taskPageSizeSelect.addEventListener('change', () => goToTaskPage(1))
 document.querySelector('#task-rows').addEventListener('click', (event) => {
   if (event.target.dataset.audit) openAuditDialog(event.target.dataset.audit)
 })
