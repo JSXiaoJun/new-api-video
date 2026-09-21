@@ -30,7 +30,12 @@ from app.channels import o10_grok
 from app.config import settings
 from app.main import app, normalize_discovered_models
 from app.image_proxy import ASSET_LINK_HEADER, classify_health_outcome, forward_json
-from app.model_profiles import capabilities_for, transform_create_payload
+from app.model_profiles import (
+    capabilities_for,
+    effective_video_limit,
+    limit_reference_videos,
+    transform_create_payload,
+)
 from app.proxy import create_video, fetch_task, normalize_status, normalize_task_payload, stream_content, upstream_error
 from app.security import SESSION_COOKIE, create_session, csrf_token, read_session, secret_box
 from fastapi.responses import Response
@@ -1641,6 +1646,7 @@ class CoreTests(unittest.TestCase):
 
             self.assertIn("ark-v3", table_sql)
             self.assertIn("sub2api-video", table_sql)
+            self.assertIn("mai-token", table_sql)
             self.assertIn("funai", table_sql)
             self.assertEqual([(route["model"], route["protocol"]) for route in routes], [
                 ("ark-public", "ark-v3"),
@@ -2323,6 +2329,337 @@ class CoreTests(unittest.TestCase):
             "aspect_ratio": "9:16",
             "images": ["https://cdn/face.png"],
         })
+
+    def test_manxue_933_forwards_every_reference_video(self):
+        videos = ["https://cdn/one.mp4", "https://cdn/two.mp4", "https://cdn/three.mp4"]
+        payload = transform_create_payload(
+            {
+                "model": "manxue-933",
+                "prompt": "test",
+                "reference_videos": videos,
+                "video_url": "https://cdn/one.mp4",
+            },
+            "manxue-933",
+        )
+
+        self.assertEqual(payload["reference_videos"], videos)
+        # The undocumented aliases must be consumed instead of leaking upstream.
+        self.assertNotIn("video_url", payload)
+        self.assertNotIn("video_urls", payload)
+        self.assertEqual(capabilities_for("manxue-933")["maxVideos"], 3)
+
+    def test_single_video_profiles_keep_one_reference_video(self):
+        videos = ["https://cdn/one.mp4", "https://cdn/two.mp4", "https://cdn/three.mp4"]
+        payload = transform_create_payload(
+            {"model": "sora2", "prompt": "test", "reference_videos": videos},
+            "gemini-omni",
+        )
+        self.assertEqual(payload["reference_video"], "https://cdn/one.mp4")
+        self.assertNotIn("reference_videos", payload)
+        self.assertEqual(capabilities_for("gemini-omni")["maxVideos"], 1)
+
+    def test_reference_video_plural_array_wins_over_missing_singular(self):
+        videos = ["https://cdn/one.mp4", "https://cdn/two.mp4"]
+        payload = transform_create_payload(
+            {"model": "manxue-933", "prompt": "test", "video_urls": videos},
+            "manxue-933",
+        )
+        self.assertEqual(payload["reference_videos"], videos)
+
+    def test_video_capabilities_report_a_count_for_every_channel(self):
+        self.assertEqual(capabilities_for("ark-seedance-2")["maxVideos"], 3)
+        self.assertEqual(capabilities_for("pro666-sd2-5")["maxVideos"], 3)
+        self.assertEqual(capabilities_for("rolldek-sd25-ch1")["maxVideos"], 10)
+        self.assertEqual(capabilities_for("mai-token-720p")["maxVideos"], 3)
+        self.assertEqual(capabilities_for("funai-kling")["maxVideos"], 1)
+        # Rejecting reference video must report zero, not a misleading one.
+        # ``referenceVideo`` alone cannot express this, which is why the count
+        # also has to track the route's supports_video flag.
+        self.assertEqual(capabilities_for("rolldek-sd2-ch3", supports_video=False)["maxVideos"], 0)
+        self.assertEqual(capabilities_for("sora2", supports_video=False)["maxVideos"], 0)
+
+    def test_unconfigured_video_count_leaves_the_request_untouched(self):
+        # ``None`` means the operator never set ``video_count``, so the route
+        # must relay exactly what it relayed before the setting existed.
+        self.assertIsNone(effective_video_limit(None))
+
+        legacy = {"model": "sora2", "prompt": "test", "reference_video": "https://cdn/one.mp4"}
+        self.assertIs(limit_reference_videos(legacy, None), legacy)
+
+        # A channel that accepts several clips keeps receiving all of them.
+        many = {
+            "model": "sd-2.5-ch1",
+            "prompt": "test",
+            "reference_videos": [f"https://cdn/{index}.mp4" for index in range(4)],
+        }
+        self.assertIs(limit_reference_videos(many, None), many)
+
+    def test_configured_video_count_truncates_in_order(self):
+        videos = [f"https://cdn/{index}.mp4" for index in range(4)]
+        payload = limit_reference_videos(
+            {"model": "sd-2.5-ch1", "prompt": "test", "reference_videos": videos},
+            2,
+        )
+
+        self.assertEqual(payload["reference_videos"], videos[:2])
+        self.assertEqual(effective_video_limit(2), 2)
+
+    def test_single_reference_video_survives_a_matching_limit(self):
+        # The旧格式 compatibility case: one clip via the singular field, and a
+        # limit that already accommodates it, must not be rewritten at all.
+        legacy = {"model": "sora2", "prompt": "test", "reference_video": "https://cdn/one.mp4"}
+        self.assertIs(limit_reference_videos(legacy, 1), legacy)
+
+        # Even a generous limit leaves the singular spelling alone.
+        self.assertIs(limit_reference_videos(legacy, 3), legacy)
+
+    def test_video_count_zero_drops_every_reference_video(self):
+        payload = limit_reference_videos(
+            {
+                "model": "sora2",
+                "prompt": "test",
+                "reference_video": "https://cdn/one.mp4",
+                "reference_videos": ["https://cdn/two.mp4"],
+            },
+            0,
+        )
+
+        for field in ("reference_video", "reference_videos", "video_url", "video_urls", "videos"):
+            self.assertNotIn(field, payload)
+        self.assertEqual(payload["prompt"], "test")
+        self.assertEqual(effective_video_limit(0), 0)
+
+    def test_adapter_aliases_cannot_bypass_the_video_limit(self):
+        # ``videos`` / ``video_refs`` are adapter-level spellings. If the cap
+        # ignored them a caller could evade the operator's limit by renaming
+        # the field, so they are collected and rewritten too.
+        payload = limit_reference_videos(
+            {
+                "model": "sd-2.5-ch1",
+                "prompt": "test",
+                "videos": ["https://cdn/one.mp4", "https://cdn/two.mp4", "https://cdn/three.mp4"],
+            },
+            1,
+        )
+
+        self.assertEqual(payload["reference_videos"], ["https://cdn/one.mp4"])
+        self.assertNotIn("videos", payload)
+
+    def test_route_video_count_round_trips_and_drives_capabilities(self):
+        model = f"video-count-{time.time_ns()}"
+        upstream = database.save_upstream({
+            "name": f"video-count-{time.time_ns()}",
+            "base_url": "https://video-count.example",
+            "api_key": "video-count-key",
+            "enabled": True,
+            "priority": 5,
+            "routes": [{
+                "model": model,
+                "upstream_model": "sd-2.5-ch1",
+                "protocol": "rolldek",
+                "profile": "rolldek-sd25-ch1",
+                "video_count": 2,
+            }],
+        })
+        try:
+            route = database.get_upstream(upstream["id"])["routes"][0]
+            self.assertEqual(route["video_count"], 2)
+            capabilities = next(
+                item for item in database.list_model_capabilities() if item["id"] == model
+            )["capabilities"]
+            # The advertised limit must be the enforced one, not the channel's.
+            self.assertEqual(capabilities["maxVideos"], 2)
+        finally:
+            database.delete_upstream(upstream["id"])
+
+    def test_route_video_count_is_advertised_as_zero_when_disabled(self):
+        model = f"video-off-{time.time_ns()}"
+        upstream = database.save_upstream({
+            "name": f"video-off-{time.time_ns()}",
+            "base_url": "https://video-off.example",
+            "api_key": "video-off-key",
+            "enabled": True,
+            "priority": 5,
+            "routes": [{
+                "model": model,
+                "upstream_model": "sd-2.5-ch1",
+                "protocol": "rolldek",
+                "profile": "rolldek-sd25-ch1",
+                "video_count": 0,
+            }],
+        })
+        try:
+            capabilities = next(
+                item for item in database.list_model_capabilities() if item["id"] == model
+            )["capabilities"]
+            self.assertEqual(capabilities["maxVideos"], 0)
+            self.assertFalse(capabilities["referenceVideo"])
+        finally:
+            database.delete_upstream(upstream["id"])
+
+    def test_configured_video_count_applies_to_the_relayed_request(self):
+        model = f"video-cap-{time.time_ns()}"
+        upstream = database.save_upstream({
+            "name": f"video-cap-{time.time_ns()}",
+            "base_url": "https://video-cap.example",
+            "api_key": "video-cap-key",
+            "enabled": True,
+            "priority": 5,
+            "routes": [{
+                "model": model,
+                "upstream_model": "sd-2.5-ch1",
+                "protocol": "rolldek",
+                "profile": "rolldek-sd25-ch1",
+                "video_count": 1,
+            }],
+        })
+        captured = {}
+
+        class MockAsyncClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_):
+                return None
+
+            async def post(self, url, **kwargs):
+                captured["payload"] = kwargs["json"]
+                return httpx.Response(
+                    200,
+                    request=httpx.Request("POST", url),
+                    json={"task_id": "video-cap-task", "status": "queued"},
+                )
+
+        try:
+            with patch("app.proxy.httpx.AsyncClient", return_value=MockAsyncClient()):
+                result = asyncio.run(create_video({
+                    "model": model,
+                    "prompt": "test",
+                    "reference_videos": [
+                        "https://cdn/one.mp4",
+                        "https://cdn/two.mp4",
+                        "https://cdn/three.mp4",
+                    ],
+                }, None))
+
+            self.assertEqual(result.status_code, 200)
+            # RollDek CH1 relays ``video_urls``; only the configured clip count
+            # may reach the upstream.
+            self.assertEqual(captured["payload"]["video_urls"], ["https://cdn/one.mp4"])
+        finally:
+            database.delete_upstream(upstream["id"])
+
+    def test_legacy_single_reference_video_still_reaches_the_upstream(self):
+        model = f"video-legacy-{time.time_ns()}"
+        upstream = database.save_upstream({
+            "name": f"video-legacy-{time.time_ns()}",
+            "base_url": "https://video-legacy.example",
+            "api_key": "video-legacy-key",
+            "enabled": True,
+            "priority": 5,
+            "routes": [{
+                "model": model,
+                "upstream_model": "sd-2.5-ch1",
+                "protocol": "rolldek",
+                "profile": "rolldek-sd25-ch1",
+            }],
+        })
+        captured = {}
+
+        class MockAsyncClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_):
+                return None
+
+            async def post(self, url, **kwargs):
+                captured["payload"] = kwargs["json"]
+                return httpx.Response(
+                    200,
+                    request=httpx.Request("POST", url),
+                    json={"task_id": "video-legacy-task", "status": "queued"},
+                )
+
+        try:
+            with patch("app.proxy.httpx.AsyncClient", return_value=MockAsyncClient()):
+                result = asyncio.run(create_video({
+                    "model": model,
+                    "prompt": "test",
+                    "reference_video": "https://cdn/legacy.mp4",
+                }, None))
+
+            self.assertEqual(result.status_code, 200)
+            self.assertEqual(captured["payload"]["video_urls"], ["https://cdn/legacy.mp4"])
+        finally:
+            database.delete_upstream(upstream["id"])
+
+    def test_admin_api_round_trips_the_configured_video_count(self):
+        # The operator path goes through the admin HTTP API and the Pydantic
+        # schema, so the field has to survive validation, persistence, and the
+        # dashboard payload the editor reads back.
+        model = f"video-admin-{time.time_ns()}"
+        client = TestClient(app)
+        session = create_session("admin")
+        client.cookies.set(SESSION_COOKIE, session)
+        headers = {"X-CSRF-Token": csrf_token(session)}
+
+        created = client.post(
+            "/admin/api/upstreams",
+            headers=headers,
+            json={
+                "name": f"video-admin-{time.time_ns()}",
+                "base_url": "https://video-admin.example",
+                "api_key": "video-admin-key",
+                "enabled": True,
+                "priority": 5,
+                "routes": [{
+                    "model": model,
+                    "upstream_model": "sd-2.5-ch1",
+                    "protocol": "rolldek",
+                    "profile": "rolldek-sd25-ch1",
+                    "video_count": 4,
+                }],
+            },
+        )
+        self.assertEqual(created.status_code, 200)
+        upstream_id = created.json()["id"]
+        try:
+            route = next(
+                item for item in created.json()["routes"] if item["model"] == model
+            )
+            self.assertEqual(route["video_count"], 4)
+
+            # A blank field must persist as unset so the channel default still
+            # applies instead of being frozen to whatever the editor showed.
+            updated = client.put(
+                f"/admin/api/upstreams/{upstream_id}",
+                headers=headers,
+                json={
+                    "name": f"video-admin-{time.time_ns()}",
+                    "base_url": "https://video-admin.example",
+                    "api_key": "",
+                    "enabled": True,
+                    "priority": 5,
+                    "routes": [{
+                        "model": model,
+                        "upstream_model": "sd-2.5-ch1",
+                        "protocol": "rolldek",
+                        "profile": "rolldek-sd25-ch1",
+                        "video_count": None,
+                    }],
+                },
+            )
+            self.assertEqual(updated.status_code, 200)
+            route = next(
+                item for item in updated.json()["routes"] if item["model"] == model
+            )
+            self.assertIsNone(route["video_count"])
+            self.assertIsNone(
+                effective_video_limit(route["video_count"])
+            )
+        finally:
+            database.delete_upstream(upstream_id)
 
     def test_pro666_sd2_profile_normalizes_reference_media(self):
         payload = transform_create_payload(

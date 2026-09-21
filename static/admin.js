@@ -500,7 +500,7 @@ function addRouteRow(route = {}) {
   const mappedUpstreamModel = route.upstream_model || route.mapped_upstream_model || ''
   const selectedDurations = routeDurations(route)
   const protocol = route.protocol || 'videos'
-  const selectedProfile = protocol === 'ark-v3' ? (route.profile || 'ark-seedance-2') : protocol === 'o10-grok' ? (route.profile || 'grok-auto') : protocol === 'sub2api-video' ? (route.profile || 'sub2api-video') : protocol === 'funai' ? (route.profile || 'funai-veo') : protocol === 'autodl-comfyui' ? (route.profile || 'autodl-comfyui') : protocol === 'rolldek' ? (route.profile || 'rolldek-sd2-ch4') : (route.profile || 'default')
+  const selectedProfile = protocol === 'ark-v3' ? (route.profile || 'ark-seedance-2') : protocol === 'o10-grok' ? (route.profile || 'grok-auto') : protocol === 'sub2api-video' ? (route.profile || 'sub2api-video') : protocol === 'mai-token' ? (route.profile || 'mai-token-720p') : protocol === 'funai' ? (route.profile || 'funai-veo') : protocol === 'autodl-comfyui' ? (route.profile || 'autodl-comfyui') : protocol === 'rolldek' ? (route.profile || 'rolldek-sd2-ch4') : (route.profile || 'default')
   row.dataset.durations = JSON.stringify(selectedDurations)
   row.innerHTML = `
     <input data-route-field="model" maxlength="160" value="${escapeHtml(route.model || '')}" placeholder="对外模型名" aria-label="对外模型名">
@@ -510,6 +510,7 @@ function addRouteRow(route = {}) {
       <option value="ark-v3"${protocol === 'ark-v3' ? ' selected' : ''}>ark-v3（方舟原生）</option>
       <option value="o10-grok"${protocol === 'o10-grok' ? ' selected' : ''}>o10-grok（Grok）</option>
       <option value="sub2api-video"${protocol === 'sub2api-video' ? ' selected' : ''}>sub2api-video（Sub2API）</option>
+      <option value="mai-token"${protocol === 'mai-token' ? ' selected' : ''}>mai-token（MAI Token）</option>
       <option value="funai"${protocol === 'funai' ? ' selected' : ''}>funai（FunAI）</option>
       <option value="autodl-comfyui"${protocol === 'autodl-comfyui' ? ' selected' : ''}>autodl-comfyui（AutoDL）</option>
       <option value="rolldek"${protocol === 'rolldek' ? ' selected' : ''}>rolldek（RollDek）</option>
@@ -519,6 +520,7 @@ function addRouteRow(route = {}) {
     <button class="duration-picker" data-duration-trigger data-duration-summary type="button">${selectedDurations.length ? durationRanges(selectedDurations).map(formatDurationRange).join(', ') : '工作台默认'}</button>
     <input data-route-field="resolutions" maxlength="620" value="${escapeHtml((route.resolutions || []).join(', '))}" placeholder="工作台默认" aria-label="支持分辨率" title="多个分辨率用逗号分隔">
     <label class="image-count"><input data-route-field="image_count" type="number" min="0" max="50" value="${route.image_count ?? 1}" aria-label="图片数量"><span>张</span></label>
+    <label class="video-count" title="留空表示沿用渠道默认；填 0 表示不接收参考视频"><input data-route-field="video_count" type="number" min="0" max="50" placeholder="默认" value="${route.video_count ?? ''}" aria-label="视频数量"><span>个</span></label>
     <label class="media-support-cell"><input data-route-forward="resolution" type="checkbox"${route.forward_resolution !== false ? ' checked' : ''} aria-label="传分辨率"></label>
     <label class="media-support-cell"><input data-route-support="video" type="checkbox"${route.supports_video !== false ? ' checked' : ''} aria-label="支持视频"></label>
     <label class="media-support-cell"><input data-route-support="audio" type="checkbox"${route.supports_audio !== false ? ' checked' : ''} aria-label="支持音频"></label>
@@ -543,6 +545,13 @@ function readRoutes(allowEmpty = false, preserveBlankModel = false) {
     const resolutions = [...new Set(row.querySelector('[data-route-field="resolutions"]').value
       .split(/[,，]/).map((value) => value.trim()).filter(Boolean))]
     const imageCount = Math.max(0, Math.min(50, Number(row.querySelector('[data-route-field="image_count"]').value) || 0))
+    // Blank keeps the route unconfigured so the channel default still applies.
+    // An explicit 0 is meaningful (drop every reference video), so the two must
+    // not collapse into the same value.
+    const videoCountValue = row.querySelector('[data-route-field="video_count"]').value.trim()
+    const videoCount = videoCountValue === ''
+      ? null
+      : Math.max(0, Math.min(50, Number(videoCountValue) || 0))
     const effectiveModel = model || upstreamModel
     if (!effectiveModel) throw new Error('每一行都必须填写对外模型名或映射上游模型名')
     return {
@@ -554,6 +563,7 @@ function readRoutes(allowEmpty = false, preserveBlankModel = false) {
       resolutions,
       duration_override: durations.length === 1 ? durations[0] : null,
       image_count: imageCount,
+      video_count: videoCount,
       supports_image: imageCount > 0,
       forward_resolution: row.querySelector('[data-route-forward="resolution"]').checked,
       supports_video: row.querySelector('[data-route-support="video"]').checked,
@@ -736,13 +746,15 @@ routeRows.addEventListener('change', (event) => {
     profile.value = 'grok-auto'
   } else if (target.value === 'sub2api-video') {
     profile.value = 'sub2api-video'
+  } else if (target.value === 'mai-token') {
+    profile.value = 'mai-token-720p'
   } else if (target.value === 'funai') {
     profile.value = 'funai-veo'
   } else if (target.value === 'autodl-comfyui') {
     profile.value = 'autodl-comfyui'
   } else if (target.value === 'rolldek') {
     profile.value = 'rolldek-sd25-ch1-15s'
-  } else if (profile.value === 'ark-seedance-2' || profile.value === 'autodl-comfyui' || profile.value === 'sub2api-video' || profile.value.startsWith('funai-') || profile.value.startsWith('rolldek-')) {
+  } else if (profile.value === 'ark-seedance-2' || profile.value === 'autodl-comfyui' || profile.value === 'sub2api-video' || profile.value.startsWith('mai-token-') || profile.value.startsWith('funai-') || profile.value.startsWith('rolldek-')) {
     profile.value = 'default'
   }
 })

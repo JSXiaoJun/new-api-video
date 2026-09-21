@@ -4,11 +4,12 @@ Independent video upstream adapter for New API. It exposes a normalized `/v1/vid
 
 ## Features
 
-- `videos`, legacy `seedance`, Volcengine Ark v3, o10 Grok, and AutoDL ComfyUI protocol conversion
+- `videos`, legacy `seedance`, Volcengine Ark v3, o10 Grok, MAI Token, and AutoDL ComfyUI protocol conversion
 - Seedance nested status normalization
 - Automatic or forwarded `Idempotency-Key`
 - Same-origin New API upload presign forwarding for the workbench
 - Multiple upstreams, model routing, priority, and enable/disable controls
+- Multi-clip reference videos with a per-model, admin-configurable `video_count`
 - SQLite task ownership so polling returns to the original upstream
 - Upstream task IDs, media URLs, and error details stay internal to the adapter
 - Request correlation with New API logs through `upstream_request_id`
@@ -58,6 +59,19 @@ The public model name is returned by `/v1/models` and accepted by `/v1/videos`. 
 substituted only when forwarding the request. Leaving it empty uses the public model name upstream. Synchronizing
 models preserves existing aliases by upstream model name, adds newly discovered models, and removes models that have
 disappeared upstream. `WORKBENCH_ORIGIN` controls which browser origin may read the public model capability endpoint.
+
+### Reference Videos
+
+参考视频既可以用文档里的单数字段 `reference_video`（一个 URL），也可以用数组字段
+`reference_videos` / `video_urls`（多个 URL）。数组会按顺序转发，超出上限的素材会被截断。
+单数字段属于旧格式，仍然完全兼容：只传一个参考视频时请求会原样转发，不受本设置影响。
+
+每个模型能上传几个参考视频由后台的「视频数量」决定，不需要改代码。留空表示沿用渠道默认值，
+填 `0` 表示该模型不接收参考视频。实际生效的上限会通过 `/v1/model-capabilities` 的 `maxVideos`
+暴露给工作台和对接文档，与转发行为保持一致。
+
+渠道默认上限写在 `app/channels/*.py` 的 `PROFILE_DEFINITIONS` 里：Ark、933、Pro666、RollDek、
+MAI Token 支持多个参考视频；FunAI、AutoDL、Sub2API 以及 Gemini Omni 默认只接受一个。
 
 ### Volcengine Ark v3
 
@@ -123,6 +137,28 @@ enabled public models and their configured capabilities.
 因此能力配置按实际行为隔离。后者会将标准请求的 `image_urls`、`images` 或 `image_url` 转换为上游要求的
 `images: ["公开图片 URL"]`，最多传 7 张；不支持参考视频和音频。任务创建、查询和视频下载分别使用
 `POST /v1/videos`、`GET /v1/videos/{task_id}` 和 `GET /v1/videos/{task_id}/content`。
+
+### MAI Token Seedance Channel
+
+为 `https://api.mai-token.com` 新建视频上游并点击 `同步上游模型`。MAI Token 使用独立的 `mai-token`
+协议和 `app/channels/mai_token.py` 适配器，不会改动其他渠道的请求体。它按
+`POST /v1/videos` 创建任务、`GET /v1/videos/{task_id}` 轮询、`GET /v1/videos/{task_id}/content`
+下载视频，并在管理后台按模型名自动分配请求格式：
+
+- `sd-2.0-1080p` → `mai-token-1080p`
+- `sd-2.0-720p`、`sd-fast-720p`、`sd-mini-720p` → `mai-token-720p`
+- `sd-2.0-480p`、`sd-fast-480p`、`sd-mini-480p` → `mai-token-480p`
+
+上游只接受 `content[]` 多模态请求体，因此适配器会把标准请求转换为
+`{text, image_url, audio_url, video_url}` 元素数组：顶层 `prompt` 与首条 `content[].text`
+同时下发，`image_urls` / `images` / `image_url` 转成 `reference_image`，`audio_urls` 转成
+`reference_audio`，`reference_video` 转成 `reference_video`，首尾帧分别使用 `first_frame`
+和 `last_frame` 角色并计入 9 张图片总额。每个任务最多 9 张图片、3 段音频和 3 段视频，
+比例支持 `16:9`、`9:16`、`1:1`、`4:3`、`3:4`、`21:9`，时长 `4`–`15` 秒。
+
+输出分辨率由模型名决定，所以 `resolution` 不会被转发，避免与模型档位冲突；`seconds` 会按文档
+格式化为字符串，`generate_audio` 和 `seed` 原样保留。上游声明的 `video_url` 会经过现有的
+内容代理与鉴权隔离，未声明该字段时回退到 `/v1/videos/{task_id}/content`。
 
 ### FunAI Channel
 

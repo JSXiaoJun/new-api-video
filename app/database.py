@@ -35,7 +35,7 @@ def _ensure_protocol_constraint(conn: sqlite3.Connection) -> None:
     if row is not None and all(
         protocol in (row["sql"] or "")
         for protocol in (
-            "ark-v3", "o10-grok", "sub2api-video", "funai", "autodl-comfyui", "rolldek"
+            "ark-v3", "o10-grok", "sub2api-video", "mai-token", "funai", "autodl-comfyui", "rolldek"
         )
     ):
         return
@@ -52,7 +52,7 @@ def _ensure_protocol_constraint(conn: sqlite3.Connection) -> None:
                 upstream_id INTEGER NOT NULL REFERENCES upstreams(id) ON DELETE CASCADE,
                 model TEXT NOT NULL,
                 upstream_model TEXT NOT NULL,
-                protocol TEXT NOT NULL CHECK(protocol IN ('videos', 'seedance', 'ark-v3', 'o10-grok', 'sub2api-video', 'funai', 'autodl-comfyui', 'rolldek')),
+                protocol TEXT NOT NULL CHECK(protocol IN ('videos', 'seedance', 'ark-v3', 'o10-grok', 'sub2api-video', 'mai-token', 'funai', 'autodl-comfyui', 'rolldek')),
                 profile TEXT NOT NULL DEFAULT 'default',
                 duration_override INTEGER,
                 durations_json TEXT NOT NULL DEFAULT '[]',
@@ -61,6 +61,7 @@ def _ensure_protocol_constraint(conn: sqlite3.Connection) -> None:
                 supports_video INTEGER NOT NULL DEFAULT 1,
                 supports_audio INTEGER NOT NULL DEFAULT 1,
                 image_count INTEGER,
+                video_count INTEGER,
                 enabled INTEGER NOT NULL DEFAULT 1,
                 forward_resolution INTEGER NOT NULL DEFAULT 1,
                 UNIQUE(upstream_id, model)
@@ -68,12 +69,12 @@ def _ensure_protocol_constraint(conn: sqlite3.Connection) -> None:
             INSERT INTO model_routes(
                 id, upstream_id, model, upstream_model, protocol, profile, duration_override,
                 durations_json, resolutions_json, supports_image, supports_video, supports_audio, image_count,
-                enabled, forward_resolution
+                video_count, enabled, forward_resolution
             )
             SELECT
                 id, upstream_id, model, upstream_model, protocol, profile, duration_override,
                 durations_json, resolutions_json, supports_image, supports_video, supports_audio, image_count,
-                enabled, forward_resolution
+                video_count, enabled, forward_resolution
             FROM model_routes_before_protocol_expand;
             DROP TABLE model_routes_before_protocol_expand;
             CREATE INDEX idx_model_routes_model ON model_routes(model);
@@ -141,7 +142,7 @@ def initialize() -> None:
                 upstream_id INTEGER NOT NULL REFERENCES upstreams(id) ON DELETE CASCADE,
                 model TEXT NOT NULL,
                 upstream_model TEXT NOT NULL,
-                protocol TEXT NOT NULL CHECK(protocol IN ('videos', 'seedance', 'ark-v3', 'o10-grok', 'sub2api-video', 'funai', 'autodl-comfyui', 'rolldek')),
+                protocol TEXT NOT NULL CHECK(protocol IN ('videos', 'seedance', 'ark-v3', 'o10-grok', 'sub2api-video', 'mai-token', 'funai', 'autodl-comfyui', 'rolldek')),
                 profile TEXT NOT NULL DEFAULT 'default',
                 duration_override INTEGER,
                 resolutions_json TEXT NOT NULL DEFAULT '[]',
@@ -270,6 +271,8 @@ def initialize() -> None:
                 conn.execute(f"ALTER TABLE model_routes ADD COLUMN {column} INTEGER NOT NULL DEFAULT 1")
         if "image_count" not in route_columns:
             conn.execute("ALTER TABLE model_routes ADD COLUMN image_count INTEGER")
+        if "video_count" not in route_columns:
+            conn.execute("ALTER TABLE model_routes ADD COLUMN video_count INTEGER")
         if "enabled" not in route_columns:
             conn.execute("ALTER TABLE model_routes ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1")
         if "forward_resolution" not in route_columns:
@@ -328,7 +331,7 @@ def _route_rows(conn: sqlite3.Connection, upstream_id: int) -> list[dict[str, An
     rows = conn.execute(
         """
         SELECT model, upstream_model, protocol, profile, duration_override, durations_json,
-               resolutions_json, image_count, supports_image, supports_video, supports_audio,
+               resolutions_json, image_count, video_count, supports_image, supports_video, supports_audio,
                enabled, forward_resolution
         FROM model_routes WHERE upstream_id = ? ORDER BY model
         """,
@@ -482,9 +485,9 @@ def save_upstream(payload: dict[str, Any], upstream_id: int | None = None) -> di
             """
             INSERT INTO model_routes(
                 upstream_id, model, upstream_model, protocol, profile, duration_override, durations_json,
-                resolutions_json, image_count, supports_image, supports_video, supports_audio,
+                resolutions_json, image_count, video_count, supports_image, supports_video, supports_audio,
                 enabled, forward_resolution
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
@@ -497,6 +500,7 @@ def save_upstream(payload: dict[str, Any], upstream_id: int | None = None) -> di
                     json.dumps(durations),
                     json.dumps(route.get("resolutions", []), ensure_ascii=False),
                     route.get("image_count"),
+                    route.get("video_count"),
                     int(route.get("supports_image", route.get("image_count") is None or route.get("image_count", 0) > 0)),
                     int(route.get("supports_video", True)),
                     int(route.get("supports_audio", True)),
@@ -543,7 +547,7 @@ def select_upstream(model: str) -> dict[str, Any] | None:
         row = conn.execute(
             """
             SELECT u.*, r.protocol, r.profile, r.duration_override, r.upstream_model,
-                   r.enabled, r.forward_resolution
+                   r.enabled, r.forward_resolution, r.video_count, r.supports_video
             FROM upstreams u
             JOIN model_routes r ON r.upstream_id = u.id
             WHERE u.enabled = 1 AND u.deleted_at IS NULL AND r.enabled = 1 AND r.model = ?
@@ -1116,8 +1120,8 @@ def list_model_capabilities() -> list[dict[str, Any]]:
         rows = conn.execute(
             """
             SELECT r.model, r.profile, r.duration_override, r.durations_json,
-                   r.resolutions_json, r.image_count, r.supports_image, r.supports_video,
-                   r.supports_audio, r.enabled
+                   r.resolutions_json, r.image_count, r.video_count, r.supports_image,
+                   r.supports_video, r.supports_audio, r.enabled
             FROM model_routes r
             JOIN upstreams u ON u.id = r.upstream_id
             WHERE u.enabled = 1 AND u.deleted_at IS NULL AND r.enabled = 1
@@ -1140,6 +1144,7 @@ def list_model_capabilities() -> list[dict[str, Any]]:
                 bool(row["supports_audio"]),
                 row["image_count"],
                 _decode_resolutions(row["resolutions_json"]),
+                row["video_count"],
             ),
         })
     return result

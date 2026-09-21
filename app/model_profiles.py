@@ -4,10 +4,23 @@ from copy import deepcopy
 import re
 from typing import Any
 
-from .channels import autodl_comfyui, funai, o10_grok, pro666, rolldek, sub2api_video
+from .channels import autodl_comfyui, funai, mai_token, o10_grok, pro666, rolldek, sub2api_video
 
 
 MAX_DURATION_SECONDS = 60
+
+
+# Reference-video spellings that only the channel adapters accept. They are
+# not part of the public contract, but each one is read by at least one
+# adapter, so the route limit has to account for them or it can be bypassed.
+_REFERENCE_VIDEO_ALIAS_KEYS = ('videos', 'video_refs', 'reference_video_urls')
+
+# Every field a reference video can arrive in, i.e. the contract spellings plus
+# the adapter aliases. Rewriting a capped request must clear all of them.
+REFERENCE_VIDEO_FIELDS = frozenset(
+    ('reference_video', 'video_url', 'reference_videos', 'video_urls', 'videoUrls')
+    + _REFERENCE_VIDEO_ALIAS_KEYS
+)
 
 
 PROFILE_DEFINITIONS: dict[str, dict[str, Any]] = {
@@ -32,6 +45,7 @@ PROFILE_DEFINITIONS: dict[str, dict[str, Any]] = {
             'resolutions': ['720p'],
             'maxImages': 5,
             'referenceVideo': True,
+            'maxVideos': 1,
             'minReferenceVideoDuration': 0,
             'maxReferenceVideoDuration': 30,
         },
@@ -81,6 +95,7 @@ PROFILE_DEFINITIONS: dict[str, dict[str, Any]] = {
             'resolutions': ['720p'],
             'maxImages': 9,
             'referenceVideo': True,
+            'maxVideos': 3,
             'maxAudios': 3,
             'maxReferences': 12,
             'minReferenceVideoDuration': 2,
@@ -100,6 +115,7 @@ PROFILE_DEFINITIONS: dict[str, dict[str, Any]] = {
             'resolutions': ['480p', '720p'],
             'maxImages': 9,
             'referenceVideo': True,
+            'maxVideos': 3,
             'maxAudios': 3,
             'maxReferences': 12,
             'minReferenceVideoDuration': 2,
@@ -138,6 +154,7 @@ PROFILE_DEFINITIONS: dict[str, dict[str, Any]] = {
     **pro666.PROFILE_DEFINITIONS,
     **autodl_comfyui.PROFILE_DEFINITIONS,
     **sub2api_video.PROFILE_DEFINITIONS,
+    **mai_token.PROFILE_DEFINITIONS,
     **rolldek.PROFILE_DEFINITIONS,
 }
 
@@ -152,6 +169,9 @@ def suggest_profile(model: str, protocol: str) -> str:
         return 'grok-auto'
     if protocol == sub2api_video.PROTOCOL:
         return sub2api_video.PROFILE
+    if protocol == mai_token.PROTOCOL:
+        route = mai_token.suggest_route(model)
+        return route['profile'] if route else 'mai-token-720p'
     if protocol == 'ark-v3':
         return 'ark-seedance-2'
     if protocol == rolldek.PROTOCOL:
@@ -185,6 +205,8 @@ def suggest_protocol(model: str) -> str:
         return o10_grok.PROTOCOL
     if sub2api_video.suggest_route(model):
         return sub2api_video.PROTOCOL
+    if mai_token.suggest_route(model):
+        return mai_token.PROTOCOL
     if rolldek.suggest_route(model):
         return rolldek.PROTOCOL
     if pro666.suggest_route(model):
@@ -245,6 +267,16 @@ def suggest_route(model: str, protocol: str) -> dict[str, Any]:
             'supports_video': False,
             'supports_audio': False,
         }
+    if protocol == mai_token.PROTOCOL:
+        return mai_token.suggest_route(model) or {
+            'profile': 'mai-token-720p',
+            'durations': list(mai_token.DURATIONS),
+            'resolutions': ['720p'],
+            'image_count': mai_token.MAX_IMAGES,
+            'supports_image': True,
+            'supports_video': True,
+            'supports_audio': True,
+        }
     if protocol == rolldek.PROTOCOL:
         return rolldek.suggest_route(model) or {
             'profile': 'rolldek-sd2-ch4',
@@ -273,6 +305,7 @@ def capabilities_for(
     supports_audio: bool = True,
     max_images: int | None = None,
     resolution_overrides: list[str] | None = None,
+    max_videos: int | None = None,
 ) -> dict[str, Any]:
     capabilities = deepcopy(PROFILE_DEFINITIONS[profile]['capabilities'])
     if isinstance(duration_overrides, int):
@@ -289,12 +322,26 @@ def capabilities_for(
         capabilities['maxImages'] = 1
     if not supports_video:
         capabilities['referenceVideo'] = False
+        capabilities['maxVideos'] = 0
         for key in ('minReferenceVideoDuration', 'maxReferenceVideoDuration'):
             capabilities.pop(key, None)
     else:
-        capabilities['referenceVideo'] = True
-        capabilities.setdefault('minReferenceVideoDuration', 0)
-        capabilities.setdefault('maxReferenceVideoDuration', 30)
+        # An explicit route ``video_count`` wins over the channel default: it is
+        # the number the proxy enforces, so reporting anything else here would
+        # advertise a limit the relay does not honour.
+        capabilities['maxVideos'] = (
+            max(0, max_videos) if max_videos is not None
+            else max(1, capabilities.get('maxVideos', 0))
+        )
+        # ``video_count = 0`` means "never forward a reference video", which the
+        # consumers of this payload express through ``referenceVideo``.
+        capabilities['referenceVideo'] = capabilities['maxVideos'] > 0
+        if capabilities['referenceVideo']:
+            capabilities.setdefault('minReferenceVideoDuration', 0)
+            capabilities.setdefault('maxReferenceVideoDuration', 30)
+        else:
+            for key in ('minReferenceVideoDuration', 'maxReferenceVideoDuration'):
+                capabilities.pop(key, None)
     if not supports_audio:
         capabilities['maxAudios'] = 0
         for key in ('minAudioDuration', 'maxAudioDuration', 'maxTotalAudioDuration'):
@@ -307,7 +354,117 @@ def capabilities_for(
     return capabilities
 
 
-def transform_create_payload(payload: dict[str, Any], profile: str) -> dict[str, Any]:
+def _reference_videos(payload: dict[str, Any]) -> list[str]:
+    """Collect every reference video the client sent, in order.
+
+    The public contract accepts both the documented single ``reference_video``
+    and the plural ``reference_videos`` / ``video_urls`` arrays, so a request
+    that passes several clips must not lose them here.
+    """
+    result: list[str] = []
+    # Keep the documented singular field first: it previously took precedence
+    # over the plural array, and existing callers rely on that ordering.
+    for key in ('reference_video', 'video_url'):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            result.append(value.strip())
+            break
+    for key in ('reference_videos', 'video_urls', 'videoUrls'):
+        value = payload.get(key)
+        if not isinstance(value, list):
+            continue
+        for item in value:
+            if isinstance(item, str) and item.strip() and item.strip() not in result:
+                result.append(item.strip())
+    return result
+
+
+def _reference_video_aliases(payload: dict[str, Any]) -> list[str]:
+    """Collect reference videos using every spelling an adapter understands.
+
+    ``_reference_videos`` follows the public contract only. Enforcement also has
+    to look at the channel-level aliases (``videos``, ``video_refs``,
+    ``reference_video_urls``): an adapter reads whichever one the caller sent,
+    so ignoring them here would let a caller step around the configured limit
+    simply by renaming the field. Entries are returned in the order the
+    adapters resolve them.
+    """
+    videos = _reference_videos(payload)
+    for key in _REFERENCE_VIDEO_ALIAS_KEYS:
+        value = payload.get(key)
+        if not isinstance(value, list):
+            continue
+        for item in value:
+            if isinstance(item, str) and item.strip() and item.strip() not in videos:
+                videos.append(item.strip())
+    return videos
+
+
+def _profile_max_videos(profile: str) -> int:
+    """Return how many reference videos this profile's upstream accepts.
+
+    Mirrors ``capabilities_for``: a profile without an explicit ``maxVideos``
+    keeps the historical single-video behaviour instead of forwarding extras
+    the upstream is not known to accept.
+    """
+    capabilities = PROFILE_DEFINITIONS.get(profile, {}).get('capabilities', {})
+    return max(1, capabilities.get('maxVideos', 1))
+
+
+def effective_video_limit(configured: int | None) -> int | None:
+    """Resolve how many reference videos one route may forward.
+
+    ``configured`` is the operator's per-route ``video_count``. An explicit
+    value -- including ``0``, which drops every reference video -- always wins,
+    so the field the admin sets is the field that takes effect.
+
+    ``None`` means the route was never configured, and the request is then
+    forwarded untouched. Returning ``None`` rather than a number is what makes
+    this setting strictly additive: every existing route relays exactly what it
+    relayed before, so a caller sending a single ``reference_video`` cannot
+    regress, and channels that already accept several clips keep receiving
+    them. Each profile keeps applying its own documented ``maxVideos`` in that
+    case, which is exactly what ``capabilities_for`` advertises for it.
+    """
+    if configured is not None:
+        return max(0, configured)
+    return None
+
+
+def limit_reference_videos(payload: dict[str, Any], limit: int | None) -> dict[str, Any]:
+    """Cap the request's reference videos to the route's configured limit.
+
+    ``limit`` is the resolved ``video_count`` for the route. The payload is
+    rewritten only when the request actually has to change: a request that is
+    already within budget is returned as-is, so a legacy caller sending a single
+    ``reference_video`` reaches the adapter with its original spelling intact
+    and no adapter-visible difference from before this setting existed.
+
+    When clips must be dropped the survivors are rewritten to the canonical
+    plural ``reference_videos`` array, which every adapter reads, and all the
+    other spellings are removed so an adapter's fallback lookup cannot
+    resurrect a clip that was meant to be dropped.
+    """
+    if limit is None:
+        return payload
+    videos = _reference_video_aliases(payload)
+    if len(videos) <= limit:
+        return payload
+    trimmed = {
+        key: value
+        for key, value in payload.items()
+        if key not in REFERENCE_VIDEO_FIELDS
+    }
+    if limit > 0:
+        trimmed['reference_videos'] = videos[:limit]
+    return trimmed
+
+
+def transform_create_payload(
+    payload: dict[str, Any],
+    profile: str,
+    video_limit: int | None = None,
+) -> dict[str, Any]:
     request_format = PROFILE_DEFINITIONS[profile]['request_format']
     if request_format in {'rolldek-ch1', 'rolldek-ch2', 'rolldek-ch3', 'rolldek-ch4'}:
         return rolldek.transform_create_payload(payload)
@@ -315,6 +472,8 @@ def transform_create_payload(payload: dict[str, Any], profile: str) -> dict[str,
         return autodl_comfyui.transform_create_payload(payload)
     if request_format == sub2api_video.PROFILE:
         return sub2api_video.transform_create_payload(payload)
+    if request_format == mai_token.PROFILE:
+        return mai_token.transform_create_payload(payload)
     if request_format in pro666.REQUEST_FORMATS:
         return pro666.transform_create_payload(payload, request_format)
     metadata = payload.get('metadata') if isinstance(payload.get('metadata'), dict) else {}
@@ -325,16 +484,22 @@ def transform_create_payload(payload: dict[str, Any], profile: str) -> dict[str,
         images = [payload['image_url']]
         if isinstance(payload.get('reference_image_urls'), list):
             images.extend(payload['reference_image_urls'])
-    reference_video = payload.get('reference_video')
-    if not reference_video and isinstance(payload.get('reference_videos'), list) and payload['reference_videos']:
-        reference_video = payload['reference_videos'][0]
+    reference_videos = _reference_videos(payload)
+    if video_limit is None:
+        # No route-level setting: keep the historical profile-only cap.
+        profile_limit = _profile_max_videos(profile)
+        if profile_limit > 0:
+            reference_videos = reference_videos[:profile_limit]
+    else:
+        reference_videos = reference_videos[:max(0, video_limit)]
+    reference_video = reference_videos[0] if reference_videos else None
     duration = payload.get('duration') or payload.get('seconds')
     aspect_ratio = payload.get('aspect_ratio') or metadata.get('aspect_ratio') or metadata.get('ratio')
     resolution = payload.get('resolution') or metadata.get('resolution')
     known_fields = {
         'model', 'prompt', 'aspect_ratio', 'duration', 'seconds', 'resolution', 'generate_audio',
         'image_url', 'image_urls', 'images', 'reference_image_urls', 'reference_video',
-        'reference_videos', 'audio_urls', 'metadata',
+        'reference_videos', 'video_url', 'video_urls', 'audio_urls', 'metadata',
     }
     extra = {key: value for key, value in payload.items() if key not in known_fields}
     common = {
@@ -374,7 +539,7 @@ def transform_create_payload(payload: dict[str, Any], profile: str) -> dict[str,
             **({'resolution': resolution} if resolution else {}),
             **({'image_url': images[0]} if images else {}),
             **({'reference_image_urls': images[1:]} if len(images) > 1 else {}),
-            **({'reference_videos': [reference_video]} if reference_video else {}),
+            **({'reference_videos': reference_videos} if reference_videos else {}),
             **({'audio_urls': payload['audio_urls']} if payload.get('audio_urls') else {}),
         }
     return {
@@ -384,6 +549,10 @@ def transform_create_payload(payload: dict[str, Any], profile: str) -> dict[str,
         **({'resolution': resolution} if resolution else {}),
         **({'image_url': images[0]} if len(images) == 1 else {}),
         **({'image_urls': images} if len(images) > 1 else {}),
-        **({'reference_video': reference_video} if reference_video else {}),
+        **(
+            {'reference_videos': reference_videos}
+            if len(reference_videos) > 1
+            else {'reference_video': reference_video} if reference_video else {}
+        ),
         **({'audio_urls': payload['audio_urls']} if payload.get('audio_urls') else {}),
     }

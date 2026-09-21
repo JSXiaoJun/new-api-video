@@ -107,6 +107,7 @@ PROFILE_DEFINITIONS: dict[str, dict[str, Any]] = {
             "resolutions": ["480p", "768p", "1080p"],
             "maxImages": 9,
             "referenceVideo": True,
+            "maxVideos": 1,
             "maxAudios": 3,
             "experimental": True,
         },

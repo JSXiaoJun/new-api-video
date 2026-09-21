@@ -36,7 +36,10 @@ def _request_example(model: dict[str, Any]) -> dict[str, Any]:
     if capabilities.get("maxImages", 0):
         payload["image_urls"] = ["https://example.com/reference.png"]
     if capabilities.get("referenceVideo"):
-        payload["reference_video"] = "https://example.com/reference.mp4"
+        if capabilities.get("maxVideos", 1) > 1:
+            payload["reference_videos"] = ["https://example.com/reference.mp4"]
+        else:
+            payload["reference_video"] = "https://example.com/reference.mp4"
     if capabilities.get("maxAudios", 0):
         payload["audio_urls"] = ["https://example.com/reference.mp3"]
     return payload
@@ -54,7 +57,7 @@ def _model_capability_section(model: dict[str, Any]) -> list[str]:
         f"| 比例 | {_table_text(capabilities.get('ratios', []))} |",
         f"| 时长 | {_table_text(durations)} |",
         f"| 参考图片 | 最多 {capabilities.get('maxImages', 0)} 张 |",
-        f"| 参考视频 | {'支持' if capabilities.get('referenceVideo') else '不支持'} |",
+        f"| 参考视频 | {'支持（最多 ' + str(capabilities.get('maxVideos', 1)) + ' 个）' if capabilities.get('referenceVideo') else '不支持'} |",
         f"| 参考音频 | {'支持（最多 ' + str(capabilities.get('maxAudios', 0)) + ' 个）' if capabilities.get('maxAudios', 0) else '不支持'} |",
     ]
     if capabilities.get("maxReferences"):
@@ -204,7 +207,7 @@ def build_integration_document(
                 f"{_table_text([f'{value}s' if value else '自动' for value in capabilities.get('durations', [])])} | "
                 f"{_table_text(capabilities.get('resolutions', []))} | "
                 f"{capabilities.get('maxImages', 0)} | "
-                f"{'支持' if capabilities.get('referenceVideo') else '不支持'} | "
+                f"{('最多 ' + str(capabilities.get('maxVideos', 1)) + ' 个') if capabilities.get('referenceVideo') else '不支持'} | "
                 f"{'支持' if capabilities.get('maxAudios', 0) else '不支持'} |"
             )
     else:
@@ -253,7 +256,8 @@ def build_integration_document(
         "| `resolution` | string | 否 | 分辨率，以模型能力为准 |",
         "| `generate_audio` | boolean | 否 | 是否请求生成音频；不确定模型是否支持时请省略 |",
         "| `image_urls` | string[] | 否 | 按数组顺序编号为 `@图1`、`@图2`；即使只有一张也使用数组 |",
-        "| `reference_video` | string | 否 | 一个公开可访问的参考视频 URL |",
+        "| `reference_video` | string | 否 | 一个公开可访问的参考视频 URL；只支持单个参考视频的模型使用该字段 |",
+        "| `reference_videos` | string[] | 否 | 多个公开可访问的参考视频 URL，数量上限以模型能力为准 |",
         "| `audio_urls` | string[] | 否 | 公开可访问的参考音频 URL 数组 |",
         "",
         "创建成功响应示例：",

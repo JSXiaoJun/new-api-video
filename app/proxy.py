@@ -13,9 +13,9 @@ from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from . import ark_video, database
-from .channels import autodl_comfyui, funai, o10_grok, pro666, rolldek, sub2api_video
+from .channels import autodl_comfyui, funai, mai_token, o10_grok, pro666, rolldek, sub2api_video
 from .config import settings
-from .model_profiles import transform_create_payload
+from .model_profiles import effective_video_limit, limit_reference_videos, transform_create_payload
 
 
 logger = logging.getLogger("uvicorn.error")
@@ -285,8 +285,17 @@ async def create_video(
     validate_online_image_inputs(payload)
 
     protocol = upstream["protocol"]
+    # Apply the operator's per-route reference-video budget before any
+    # protocol-specific conversion, so every adapter sees the same capped list.
+    # ``routed_payload`` is also what the promptless checks below inspect: a
+    # route configured with ``video_count = 0`` must not be treated as having
+    # reference content it will never forward.
+    video_limit = effective_video_limit(upstream.get("video_count"))
+    routed_payload = limit_reference_videos(
+        {**payload, "model": upstream["upstream_model"]}, video_limit
+    )
     allows_promptless = (
-        protocol == ark_video.PROTOCOL and ark_video.has_reference_content(payload)
+        protocol == ark_video.PROTOCOL and ark_video.has_reference_content(routed_payload)
     ) or (
         protocol == autodl_comfyui.PROTOCOL
         and not autodl_comfyui.requires_prompt(upstream["upstream_model"])
@@ -294,7 +303,6 @@ async def create_video(
     if not prompt and not allows_promptless:
         raise HTTPException(status_code=400, detail="prompt is required")
     relay_request_id = database.start_audit_request(upstream["id"], model, protocol, payload)
-    routed_payload = {**payload, "model": upstream["upstream_model"]}
     if not upstream.get("forward_resolution", True):
         routed_payload.pop("resolution", None)
         if isinstance(routed_payload.get("metadata"), dict):
@@ -311,10 +319,14 @@ async def create_video(
         upstream_payload = o10_grok.transform_create_payload(routed_payload)
     elif protocol == sub2api_video.PROTOCOL:
         upstream_payload = sub2api_video.transform_create_payload(routed_payload)
+    elif protocol == mai_token.PROTOCOL:
+        upstream_payload = mai_token.transform_create_payload(routed_payload)
     elif protocol == rolldek.PROTOCOL:
         upstream_payload = rolldek.transform_create_payload(routed_payload)
     else:
-        upstream_payload = transform_create_payload(routed_payload, upstream["profile"])
+        upstream_payload = transform_create_payload(
+            routed_payload, upstream["profile"], video_limit
+        )
     database.record_upstream_request_payload(relay_request_id, upstream_payload)
     response_headers = {REQUEST_ID_HEADER: relay_request_id}
     endpoint = (
@@ -328,6 +340,8 @@ async def create_video(
         if protocol == o10_grok.PROTOCOL
         else sub2api_video.CREATE_PATH
         if protocol == sub2api_video.PROTOCOL
+        else mai_token.CREATE_PATH
+        if protocol == mai_token.PROTOCOL
         else rolldek.CREATE_PATH
         if protocol == rolldek.PROTOCOL
         else "/v1/video/generations" if protocol == "seedance" else "/v1/videos"
@@ -400,6 +414,8 @@ async def create_video(
         if protocol == o10_grok.PROTOCOL
         else sub2api_video.extract_create_task_id(upstream_payload)
         if protocol == sub2api_video.PROTOCOL
+        else mai_token.extract_create_task_id(upstream_payload)
+        if protocol == mai_token.PROTOCOL
         else rolldek.extract_create_task_id(upstream_payload)
         if protocol == rolldek.PROTOCOL
         else str(upstream_payload.get("task_id") or upstream_payload.get("id") or "").strip()
@@ -505,6 +521,12 @@ def normalize_task_payload(task: dict[str, Any], payload: dict[str, Any]) -> tup
         video_url = fields["video_url"]
         error_value = fields["error"]
         progress = fields["progress"]
+    elif task["protocol"] == mai_token.PROTOCOL:
+        fields = mai_token.extract_task_fields(payload)
+        status_value = fields["status"]
+        video_url = fields["video_url"]
+        error_value = fields["error"]
+        progress = fields["progress"]
     elif task["protocol"] == rolldek.PROTOCOL:
         fields = rolldek.extract_task_fields(payload)
         status_value = fields["status"]
@@ -565,6 +587,8 @@ async def fetch_task(task_id: str, timeout_seconds: float | None = None) -> JSON
         if task["protocol"] == o10_grok.PROTOCOL
         else sub2api_video.task_path(task_id)
         if task["protocol"] == sub2api_video.PROTOCOL
+        else mai_token.task_path(task_id)
+        if task["protocol"] == mai_token.PROTOCOL
         else rolldek.task_path(task_id)
         if task["protocol"] == rolldek.PROTOCOL
         else f"/v1/videos/{task_id}"
@@ -738,6 +762,8 @@ async def stream_content(task_id: str, request: Request) -> StreamingResponse:
         source_url = f"{task['base_url']}{o10_grok.content_path(task_id)}"
     elif task["protocol"] == sub2api_video.PROTOCOL:
         source_url = f"{task['base_url']}{sub2api_video.content_path(task_id)}"
+    elif task["protocol"] == mai_token.PROTOCOL:
+        source_url = f"{task['base_url']}{mai_token.content_path(task_id)}"
     elif task["protocol"] == funai.PROTOCOL:
         source_url = funai.api_url(task["base_url"], funai.content_path(task_id))
     elif task["protocol"] == rolldek.PROTOCOL:

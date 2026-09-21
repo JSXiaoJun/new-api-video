@@ -13,7 +13,8 @@ class RouteInput(BaseModel):
     model: str = Field(min_length=1, max_length=160)
     upstream_model: str = Field(default="", max_length=160)
     protocol: Literal[
-        "videos", "seedance", "ark-v3", "o10-grok", "sub2api-video", "funai", "autodl-comfyui", "rolldek"
+        "videos", "seedance", "ark-v3", "o10-grok", "sub2api-video", "mai-token", "funai",
+        "autodl-comfyui", "rolldek"
     ] = "videos"
     profile: Literal[
         "default",
@@ -26,6 +27,9 @@ class RouteInput(BaseModel):
         "grok-auto",
         "grok-fast",
         "sub2api-video",
+        "mai-token-1080p",
+        "mai-token-720p",
+        "mai-token-480p",
         "funai-minimax-h3",
         "funai-kling",
         "funai-kling-frames",
@@ -58,6 +62,7 @@ class RouteInput(BaseModel):
     durations: list[int] = Field(default_factory=list, max_length=MAX_DURATION_SECONDS)
     resolutions: list[str] = Field(default_factory=list, max_length=20)
     image_count: int | None = Field(default=None, ge=0, le=50)
+    video_count: int | None = Field(default=None, ge=0, le=50)
     enabled: bool = True
     supports_image: bool = True
     supports_video: bool = True
