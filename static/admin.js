@@ -9,6 +9,7 @@ const modelSelectionList = document.querySelector('#model-selection-list')
 const modelSelectionSelectAll = document.querySelector('#model-selection-select-all')
 const modelSelectionConfirm = document.querySelector('#model-selection-confirm')
 const addRouteButton = document.querySelector('#add-route')
+const toggleRouteParamsButton = document.querySelector('#toggle-route-params')
 const routeRows = document.querySelector('#route-rows')
 const routeEmpty = document.querySelector('#route-empty')
 const auditDialog = document.querySelector('#audit-dialog')
@@ -361,6 +362,16 @@ function updateRouteEmpty() {
   routeEmpty.hidden = routeRows.children.length > 0
 }
 
+// Keeps the toolbar label honest after rows are added, removed or reopened, so
+// the button always describes what the next click will do.
+function syncRouteParamsButton() {
+  if (!toggleRouteParamsButton) return
+  const rows = [...routeRows.children]
+  const expanded = rows.some((row) => !row.querySelector('[data-route-params]')?.hidden)
+  const collapsed = rows.some((row) => row.querySelector('[data-route-params]')?.hidden)
+  toggleRouteParamsButton.textContent = expanded && !collapsed ? '收起全部参数' : '展开全部参数'
+}
+
 function routeDurations(route) {
   const values = Array.isArray(route.durations)
     ? route.durations
@@ -387,6 +398,33 @@ function formatDurationRange(range) {
 function updateDurationSummary(row) {
   const ranges = durationRanges(JSON.parse(row.dataset.durations || '[]'))
   row.querySelector('[data-duration-summary]').textContent = ranges.length ? ranges.map(formatDurationRange).join(', ') : '工作台默认'
+  updateRouteSummary(row)
+}
+
+function routeParamSummary(row) {
+  const durations = durationRanges(JSON.parse(row.dataset.durations || '[]'))
+  const resolutions = row.querySelector('[data-route-field="resolutions"]').value
+    .split(/[,，]/).map((value) => value.trim()).filter(Boolean)
+  const imageCount = Number(row.querySelector('[data-route-field="image_count"]').value)
+  const videoCountValue = row.querySelector('[data-route-field="video_count"]').value.trim()
+  const parts = [
+    durations.length ? durations.map(formatDurationRange).join(', ') : '默认时长',
+    resolutions.length ? resolutions.join(', ') : '默认分辨率',
+    `图${Number.isFinite(imageCount) ? imageCount : 0}`,
+    videoCountValue === '' ? '视默认' : `视${Number(videoCountValue) || 0}`,
+  ]
+  if (!row.querySelector('[data-route-forward="resolution"]').checked) parts.push('不传分辨率')
+  if (!row.querySelector('[data-route-support="video"]').checked) parts.push('无视频')
+  if (!row.querySelector('[data-route-support="audio"]').checked) parts.push('无音频')
+  return parts.join(' · ')
+}
+
+// The parameters live in a collapsed second row, so the summary has to track
+// every edit: a stale summary would describe limits the relay does not honour.
+function updateRouteSummary(row) {
+  const summary = row.querySelector('[data-route-params-summary]')
+  if (!summary) return
+  summary.textContent = routeParamSummary(row)
 }
 
 function closeDurationMenu() {
@@ -503,7 +541,11 @@ function addRouteRow(route = {}) {
   const selectedProfile = protocol === 'ark-v3' ? (route.profile || 'ark-seedance-2') : protocol === 'o10-grok' ? (route.profile || 'grok-auto') : protocol === 'sub2api-video' ? (route.profile || 'sub2api-video') : protocol === 'mai-token' ? (route.profile || 'mai-token-720p') : protocol === 'funai' ? (route.profile || 'funai-veo') : protocol === 'autodl-comfyui' ? (route.profile || 'autodl-comfyui') : protocol === 'rolldek' ? (route.profile || 'rolldek-sd2-ch4') : (route.profile || 'default')
   row.dataset.durations = JSON.stringify(selectedDurations)
   row.innerHTML = `
+    <div class="route-row-main">
+    <label class="route-cell" data-route-cell="model"><span class="route-cell-label">对外模型名</span>
     <input data-route-field="model" maxlength="160" value="${escapeHtml(route.model || '')}" placeholder="对外模型名" aria-label="对外模型名">
+    </label>
+    <label class="route-cell" data-route-cell="protocol"><span class="route-cell-label">请求协议</span>
     <select data-route-field="protocol" aria-label="请求协议">
       <option value="videos"${protocol === 'videos' ? ' selected' : ''}>videos</option>
       <option value="seedance"${protocol === 'seedance' ? ' selected' : ''}>seedance</option>
@@ -515,19 +557,48 @@ function addRouteRow(route = {}) {
       <option value="autodl-comfyui"${protocol === 'autodl-comfyui' ? ' selected' : ''}>autodl-comfyui（AutoDL）</option>
       <option value="rolldek"${protocol === 'rolldek' ? ' selected' : ''}>rolldek（RollDek）</option>
     </select>
+    </label>
+    <label class="route-cell" data-route-cell="profile"><span class="route-cell-label">请求格式</span>
     <select data-route-field="profile" aria-label="请求格式"${protocol === 'seedance' ? ' disabled' : ''}>${profileOptions(protocol === 'seedance' ? 'default' : selectedProfile)}</select>
+    </label>
+    <label class="route-cell" data-route-cell="upstream"><span class="route-cell-label">映射上游模型名</span>
     <input data-route-field="upstream_model" maxlength="160" value="${escapeHtml(mappedUpstreamModel)}" placeholder="上游模型名" aria-label="映射上游模型名">
-    <button class="duration-picker" data-duration-trigger data-duration-summary type="button">${selectedDurations.length ? durationRanges(selectedDurations).map(formatDurationRange).join(', ') : '工作台默认'}</button>
-    <input data-route-field="resolutions" maxlength="620" value="${escapeHtml((route.resolutions || []).join(', '))}" placeholder="工作台默认" aria-label="支持分辨率" title="多个分辨率用逗号分隔">
-    <label class="image-count"><input data-route-field="image_count" type="number" min="0" max="50" value="${route.image_count ?? 1}" aria-label="图片数量"><span>张</span></label>
-    <label class="video-count" title="留空表示沿用渠道默认；填 0 表示不接收参考视频"><input data-route-field="video_count" type="number" min="0" max="50" placeholder="默认" value="${route.video_count ?? ''}" aria-label="视频数量"><span>个</span></label>
-    <label class="media-support-cell"><input data-route-forward="resolution" type="checkbox"${route.forward_resolution !== false ? ' checked' : ''} aria-label="传分辨率"></label>
-    <label class="media-support-cell"><input data-route-support="video" type="checkbox"${route.supports_video !== false ? ' checked' : ''} aria-label="支持视频"></label>
-    <label class="media-support-cell"><input data-route-support="audio" type="checkbox"${route.supports_audio !== false ? ' checked' : ''} aria-label="支持音频"></label>
-    <label class="route-enabled-cell"><input data-route-enabled type="checkbox"${route.enabled !== false ? ' checked' : ''} aria-label="启用模型"></label>
-    <button class="route-remove" type="button" title="移除此模型" aria-label="移除此模型">×</button>`
+    </label>
+    <div class="route-cell" data-route-cell="params"><span class="route-cell-label">能力与参数</span>
+      <button class="route-params-toggle" data-route-params-toggle type="button" aria-expanded="false" title="展开或收起这一行的能力参数">
+        <span data-route-params-summary class="route-params-summary"></span><span class="route-params-caret" aria-hidden="true">▾</span>
+      </button>
+    </div>
+    <label class="route-enabled-cell" data-route-cell="enabled"><span class="route-cell-label">启用</span><input data-route-enabled type="checkbox"${route.enabled !== false ? ' checked' : ''} aria-label="启用模型"></label>
+    <button class="route-remove" type="button" title="移除此模型" aria-label="移除此模型">×</button>
+    </div>
+    <div class="route-row-params" data-route-params hidden>
+      <label class="route-param"><span>支持时长</span>
+        <button class="duration-picker" data-duration-trigger data-duration-summary type="button">${selectedDurations.length ? durationRanges(selectedDurations).map(formatDurationRange).join(', ') : '工作台默认'}</button>
+      </label>
+      <label class="route-param"><span>支持分辨率</span>
+        <input data-route-field="resolutions" maxlength="620" value="${escapeHtml((route.resolutions || []).join(', '))}" placeholder="工作台默认" aria-label="支持分辨率" title="多个分辨率用逗号分隔">
+      </label>
+      <label class="route-param"><span>图片数量</span>
+        <span class="route-param-number"><input data-route-field="image_count" type="number" min="0" max="50" value="${route.image_count ?? 1}" aria-label="图片数量"><span>张</span></span>
+      </label>
+      <label class="route-param" title="留空表示沿用渠道默认；填 0 表示不接收参考视频"><span>视频数量</span>
+        <span class="route-param-number"><input data-route-field="video_count" type="number" min="0" max="50" placeholder="默认" value="${route.video_count ?? ''}" aria-label="视频数量"><span>个</span></span>
+      </label>
+      <label class="route-param route-param-flag"><span>传分辨率</span>
+        <input data-route-forward="resolution" type="checkbox"${route.forward_resolution !== false ? ' checked' : ''} aria-label="传分辨率">
+      </label>
+      <label class="route-param route-param-flag"><span>支持视频</span>
+        <input data-route-support="video" type="checkbox"${route.supports_video !== false ? ' checked' : ''} aria-label="支持视频">
+      </label>
+      <label class="route-param route-param-flag"><span>支持音频</span>
+        <input data-route-support="audio" type="checkbox"${route.supports_audio !== false ? ' checked' : ''} aria-label="支持音频">
+      </label>
+    </div>`
   routeRows.appendChild(row)
+  updateRouteSummary(row)
   updateRouteEmpty()
+  syncRouteParamsButton()
 }
 
 function setRouteRows(routes) {
@@ -535,6 +606,7 @@ function setRouteRows(routes) {
   routeRows.innerHTML = ''
   for (const route of routes) addRouteRow(route)
   updateRouteEmpty()
+  syncRouteParamsButton()
 }
 
 function readRoutes(allowEmpty = false, preserveBlankModel = false) {
@@ -716,8 +788,31 @@ document.querySelectorAll('#model-selection-cancel, #model-selection-cancel-acti
 })
 
 addRouteButton.addEventListener('click', () => addRouteRow())
+toggleRouteParamsButton.addEventListener('click', () => {
+  const rows = [...routeRows.children]
+  const expanded = rows.some((row) => !row.querySelector('[data-route-params]')?.hidden)
+  for (const row of rows) {
+    const panel = row.querySelector('[data-route-params]')
+    const trigger = row.querySelector('[data-route-params-toggle]')
+    if (!panel || !trigger) continue
+    panel.hidden = expanded
+    trigger.setAttribute('aria-expanded', String(!panel.hidden))
+    updateRouteSummary(row)
+  }
+  if (expanded) closeDurationMenu()
+  syncRouteParamsButton()
+})
 routeRows.addEventListener('click', (event) => {
   const target = event.target instanceof Element ? event.target : null
+  if (target?.matches('[data-route-params-toggle]')) {
+    const row = target.closest('.route-editor-row')
+    const panel = row?.querySelector('[data-route-params]')
+    if (!panel) return
+    panel.hidden = !panel.hidden
+    target.setAttribute('aria-expanded', String(!panel.hidden))
+    updateRouteSummary(row)
+    return
+  }
   if (target?.matches('[data-duration-trigger]')) {
     openDurationMenu(target.closest('.route-editor-row'), target)
     return
@@ -732,6 +827,12 @@ routeRows.addEventListener('change', (event) => {
   if (target?.matches('[data-route-enabled]')) {
     target.closest('.route-editor-row')?.classList.toggle('route-disabled', !target.checked)
     return
+  }
+  // Number and text edits need the same refresh, otherwise the collapsed summary
+  // keeps advertising the previous limits until the row is reopened.
+  const editedRow = target?.closest('.route-editor-row')
+  if (editedRow && target?.matches('[data-route-field="resolutions"], [data-route-field="image_count"], [data-route-field="video_count"], [data-route-forward="resolution"], [data-route-support="video"], [data-route-support="audio"]')) {
+    updateRouteSummary(editedRow)
   }
   if (!target?.matches('[data-route-field="protocol"]')) return
   const row = target.closest('.route-editor-row')

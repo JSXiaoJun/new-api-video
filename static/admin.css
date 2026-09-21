@@ -54,12 +54,19 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); box-sha
 .field-actions { display: flex; align-items: center; gap: 8px; }
 .quiet-button.compact { min-height: 32px; padding: 0 11px; }
 .route-editor { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius); background: #f7f9f7; }
-.route-editor-header, .route-editor-row { min-width: 1300px; display: grid; grid-template-columns: minmax(145px, 1.2fr) 82px 126px minmax(145px, 1.2fr) 104px 112px 82px 82px 72px 70px 70px 70px 28px; align-items: center; gap: 8px; }
+/* Every row is two lines: routing on top, capacity parameters in a collapsible
+   second line. The header labels the top line only, so it shares one grid
+   template and the same horizontal padding with `.route-row-main`; changing one
+   without the other shifts the labels off their columns. */
+.route-editor-header, .route-row-main { min-width: 940px; display: grid; grid-template-columns: minmax(150px, 1.3fr) 100px 156px minmax(150px, 1.3fr) minmax(210px, 1.15fr) 52px 30px; align-items: center; gap: 8px; }
 .route-editor-header { padding: 9px 10px; color: var(--muted); border-bottom: 1px solid var(--line); font-size: 11px; font-weight: 650; }
 .route-editor-rows { display: grid; }
-.route-editor-row { padding: 8px 10px; background: #fff; border-bottom: 1px solid #e6ebe8; }
+.route-editor-row { background: #fff; border-bottom: 1px solid #e6ebe8; }
 .route-editor-row:last-child { border-bottom: 0; }
 .route-editor-row input, .route-editor-row select { height: 34px; min-width: 0; padding: 0 8px; border-radius: 4px; font-size: 12px; }
+.route-row-main { padding: 8px 10px; }
+.route-cell { display: grid; min-width: 0; }
+.route-cell-label { display: none; }
 .duration-picker { width: 100%; height: 34px; min-width: 0; padding: 0 8px; overflow: hidden; border: 1px solid #cbd4cf; border-radius: 4px; color: var(--ink); background: #fff; text-align: left; font-size: 12px; white-space: nowrap; text-overflow: ellipsis; cursor: pointer; }
 .duration-menu { position: fixed; z-index: 1000; display: grid; gap: 8px; min-width: 286px; padding: 10px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); box-shadow: 0 8px 24px rgba(13, 27, 20, .16); }
 .duration-input-row { display: grid; grid-template-columns: 1fr auto; gap: 6px; }
@@ -73,14 +80,28 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); box-sha
 .duration-value button { padding: 0; border: 0; color: #66736a; background: transparent; font-size: 14px; line-height: 1; cursor: pointer; }
 .duration-value button:hover { color: var(--danger); }
 .duration-empty { color: var(--muted); font-size: 11px; }
-.media-support-cell input { width: 14px; height: 14px; }
-.media-support-cell { display: flex; align-items: center; justify-content: center; min-width: 0; }
 .route-enabled-cell { display: flex; align-items: center; justify-content: center; min-width: 0; }
 .route-enabled-cell input { width: 14px; height: 14px; margin: 0; padding: 0; accent-color: var(--accent); }
 .route-editor-row.route-disabled { background: #f7f9f7; }
-.route-editor-row.route-disabled > :not(.route-enabled-cell):not(.route-remove) { opacity: .58; }
-.image-count, .video-count { display: flex; align-items: center; gap: 4px; min-width: 0; }
-.image-count input, .video-count input { width: 48px; text-align: center; }
+.route-editor-row.route-disabled .route-row-main > :not(.route-enabled-cell):not(.route-remove),
+.route-editor-row.route-disabled .route-row-params { opacity: .58; }
+/* Collapsed by default: the summary has to describe the parameters it hides,
+   otherwise an operator cannot tell a row's limits without opening it. */
+.route-params-toggle { width: 100%; height: 34px; min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 8px; border: 1px solid #cbd4cf; border-radius: 4px; color: var(--ink); background: #fff; font-size: 11px; text-align: left; }
+.route-params-toggle:hover { border-color: var(--accent); background: #f4f8f5; }
+.route-params-summary { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.route-params-caret { flex: 0 0 auto; color: var(--muted); font-size: 10px; transition: transform .16s; }
+.route-params-toggle[aria-expanded="true"] .route-params-caret { transform: rotate(180deg); }
+.route-row-params { display: grid; grid-template-columns: repeat(auto-fit, minmax(168px, 1fr)); gap: 10px 12px; padding: 12px 10px 14px; background: #f8faf8; border-top: 1px dashed #e2e8e4; }
+.route-row-params[hidden] { display: none; }
+.route-param { display: grid; gap: 5px; min-width: 0; color: var(--muted); font-size: 10px; font-weight: 700; }
+.route-param > span { min-width: 0; overflow-wrap: anywhere; }
+.route-param-number { display: flex; align-items: center; gap: 5px; min-width: 0; }
+.route-param-number input { width: 62px; text-align: center; }
+.route-param-number span { flex: 0 0 auto; color: var(--muted); font-size: 11px; font-weight: 500; }
+.route-param-flag { display: flex; align-items: center; gap: 8px; align-self: end; min-height: 34px; }
+.route-param-flag input { width: 15px; height: 15px; flex: 0 0 15px; margin: 0; padding: 0; accent-color: var(--accent); }
+.route-param-flag span { color: #4d5852; font-size: 11px; font-weight: 600; }
 .route-remove { width: 34px; height: 34px; padding: 0; border: 0; border-radius: 4px; color: #768078; background: transparent; font-size: 18px; line-height: 1; }
 .route-remove:hover { color: var(--danger); background: #fff0ee; }
 .route-editor-empty { padding: 34px 16px; color: var(--muted); text-align: center; font-size: 12px; font-weight: 500; }
@@ -180,7 +201,9 @@ code { font-family: "SFMono-Regular", Consolas, monospace; font-size: 12px; colo
 .mobile-item-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 
 dialog { width: min(680px, calc(100vw - 32px)); max-height: calc(100svh - 32px); border: 0; border-radius: 8px; padding: 0; box-shadow: 0 28px 70px rgba(13, 27, 20, .28); }
-#upstream-dialog { width: min(1180px, calc(100vw - 32px)); overflow: visible; }
+/* Wide enough that the routing columns and the parameter summary both fit, so
+   the editor does not need horizontal scrolling on a normal desktop window. */
+#upstream-dialog { width: min(1560px, calc(100vw - 32px)); overflow: visible; }
 dialog::backdrop { background: rgba(17, 26, 21, .62); backdrop-filter: blur(2px); }
 .dialog-form { max-height: calc(100svh - 32px); padding: 26px; overflow-y: auto; overscroll-behavior: contain; }
 .dialog-heading { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 24px; }
@@ -337,4 +360,26 @@ dialog::backdrop { background: rgba(17, 26, 21, .62); backdrop-filter: blur(2px)
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+}
+
+/* Below the width the grid needs, the row stacks instead of scrolling sideways.
+   A sticky model column was tried first and does not work here: a grid item's
+   containing block is its own grid area, so `position: sticky` has nothing to
+   travel in and the name scrolls away anyway. Stacking removes the sideways
+   scroll entirely, and the per-cell labels replace the hidden header. */
+@media (max-width: 1180px) {
+  .route-editor-header { display: none; }
+  .route-editor-video { overflow-x: visible; }
+  .route-row-main { min-width: 0; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 34px; grid-template-areas: "model model remove" "protocol profile remove" "upstream upstream remove" "params params remove" "enabled enabled remove"; gap: 10px; }
+  .route-row-main > [data-route-cell="model"] { grid-area: model; }
+  .route-row-main > [data-route-cell="protocol"] { grid-area: protocol; }
+  .route-row-main > [data-route-cell="profile"] { grid-area: profile; }
+  .route-row-main > [data-route-cell="upstream"] { grid-area: upstream; }
+  .route-row-main > [data-route-cell="params"] { grid-area: params; }
+  .route-row-main > [data-route-cell="enabled"] { grid-area: enabled; }
+  .route-row-main > .route-remove { grid-area: remove; align-self: start; }
+  .route-cell-label { display: block; margin-bottom: 5px; color: var(--muted); font-size: 10px; font-weight: 700; }
+  .route-enabled-cell { justify-content: flex-start; gap: 8px; }
+  .route-enabled-cell .route-cell-label { margin-bottom: 0; }
+  .route-row-params { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
 }

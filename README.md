@@ -91,6 +91,15 @@ discovery suggests a format only for new rows; editing and later synchronization
 Synchronization is non-destructive: models missing from a later discovery response remain in the editor. If an upstream
 renames a model, update that route's `映射上游模型名` manually, verify its saved `请求格式`, then save the upstream.
 
+Each route is edited on two lines. The first carries the routing fields and a summary of the capacity parameters; the
+parameters themselves sit on a collapsible second line, opened per row or in bulk with `展开全部参数`. Below roughly
+1180 px the row restacks into labelled fields instead of scrolling sideways, because a CSS Grid item cannot pin its own
+column while the rest of the grid scrolls.
+
+To review a change to the editor without a full manual pass, `python tools/preview_shot.py --open-dialog` renders the
+dialog against a scratch database, and `python tools/preview_check.py` compares what the dialog would save against what
+is stored.
+
 ### RollDek Seedance Channel
 
 为 `https://rolldek.com` 新建视频上游并点击 `同步上游模型`。RollDek 使用独立的 `rolldek` 协议和

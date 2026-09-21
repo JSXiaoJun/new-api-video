@@ -134,7 +134,11 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn('id="copy-audit-json"', response.text)
         self.assertIn("请求格式", response.text)
-        self.assertIn("模型启用", response.text)
+        # The route editor header now labels the routing columns on the first line
+        # and groups the collapsed capacity parameters behind one summary.
+        self.assertIn("能力与参数", response.text)
+        self.assertIn('id="toggle-route-params"', response.text)
+        self.assertIn('id="route-rows"', response.text)
         self.assertIn("转换后参数", response.text)
         self.assertIn('id="model-selection-dialog"', response.text)
         self.assertIn('id="model-selection-search"', response.text)

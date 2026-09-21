@@ -4,4 +4,9 @@ __pycache__/
 *.py[cod]
 data/
 .pytest_cache/
-
+# Local artifacts from tools/preview_shot.py and tools/preview_check.py.
+data-preview/
+chrome-profile*/
+preview*.log
+*.pid
+shot-*.png
