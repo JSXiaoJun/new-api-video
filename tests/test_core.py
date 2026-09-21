@@ -32,8 +32,11 @@ from app.main import app, normalize_discovered_models
 from app.image_proxy import ASSET_LINK_HEADER, classify_health_outcome, forward_json
 from app.model_profiles import (
     capabilities_for,
-    effective_video_limit,
-    limit_reference_videos,
+    enforce_reference_media_limits,
+    MediaLimitError,
+    media_reference_counts,
+    resolve_media_counts,
+    route_media_counts,
     transform_create_payload,
 )
 from app.proxy import create_video, fetch_task, normalize_status, normalize_task_payload, stream_content, upstream_error
@@ -1568,7 +1571,8 @@ class CoreTests(unittest.TestCase):
                 database.initialize()
                 with database.connection() as migrated:
                     route = migrated.execute(
-                        "SELECT profile, duration_override, upstream_model, resolutions_json, forward_resolution "
+                        "SELECT profile, duration_override, upstream_model, resolutions_json, forward_resolution, "
+                        "image_count, video_count, audio_count "
                         "FROM model_routes WHERE model = 'manxue-933'"
                     ).fetchone()
 
@@ -1577,6 +1581,131 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(route["upstream_model"], "manxue-933")
             self.assertEqual(json.loads(route["resolutions_json"]), [])
             self.assertEqual(route["forward_resolution"], 1)
+            # 老行没有任何数量（NULL），迁移必须按渠道默认值回填，否则新规则
+            # （留空 = 不支持）会让这条已上线的路由开始拒收参考媒体。
+            self.assertEqual(route["image_count"], 9)
+            self.assertEqual(route["video_count"], 3)
+            self.assertEqual(route["audio_count"], 3)
+
+    def test_initialize_backfills_media_counts_from_legacy_flags_without_rejecting_uploads(self):
+        """老库升级后，原本能用参考媒体的路由必须照旧能用。"""
+        with tempfile.TemporaryDirectory() as data_dir:
+            legacy_path = Path(data_dir) / "adapter.db"
+            conn = sqlite3.connect(legacy_path)
+            conn.executescript(
+                """
+                CREATE TABLE upstreams (
+                    id INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    base_url TEXT NOT NULL,
+                    api_key_encrypted TEXT NOT NULL,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    priority INTEGER NOT NULL DEFAULT 100,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    last_used_at INTEGER
+                );
+                CREATE TABLE model_routes (
+                    id INTEGER PRIMARY KEY,
+                    upstream_id INTEGER NOT NULL REFERENCES upstreams(id) ON DELETE CASCADE,
+                    model TEXT NOT NULL,
+                    upstream_model TEXT NOT NULL,
+                    protocol TEXT NOT NULL,
+                    profile TEXT NOT NULL DEFAULT 'default',
+                    durations_json TEXT NOT NULL DEFAULT '[]',
+                    resolutions_json TEXT NOT NULL DEFAULT '[]',
+                    supports_image INTEGER NOT NULL DEFAULT 1,
+                    supports_video INTEGER NOT NULL DEFAULT 1,
+                    supports_audio INTEGER NOT NULL DEFAULT 1,
+                    image_count INTEGER,
+                    video_count INTEGER,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    forward_resolution INTEGER NOT NULL DEFAULT 1,
+                    UNIQUE(upstream_id, model)
+                );
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO upstreams(id, name, base_url, api_key_encrypted, enabled, priority, created_at, updated_at)
+                VALUES (1, 'legacy-media', 'https://legacy.example', ?, 1, 1, 100, 100)
+                """,
+                (secret_box.encrypt("legacy-key"),),
+            )
+            # 三种历史写法并存：勾选为否、勾选了但没有数量、以及已经填过数量。
+            conn.executemany(
+                """
+                INSERT INTO model_routes(
+                    upstream_id, model, upstream_model, protocol, profile,
+                    supports_image, supports_video, supports_audio, image_count, video_count
+                ) VALUES (1, ?, ?, 'rolldek', 'rolldek-sd25-ch1', ?, ?, ?, ?, ?)
+                """,
+                [
+                    ("legacy-flags-off", "legacy-flags-off", 0, 0, 0, None, None),
+                    ("legacy-blank", "legacy-blank", 1, 1, 1, None, None),
+                    ("legacy-explicit", "legacy-explicit", 1, 1, 1, 4, 2),
+                ],
+            )
+            conn.commit()
+            conn.close()
+
+            with patch.object(database, "DB_PATH", legacy_path):
+                database.initialize()
+                routes = {
+                    route["model"]: route
+                    for route in database.get_upstream(1)["routes"]
+                }
+                capabilities = {
+                    item["id"]: item["capabilities"]
+                    for item in database.list_model_capabilities()
+                }
+
+            self.assertEqual(
+                (routes["legacy-flags-off"]["image_count"], routes["legacy-flags-off"]["video_count"],
+                 routes["legacy-flags-off"]["audio_count"]),
+                (0, 0, 0),
+            )
+            # 勾选为是但没填数量 = 沿用渠道默认值，也是当时对外公布的数字。
+            self.assertEqual(
+                (routes["legacy-blank"]["image_count"], routes["legacy-blank"]["video_count"],
+                 routes["legacy-blank"]["audio_count"]),
+                (30, 10, 10),
+            )
+            # 已经填过数量的路由不能被回填覆盖。
+            self.assertEqual(
+                (routes["legacy-explicit"]["image_count"], routes["legacy-explicit"]["video_count"],
+                 routes["legacy-explicit"]["audio_count"]),
+                (4, 2, 10),
+            )
+            self.assertEqual(capabilities["legacy-blank"]["maxVideos"], 10)
+            self.assertEqual(capabilities["legacy-explicit"]["maxVideos"], 2)
+            self.assertFalse(capabilities["legacy-flags-off"]["referenceVideo"])
+
+    def test_initialize_does_not_rebackfill_counts_cleared_by_the_operator(self):
+        """回填只做一次：运营后来故意清空的数量不能被重启改回默认值。"""
+        with tempfile.TemporaryDirectory() as data_dir:
+            database_path = Path(data_dir) / "adapter.db"
+            with patch.object(database, "DB_PATH", database_path):
+                database.initialize()
+                upstream = database.save_upstream({
+                    "name": "cleared-counts",
+                    "base_url": "https://cleared.example",
+                    "api_key": "cleared-key",
+                    "enabled": True,
+                    "priority": 1,
+                    "routes": [{
+                        "model": "cleared-video",
+                        "upstream_model": "sd-2.5-ch1",
+                        "protocol": "rolldek",
+                        "profile": "rolldek-sd25-ch1",
+                        "video_count": 0,
+                    }],
+                })
+                database.initialize()
+                route = database.get_upstream(upstream["id"])["routes"][0]
+
+            self.assertEqual(route["video_count"], 0)
+            self.assertEqual(route["image_count"], 30)
 
     def test_initialize_expands_legacy_protocol_constraint_for_ark_v3(self):
         with tempfile.TemporaryDirectory() as data_dir:
@@ -1979,9 +2108,21 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(
             normalize_discovered_models(payload),
             [
-                {"model": "", "upstream_model": "sora-v3-933-pro", "protocol": "videos", "profile": "manxue-933", "durations": []},
-                {"model": "", "upstream_model": "seedance-2.0-fast", "protocol": "seedance", "profile": "default", "durations": []},
-                {"model": "", "upstream_model": "veo31-fast", "protocol": "videos", "profile": "veo31-fast", "durations": []},
+                {
+                    "model": "", "upstream_model": "sora-v3-933-pro", "protocol": "videos",
+                    "profile": "manxue-933", "durations": [],
+                    "image_count": 9, "video_count": 3, "audio_count": 3,
+                },
+                {
+                    "model": "", "upstream_model": "seedance-2.0-fast", "protocol": "seedance",
+                    "profile": "default", "durations": [],
+                    "image_count": 5, "video_count": 1, "audio_count": 1,
+                },
+                {
+                    "model": "", "upstream_model": "veo31-fast", "protocol": "videos",
+                    "profile": "veo31-fast", "durations": [],
+                    "image_count": 2, "video_count": 1, "audio_count": 1,
+                },
             ],
         )
 
@@ -2037,6 +2178,9 @@ class CoreTests(unittest.TestCase):
             "protocol": "ark-v3",
             "profile": "ark-seedance-2",
             "durations": [],
+            "image_count": 9,
+            "video_count": 3,
+            "audio_count": 3,
         }])
 
     def test_model_discovery_selects_933_profile_for_native_aliases(self):
@@ -2376,78 +2520,88 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(capabilities_for("rolldek-sd25-ch1")["maxVideos"], 10)
         self.assertEqual(capabilities_for("mai-token-720p")["maxVideos"], 3)
         self.assertEqual(capabilities_for("funai-kling")["maxVideos"], 1)
-        # Rejecting reference video must report zero, not a misleading one.
-        # ``referenceVideo`` alone cannot express this, which is why the count
-        # also has to track the route's supports_video flag.
-        self.assertEqual(capabilities_for("rolldek-sd2-ch3", supports_video=False)["maxVideos"], 0)
-        self.assertEqual(capabilities_for("sora2", supports_video=False)["maxVideos"], 0)
+        # 不支持参考视频时必须报 0，否则调用方会以为还能传。
+        self.assertEqual(capabilities_for("rolldek-sd2-ch3", max_videos=0)["maxVideos"], 0)
+        self.assertEqual(capabilities_for("sora2", max_videos=0)["maxVideos"], 0)
 
-    def test_unconfigured_video_count_leaves_the_request_untouched(self):
-        # ``None`` means the operator never set ``video_count``, so the route
-        # must relay exactly what it relayed before the setting existed.
-        self.assertIsNone(effective_video_limit(None))
+    def test_media_counts_resolve_from_the_legacy_capability_flags(self):
+        # 旧前端只提交勾选：勾选为否记 0，勾选为是沿用渠道默认值，这样它保存
+        # 出来的路由行为与迁移前完全一致。
+        self.assertEqual(
+            resolve_media_counts("rolldek-sd25-ch1", None, None, None, True, False, False),
+            {"image_count": 30, "video_count": 0, "audio_count": 0},
+        )
+        # 显式数量永远优先，0 与留空同义（都是不支持）。
+        self.assertEqual(
+            resolve_media_counts("rolldek-sd25-ch1", 0, 7, 0),
+            {"image_count": 0, "video_count": 7, "audio_count": 0},
+        )
 
-        legacy = {"model": "sora2", "prompt": "test", "reference_video": "https://cdn/one.mp4"}
-        self.assertIs(limit_reference_videos(legacy, None), legacy)
+    def test_route_media_counts_treats_a_blank_count_as_unsupported(self):
+        self.assertEqual(
+            route_media_counts({"image_count": None, "video_count": None, "audio_count": None}),
+            {"image": 0, "video": 0, "audio": 0},
+        )
+        self.assertEqual(
+            route_media_counts({"image_count": 3, "video_count": 0, "audio_count": 2}),
+            {"image": 3, "video": 0, "audio": 2},
+        )
 
-        # A channel that accepts several clips keeps receiving all of them.
-        many = {
+    def test_reference_media_counts_cover_every_adapter_spelling(self):
+        counts = media_reference_counts({
+            "image_urls": ["https://cdn/one.png"],
+            "reference_images": ["https://cdn/two.png"],
+            "first_frame_url": "https://cdn/frame.png",
+            "videos": ["https://cdn/one.mp4", "https://cdn/two.mp4"],
+            "video_refs": ["https://cdn/three.mp4"],
+            "audios": ["https://cdn/voice.mp3"],
+            "audio_url": "https://cdn/voice2.mp3",
+            # 不是媒体，只是开关：不能算进音频数量里。
+            "generate_audio": True,
+        })
+        self.assertEqual(counts, {"image": 3, "video": 3, "audio": 2})
+
+    def test_reference_media_counts_dedupe_repeats_of_the_same_url(self):
+        counts = media_reference_counts({
+            "reference_videos": ["https://cdn/one.mp4", "https://cdn/one.mp4"],
+            "video_url": "https://cdn/one.mp4",
+        })
+        self.assertEqual(counts["video"], 1)
+
+    def test_media_limits_reject_instead_of_dropping_references(self):
+        payload = {
             "model": "sd-2.5-ch1",
             "prompt": "test",
             "reference_videos": [f"https://cdn/{index}.mp4" for index in range(4)],
         }
-        self.assertIs(limit_reference_videos(many, None), many)
+        with self.assertRaisesRegex(MediaLimitError, "视频数量超过上限：本次请求 4 个，当前模型最多 3 个"):
+            enforce_reference_media_limits(payload, {"image": 9, "video": 3, "audio": 3})
 
-    def test_configured_video_count_truncates_in_order(self):
-        videos = [f"https://cdn/{index}.mp4" for index in range(4)]
-        payload = limit_reference_videos(
-            {"model": "sd-2.5-ch1", "prompt": "test", "reference_videos": videos},
-            2,
-        )
-
-        self.assertEqual(payload["reference_videos"], videos[:2])
-        self.assertEqual(effective_video_limit(2), 2)
-
-    def test_single_reference_video_survives_a_matching_limit(self):
-        # The旧格式 compatibility case: one clip via the singular field, and a
-        # limit that already accommodates it, must not be rewritten at all.
+        # 上限内正常放行，且不修改请求内容（旧格式的单个 reference_video 原样透传）。
         legacy = {"model": "sora2", "prompt": "test", "reference_video": "https://cdn/one.mp4"}
-        self.assertIs(limit_reference_videos(legacy, 1), legacy)
+        enforce_reference_media_limits(legacy, {"image": 1, "video": 1, "audio": 1})
+        self.assertEqual(legacy["reference_video"], "https://cdn/one.mp4")
 
-        # Even a generous limit leaves the singular spelling alone.
-        self.assertIs(limit_reference_videos(legacy, 3), legacy)
+    def test_unsupported_media_reports_the_reason(self):
+        with self.assertRaisesRegex(MediaLimitError, "图片数量超过上限：本次请求 2 张，当前模型不支持图片"):
+            enforce_reference_media_limits(
+                {"images": ["https://cdn/one.png", "https://cdn/two.png"]},
+                {"image": 0, "video": 0, "audio": 0},
+            )
 
-    def test_video_count_zero_drops_every_reference_video(self):
-        payload = limit_reference_videos(
-            {
-                "model": "sora2",
-                "prompt": "test",
-                "reference_video": "https://cdn/one.mp4",
-                "reference_videos": ["https://cdn/two.mp4"],
-            },
-            0,
-        )
-
-        for field in ("reference_video", "reference_videos", "video_url", "video_urls", "videos"):
-            self.assertNotIn(field, payload)
-        self.assertEqual(payload["prompt"], "test")
-        self.assertEqual(effective_video_limit(0), 0)
-
-    def test_adapter_aliases_cannot_bypass_the_video_limit(self):
-        # ``videos`` / ``video_refs`` are adapter-level spellings. If the cap
-        # ignored them a caller could evade the operator's limit by renaming
-        # the field, so they are collected and rewritten too.
-        payload = limit_reference_videos(
-            {
-                "model": "sd-2.5-ch1",
-                "prompt": "test",
-                "videos": ["https://cdn/one.mp4", "https://cdn/two.mp4", "https://cdn/three.mp4"],
-            },
-            1,
-        )
-
-        self.assertEqual(payload["reference_videos"], ["https://cdn/one.mp4"])
-        self.assertNotIn("videos", payload)
+    def test_adapter_aliases_cannot_bypass_the_media_limit(self):
+        # ``videos`` / ``video_refs`` are adapter-level spellings. If the limit
+        # ignored them a caller could evade the operator's budget by renaming
+        # the field.
+        with self.assertRaises(MediaLimitError):
+            enforce_reference_media_limits(
+                {
+                    "model": "sd-2.5-ch1",
+                    "prompt": "test",
+                    "videos": ["https://cdn/one.mp4", "https://cdn/two.mp4"],
+                },
+                {"image": 9, "video": 1, "audio": 3},
+            )
 
     def test_route_video_count_round_trips_and_drives_capabilities(self):
         model = f"video-count-{time.time_ns()}"
@@ -2517,6 +2671,7 @@ class CoreTests(unittest.TestCase):
                 "video_count": 1,
             }],
         })
+        self.assertEqual(upstream["routes"][0]["video_count"], 1)
         captured = {}
 
         class MockAsyncClient:
@@ -2536,19 +2691,33 @@ class CoreTests(unittest.TestCase):
 
         try:
             with patch("app.proxy.httpx.AsyncClient", return_value=MockAsyncClient()):
+                with self.assertRaises(HTTPException) as raised:
+                    asyncio.run(create_video({
+                        "model": model,
+                        "prompt": "test",
+                        "reference_videos": [
+                            "https://cdn/one.mp4",
+                            "https://cdn/two.mp4",
+                            "https://cdn/three.mp4",
+                        ],
+                    }, None))
+
+            # 超过配置数量直接拒绝，并说明是哪种媒体、超了多少；请求不会发出。
+            self.assertEqual(raised.exception.status_code, 400)
+            self.assertEqual(
+                raised.exception.detail,
+                "视频数量超过上限：本次请求 3 个，当前模型最多 1 个",
+            )
+            self.assertEqual(captured, {})
+
+            with patch("app.proxy.httpx.AsyncClient", return_value=MockAsyncClient()):
                 result = asyncio.run(create_video({
                     "model": model,
                     "prompt": "test",
-                    "reference_videos": [
-                        "https://cdn/one.mp4",
-                        "https://cdn/two.mp4",
-                        "https://cdn/three.mp4",
-                    ],
+                    "reference_videos": ["https://cdn/one.mp4"],
                 }, None))
 
             self.assertEqual(result.status_code, 200)
-            # RollDek CH1 relays ``video_urls``; only the configured clip count
-            # may reach the upstream.
             self.assertEqual(captured["payload"]["video_urls"], ["https://cdn/one.mp4"])
         finally:
             database.delete_upstream(upstream["id"])
@@ -2634,8 +2803,7 @@ class CoreTests(unittest.TestCase):
             )
             self.assertEqual(route["video_count"], 4)
 
-            # A blank field must persist as unset so the channel default still
-            # applies instead of being frozen to whatever the editor showed.
+            # 旧前端只会提交勾选：数量缺失时按勾选换算，勾选为否记 0。
             updated = client.put(
                 f"/admin/api/upstreams/{upstream_id}",
                 headers=headers,
@@ -2650,7 +2818,8 @@ class CoreTests(unittest.TestCase):
                         "upstream_model": "sd-2.5-ch1",
                         "protocol": "rolldek",
                         "profile": "rolldek-sd25-ch1",
-                        "video_count": None,
+                        "supports_video": False,
+                        "supports_audio": False,
                     }],
                 },
             )
@@ -2658,9 +2827,16 @@ class CoreTests(unittest.TestCase):
             route = next(
                 item for item in updated.json()["routes"] if item["model"] == model
             )
-            self.assertIsNone(route["video_count"])
-            self.assertIsNone(
-                effective_video_limit(route["video_count"])
+            self.assertEqual(route["video_count"], 0)
+            self.assertFalse(route["supports_video"])
+            self.assertEqual(route["audio_count"], 0)
+            self.assertEqual(route["image_count"], 30)
+            self.assertEqual(
+                next(
+                    item for item in client.get("/v1/model-capabilities").json()["data"]
+                    if item["id"] == model
+                )["capabilities"]["maxVideos"],
+                0,
             )
         finally:
             database.delete_upstream(upstream_id)

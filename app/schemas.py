@@ -61,8 +61,12 @@ class RouteInput(BaseModel):
     ] = "default"
     durations: list[int] = Field(default_factory=list, max_length=MAX_DURATION_SECONDS)
     resolutions: list[str] = Field(default_factory=list, max_length=20)
+    # 三个数量是该模型能接受的参考媒体上限，也是唯一事实来源：留空或 0 都表示
+    # 不支持这类参考媒体，代理会直接拒绝而不是静默丢弃。下面的布尔字段只是旧
+    # 前端（勾选式能力）的兼容入口，仅在数量没提交时作为回退值使用。
     image_count: int | None = Field(default=None, ge=0, le=50)
     video_count: int | None = Field(default=None, ge=0, le=50)
+    audio_count: int | None = Field(default=None, ge=0, le=50)
     enabled: bool = True
     supports_image: bool = True
     supports_video: bool = True

@@ -279,6 +279,9 @@ class FunAIChannelTests(unittest.TestCase):
             "profile": "funai-kling-frames",
             "upstream_model": "kling-v3",
             "forward_resolution": True,
+            "image_count": 2,
+            "video_count": 0,
+            "audio_count": 0,
         }
         with (
             patch("app.proxy.database.select_upstream", return_value=upstream),

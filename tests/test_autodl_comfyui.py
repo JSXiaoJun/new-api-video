@@ -84,11 +84,14 @@ class AutoDLComfyUIAdapterTests(unittest.TestCase):
                 self.assertTrue(route["supports_image"])
                 self.assertTrue(route["supports_audio"])
                 self.assertFalse(route["supports_video"])
+                # 数量是执行依据：勾选换算成明确的数字，0 = 不支持。
+                self.assertEqual(route["image_count"], 9)
+                self.assertEqual(route["video_count"], 0)
+                self.assertEqual(route["audio_count"], 3)
                 self.assertTrue(autodl_comfyui.requires_prompt(model))
                 caps = capabilities_for(
-                    route["profile"], route["durations"], route["supports_image"],
-                    route["supports_video"], route["supports_audio"],
-                    route["image_count"], route["resolutions"],
+                    route["profile"], route["durations"], route["image_count"],
+                    route["video_count"], route["audio_count"], route["resolutions"],
                 )
                 self.assertEqual(caps["durations"], list(range(1, 16)))
                 self.assertEqual(caps["resolutions"], ["480p", "768p"])

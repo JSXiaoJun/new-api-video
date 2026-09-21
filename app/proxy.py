@@ -15,7 +15,16 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from . import ark_video, database
 from .channels import autodl_comfyui, funai, mai_token, o10_grok, pro666, rolldek, sub2api_video
 from .config import settings
-from .model_profiles import effective_video_limit, limit_reference_videos, transform_create_payload
+from .model_profiles import (
+    INLINE_VALUE_KEYS,
+    MEDIA_FIELD_NAMES,
+    MEDIA_FIELD_PREFIXES,
+    URL_VALUE_KEYS,
+    MediaLimitError,
+    enforce_reference_media_limits,
+    route_media_counts,
+    transform_create_payload,
+)
 
 
 logger = logging.getLogger("uvicorn.error")
@@ -26,33 +35,9 @@ MAX_UPSTREAM_ERROR_MESSAGE_LENGTH = 1000
 # between Cloudflare and the origin, not a failed video-generation job.
 PENDING_POLL_STATUS_CODES = {409, 429}
 
-_IMAGE_FIELD_NAMES = {
-    "image",
-    "images",
-    "imageurl",
-    "imageurls",
-    "imagebase64",
-    "imageref",
-    "imagerefs",
-    "inputimage",
-    "inputimages",
-    "initimage",
-    "initimages",
-    "referenceimage",
-    "referenceimages",
-    "referenceimageurl",
-    "referenceimageurls",
-    "firstimage",
-    "lastimage",
-    "startimageurl",
-    "endimageurl",
-    "firstframe",
-    "lastframe",
-    "firstframeimage",
-    "lastframeimage",
-}
-_IMAGE_URL_KEYS = {"url", "uri", "href"}
-_INLINE_IMAGE_KEYS = {"data", "base64", "b64json", "bytes", "content", "source"}
+_IMAGE_FIELD_NAMES = MEDIA_FIELD_NAMES["image"]
+_IMAGE_URL_KEYS = URL_VALUE_KEYS
+_INLINE_IMAGE_KEYS = INLINE_VALUE_KEYS
 
 
 def validate_online_image_inputs(payload: dict[str, Any]) -> None:
@@ -81,7 +66,7 @@ def _iter_image_candidates(payload: Any):
     if isinstance(payload, dict):
         for key, value in payload.items():
             normalized = re.sub(r"[^a-z0-9]", "", str(key).lower())
-            if normalized in _IMAGE_FIELD_NAMES or normalized.startswith(("imageurl", "imageref", "referenceimage")):
+            if normalized in _IMAGE_FIELD_NAMES or normalized.startswith(MEDIA_FIELD_PREFIXES["image"]):
                 yield from _iter_image_field_values(value)
             elif isinstance(value, (dict, list)):
                 yield from _iter_image_candidates(value)
@@ -105,7 +90,7 @@ def _iter_image_field_values(value: Any):
                 yield from _iter_image_field_values(child)
             elif normalized in _INLINE_IMAGE_KEYS:
                 yield from _iter_image_field_values(child)
-            elif normalized in _IMAGE_FIELD_NAMES or normalized.startswith(("imageurl", "imageref", "referenceimage")):
+            elif normalized in _IMAGE_FIELD_NAMES or normalized.startswith(MEDIA_FIELD_PREFIXES["image"]):
                 yield from _iter_image_field_values(child)
 
 
@@ -285,15 +270,16 @@ async def create_video(
     validate_online_image_inputs(payload)
 
     protocol = upstream["protocol"]
-    # Apply the operator's per-route reference-video budget before any
-    # protocol-specific conversion, so every adapter sees the same capped list.
-    # ``routed_payload`` is also what the promptless checks below inspect: a
-    # route configured with ``video_count = 0`` must not be treated as having
-    # reference content it will never forward.
-    video_limit = effective_video_limit(upstream.get("video_count"))
-    routed_payload = limit_reference_videos(
-        {**payload, "model": upstream["upstream_model"]}, video_limit
-    )
+    # 参考媒体的数量上限在这里统一执行：超过后台配置的数量直接拒绝，并说明是哪
+    # 一种媒体超了多少，绝不悄悄丢掉参考媒体让用户拿到另一个任务的结果。数量与
+    # ``/v1/model-capabilities`` 公布的数字同源，调用方可以提前知道预算。
+    media_counts = route_media_counts(upstream)
+    try:
+        enforce_reference_media_limits(payload, media_counts)
+    except MediaLimitError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    video_limit = media_counts["video"]
+    routed_payload = {**payload, "model": upstream["upstream_model"]}
     allows_promptless = (
         protocol == ark_video.PROTOCOL and ark_video.has_reference_content(routed_payload)
     ) or (

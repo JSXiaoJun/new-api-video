@@ -49,9 +49,8 @@ class Sub2ApiVideoTests(unittest.TestCase):
         self.assertEqual(image["image_count"], 7)
         self.assertEqual(image["resolutions"], ["480p", "720p", "1080p"])
         caps = capabilities_for(
-            image["profile"], image["durations"], image["supports_image"],
-            image["supports_video"], image["supports_audio"], image["image_count"],
-            image["resolutions"],
+            image["profile"], image["durations"], image["image_count"],
+            image["video_count"], image["audio_count"], image["resolutions"],
         )
         self.assertEqual(caps["ratios"], ["16:9", "9:16", "1:1", "4:3", "3:4", "2:3", "3:2"])
         self.assertEqual(caps["maxImages"], 7)

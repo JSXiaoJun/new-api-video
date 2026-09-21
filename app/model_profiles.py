@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 import re
-from typing import Any
+from typing import Any, Iterator, Mapping
 
 from .channels import autodl_comfyui, funai, mai_token, o10_grok, pro666, rolldek, sub2api_video
 
@@ -10,17 +10,122 @@ from .channels import autodl_comfyui, funai, mai_token, o10_grok, pro666, rollde
 MAX_DURATION_SECONDS = 60
 
 
-# Reference-video spellings that only the channel adapters accept. They are
-# not part of the public contract, but each one is read by at least one
-# adapter, so the route limit has to account for them or it can be bypassed.
-_REFERENCE_VIDEO_ALIAS_KEYS = ('videos', 'video_refs', 'reference_video_urls')
+# 接入新上游时先看这里：一个渠道适配器能读到的每个参考媒体字段都必须登记在
+# 下面三张表里，否则调用方只要换个字段名就能绕过后台配置的数量上限。字段名
+# 先做规范化比较（去掉标点再转小写），所以 ``imageUrls`` 与 ``image_urls``
+# 属于同一个字段；前缀表用来兜住 ``reference_image_url_1`` 这类带序号的写法。
+MEDIA_KINDS = ('image', 'video', 'audio')
+URL_VALUE_KEYS = frozenset({'url', 'uri', 'href'})
+INLINE_VALUE_KEYS = frozenset({'data', 'base64', 'b64json', 'bytes', 'content', 'source'})
+MEDIA_FIELD_NAMES: dict[str, frozenset[str]] = {
+    'image': frozenset({
+        'image', 'images', 'imageurl', 'imageurls', 'imagebase64', 'imageref', 'imagerefs',
+        'inputimage', 'inputimages', 'inputreference', 'initimage', 'initimages',
+        'referenceimage', 'referenceimages', 'referenceimageurl', 'referenceimageurls',
+        'firstimage', 'lastimage', 'startimageurl', 'endimageurl', 'startframeurl', 'endframeurl',
+        'firstframe', 'lastframe', 'firstframeimage', 'lastframeimage', 'firstframeurl', 'lastframeurl',
+        'refimage', 'refimages',
+    }),
+    'video': frozenset({
+        'referencevideo', 'referencevideos', 'referencevideourls',
+        'videourl', 'videourls', 'videos', 'videoref', 'videorefs', 'refvideo', 'refvideos',
+    }),
+    'audio': frozenset({
+        'audiourl', 'audiourls', 'audios', 'audioref', 'audiorefs',
+        'referenceaudio', 'referenceaudios', 'audioreference',
+    }),
+}
+MEDIA_FIELD_PREFIXES: dict[str, tuple[str, ...]] = {
+    'image': ('imageurl', 'imageref', 'referenceimage', 'refimage'),
+    'video': ('videourl', 'videoref', 'referencevideo', 'refvideo'),
+    'audio': ('audiourl', 'audioref', 'referenceaudio'),
+}
+MEDIA_LABELS: dict[str, tuple[str, str]] = {
+    'image': ('图片', '张'),
+    'video': ('视频', '个'),
+    'audio': ('音频', '个'),
+}
 
-# Every field a reference video can arrive in, i.e. the contract spellings plus
-# the adapter aliases. Rewriting a capped request must clear all of them.
-REFERENCE_VIDEO_FIELDS = frozenset(
-    ('reference_video', 'video_url', 'reference_videos', 'video_urls', 'videoUrls')
-    + _REFERENCE_VIDEO_ALIAS_KEYS
-)
+
+class MediaLimitError(Exception):
+    """请求携带的参考媒体数量超过该模型配置的上限。"""
+
+
+def _normalize_field_name(key: Any) -> str:
+    return re.sub(r'[^a-z0-9]', '', str(key).lower())
+
+
+def _is_media_field(kind: str, normalized: str) -> bool:
+    return normalized in MEDIA_FIELD_NAMES[kind] or normalized.startswith(MEDIA_FIELD_PREFIXES[kind])
+
+
+def _iter_media_field_values(value: Any, kind: str) -> Iterator[str]:
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, list):
+        for item in value:
+            yield from _iter_media_field_values(item, kind)
+    elif isinstance(value, dict):
+        # OpenAI 风格的媒体对象把地址放在 ``url``/``image_url`` 下，把内联数据放在
+        # ``data``/``source`` 下；其余键（``type`` 之类）只是元数据，不能当成引用。
+        for key, child in value.items():
+            normalized = _normalize_field_name(key)
+            if (
+                normalized in URL_VALUE_KEYS
+                or normalized in INLINE_VALUE_KEYS
+                or any(_is_media_field(media, normalized) for media in MEDIA_KINDS)
+            ):
+                yield from _iter_media_field_values(child, kind)
+
+
+def iter_media_references(payload: Any, kind: str) -> Iterator[str]:
+    """按渠道适配器认识的每一种写法，列出请求里的参考媒体。
+
+    ``kind`` 取 ``image`` / ``video`` / ``audio``。公共协议字段与适配器私有别名
+    都在 :data:`MEDIA_FIELD_NAMES` 里，嵌套数组（``messages[].content[].image_url``）
+    也会被走一遍，因此计数结果和适配器实际转发的内容一致。
+    """
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            normalized = _normalize_field_name(key)
+            if _is_media_field(kind, normalized):
+                yield from _iter_media_field_values(value, kind)
+            elif isinstance(value, (dict, list)):
+                yield from iter_media_references(value, kind)
+    elif isinstance(payload, list):
+        for item in payload:
+            yield from iter_media_references(item, kind)
+
+
+def media_reference_counts(payload: dict[str, Any]) -> dict[str, int]:
+    """统计请求里每种参考媒体的个数，同一个地址重复出现只算一次。"""
+    return {
+        kind: len({value.strip() for value in iter_media_references(payload, kind) if value.strip()})
+        for kind in MEDIA_KINDS
+    }
+
+
+def enforce_reference_media_limits(payload: dict[str, Any], counts: Mapping[str, int]) -> None:
+    """超过该模型配置的数量就拒绝请求，并说明是哪种媒体、超了多少。
+
+    ``counts`` 是后台为这条路由配置的数量，与 ``/v1/model-capabilities`` 对外
+    公布的数字完全一致，调用方可以提前知道预算。``0`` 表示该模型不支持这类参考
+    媒体：请求会被拒绝，而不是悄悄把参考媒体丢掉——用户要的是图生视频，静默返回
+    一个文生视频的结果等于交付了另一个任务。
+    """
+    found = media_reference_counts(payload)
+    for kind in MEDIA_KINDS:
+        limit = max(0, int(counts.get(kind, 0)))
+        if found[kind] <= limit:
+            continue
+        label, unit = MEDIA_LABELS[kind]
+        reason = (
+            f'当前模型不支持{label}' if limit == 0
+            else f'当前模型最多 {limit} {unit}'
+        )
+        raise MediaLimitError(
+            f'{label}数量超过上限：本次请求 {found[kind]} {unit}，{reason}'
+        )
 
 
 PROFILE_DEFINITIONS: dict[str, dict[str, Any]] = {
@@ -232,6 +337,25 @@ def profile_options() -> list[dict[str, str]]:
 
 
 def suggest_route(model: str, protocol: str) -> dict[str, Any]:
+    """Suggest a route for a discovered model, media counts included.
+
+    渠道适配器只描述自己支持哪几类参考媒体，这里统一换算成后台要保存的数量：
+    数量是唯一事实来源，发现出来的模型直接带上数字，运营不用再手动补。
+    """
+    route = _suggest_route(model, protocol)
+    counts = resolve_media_counts(
+        route.get('profile', 'default'),
+        route.get('image_count'),
+        route.get('video_count'),
+        route.get('audio_count'),
+        route.get('supports_image', True),
+        route.get('supports_video', True),
+        route.get('supports_audio', True),
+    )
+    return {**route, **counts}
+
+
+def _suggest_route(model: str, protocol: str) -> dict[str, Any]:
     if protocol == funai.PROTOCOL:
         return funai.suggest_route(model) or {
             'profile': 'funai-veo',
@@ -305,58 +429,124 @@ def suggest_route(model: str, protocol: str) -> dict[str, Any]:
 def capabilities_for(
     profile: str,
     duration_overrides: list[int] | int | None = None,
-    supports_image: bool = True,
-    supports_video: bool = True,
-    supports_audio: bool = True,
     max_images: int | None = None,
-    resolution_overrides: list[str] | None = None,
     max_videos: int | None = None,
+    max_audios: int | None = None,
+    resolution_overrides: list[str] | None = None,
 ) -> dict[str, Any]:
+    """对外公布某条路由的能力，数字必须与代理实际执行的上限一致。
+
+    三个数量参数是路由上配置的媒体数量（``None`` 表示沿用渠道默认值，``0``
+    表示该模型不支持这类参考媒体）。公布的 ``maxImages`` / ``maxVideos`` /
+    ``maxAudios`` 就是代理会用来拒绝超量请求的数字，两边同源。
+    """
     capabilities = deepcopy(PROFILE_DEFINITIONS[profile]['capabilities'])
+    defaults = profile_default_counts(profile)
     if isinstance(duration_overrides, int):
         duration_overrides = [duration_overrides]
     if duration_overrides:
         capabilities['durations'] = duration_overrides
     if resolution_overrides:
         capabilities['resolutions'] = resolution_overrides
-    if max_images is not None:
-        capabilities['maxImages'] = max(0, max_images)
-    elif not supports_image:
-        capabilities['maxImages'] = 0
-    elif not capabilities.get('maxImages'):
-        capabilities['maxImages'] = 1
-    if not supports_video:
-        capabilities['referenceVideo'] = False
-        capabilities['maxVideos'] = 0
+    capabilities['maxImages'] = max(
+        0, defaults['image_count'] if max_images is None else max_images
+    )
+    max_videos = max(0, defaults['video_count'] if max_videos is None else max_videos)
+    capabilities['maxVideos'] = max_videos
+    # ``video_count = 0`` 表示永远不转发参考视频，消费方通过 ``referenceVideo``
+    # 表达这件事，时长区间也一并撤掉，免得广告出一个不可能生效的范围。
+    capabilities['referenceVideo'] = max_videos > 0
+    if max_videos > 0:
+        capabilities.setdefault('minReferenceVideoDuration', 0)
+        capabilities.setdefault('maxReferenceVideoDuration', 30)
+    else:
         for key in ('minReferenceVideoDuration', 'maxReferenceVideoDuration'):
             capabilities.pop(key, None)
-    else:
-        # An explicit route ``video_count`` wins over the channel default: it is
-        # the number the proxy enforces, so reporting anything else here would
-        # advertise a limit the relay does not honour.
-        capabilities['maxVideos'] = (
-            max(0, max_videos) if max_videos is not None
-            else max(1, capabilities.get('maxVideos', 0))
-        )
-        # ``video_count = 0`` means "never forward a reference video", which the
-        # consumers of this payload express through ``referenceVideo``.
-        capabilities['referenceVideo'] = capabilities['maxVideos'] > 0
-        if capabilities['referenceVideo']:
-            capabilities.setdefault('minReferenceVideoDuration', 0)
-            capabilities.setdefault('maxReferenceVideoDuration', 30)
-        else:
-            for key in ('minReferenceVideoDuration', 'maxReferenceVideoDuration'):
-                capabilities.pop(key, None)
-    if not supports_audio:
-        capabilities['maxAudios'] = 0
-        for key in ('minAudioDuration', 'maxAudioDuration', 'maxTotalAudioDuration'):
-            capabilities.pop(key, None)
-    else:
-        capabilities['maxAudios'] = max(1, capabilities.get('maxAudios', 0))
+    max_audios = max(0, defaults['audio_count'] if max_audios is None else max_audios)
+    capabilities['maxAudios'] = max_audios
+    if max_audios > 0:
         capabilities.setdefault('minAudioDuration', 2)
         capabilities.setdefault('maxAudioDuration', 15)
         capabilities.setdefault('maxTotalAudioDuration', 15)
+    else:
+        for key in ('minAudioDuration', 'maxAudioDuration', 'maxTotalAudioDuration'):
+            capabilities.pop(key, None)
     return capabilities
+
+
+def _profile_max_videos(profile: str) -> int:
+    """Return how many reference videos this profile's upstream accepts.
+
+    Mirrors ``capabilities_for``: a profile without an explicit ``maxVideos``
+    keeps the historical single-video behaviour instead of forwarding extras
+    the upstream is not known to accept.
+    """
+    capabilities = PROFILE_DEFINITIONS.get(profile, {}).get('capabilities', {})
+    return max(1, capabilities.get('maxVideos', 1))
+
+
+def profile_default_counts(profile: str) -> dict[str, int]:
+    """路由没有配置数量时沿用的渠道默认值，规则与 ``capabilities_for`` 一致。
+
+    旧数据里“没填数量”表示沿用渠道默认值，这份默认值就是当时对外公布的数字，
+    所以用它回填不会改变老路由已经公告出去的能力。
+    """
+    capabilities = PROFILE_DEFINITIONS.get(profile, {}).get('capabilities', {})
+    return {
+        'image_count': max(1, capabilities.get('maxImages') or 0),
+        'video_count': _profile_max_videos(profile),
+        'audio_count': max(1, capabilities.get('maxAudios') or 0),
+    }
+
+
+def resolve_media_counts(
+    profile: str,
+    image_count: int | None = None,
+    video_count: int | None = None,
+    audio_count: int | None = None,
+    supports_image: bool = True,
+    supports_video: bool = True,
+    supports_audio: bool = True,
+) -> dict[str, int]:
+    """把一条路由的能力配置换算成三个明确的媒体数量。
+
+    数量是唯一事实来源：填了就用填的（``0`` 表示不支持，与留空同义），没填
+    才回退到旧的勾选式配置——勾选为否记 0，勾选为是沿用渠道默认值。旧版前端
+    只会提交勾选，这个回退保证它们保存出来的路由行为不变。
+    """
+    defaults = profile_default_counts(profile)
+    configured = {
+        'image_count': image_count,
+        'video_count': video_count,
+        'audio_count': audio_count,
+    }
+    legacy_flags = {
+        'image_count': supports_image,
+        'video_count': supports_video,
+        'audio_count': supports_audio,
+    }
+    resolved: dict[str, int] = {}
+    for field, value in configured.items():
+        if value is None:
+            value = defaults[field] if legacy_flags[field] else 0
+        resolved[field] = max(0, int(value))
+    return resolved
+
+
+def route_media_counts(row: Mapping[str, Any]) -> dict[str, int]:
+    """读出路由行上执行用的数量；留空（NULL）按 0 = 不支持处理。
+
+    行既可能是普通字典，也可能是 ``sqlite3.Row``（只有下标访问），所以这里不
+    用 ``.get()``，缺列一律按未配置处理。
+    """
+    counts: dict[str, int] = {}
+    for kind in MEDIA_KINDS:
+        try:
+            value = row[f'{kind}_count']
+        except (KeyError, IndexError, TypeError):
+            value = None
+        counts[kind] = max(0, int(value or 0))
+    return counts
 
 
 def _reference_videos(payload: dict[str, Any]) -> list[str]:
@@ -382,87 +572,6 @@ def _reference_videos(payload: dict[str, Any]) -> list[str]:
             if isinstance(item, str) and item.strip() and item.strip() not in result:
                 result.append(item.strip())
     return result
-
-
-def _reference_video_aliases(payload: dict[str, Any]) -> list[str]:
-    """Collect reference videos using every spelling an adapter understands.
-
-    ``_reference_videos`` follows the public contract only. Enforcement also has
-    to look at the channel-level aliases (``videos``, ``video_refs``,
-    ``reference_video_urls``): an adapter reads whichever one the caller sent,
-    so ignoring them here would let a caller step around the configured limit
-    simply by renaming the field. Entries are returned in the order the
-    adapters resolve them.
-    """
-    videos = _reference_videos(payload)
-    for key in _REFERENCE_VIDEO_ALIAS_KEYS:
-        value = payload.get(key)
-        if not isinstance(value, list):
-            continue
-        for item in value:
-            if isinstance(item, str) and item.strip() and item.strip() not in videos:
-                videos.append(item.strip())
-    return videos
-
-
-def _profile_max_videos(profile: str) -> int:
-    """Return how many reference videos this profile's upstream accepts.
-
-    Mirrors ``capabilities_for``: a profile without an explicit ``maxVideos``
-    keeps the historical single-video behaviour instead of forwarding extras
-    the upstream is not known to accept.
-    """
-    capabilities = PROFILE_DEFINITIONS.get(profile, {}).get('capabilities', {})
-    return max(1, capabilities.get('maxVideos', 1))
-
-
-def effective_video_limit(configured: int | None) -> int | None:
-    """Resolve how many reference videos one route may forward.
-
-    ``configured`` is the operator's per-route ``video_count``. An explicit
-    value -- including ``0``, which drops every reference video -- always wins,
-    so the field the admin sets is the field that takes effect.
-
-    ``None`` means the route was never configured, and the request is then
-    forwarded untouched. Returning ``None`` rather than a number is what makes
-    this setting strictly additive: every existing route relays exactly what it
-    relayed before, so a caller sending a single ``reference_video`` cannot
-    regress, and channels that already accept several clips keep receiving
-    them. Each profile keeps applying its own documented ``maxVideos`` in that
-    case, which is exactly what ``capabilities_for`` advertises for it.
-    """
-    if configured is not None:
-        return max(0, configured)
-    return None
-
-
-def limit_reference_videos(payload: dict[str, Any], limit: int | None) -> dict[str, Any]:
-    """Cap the request's reference videos to the route's configured limit.
-
-    ``limit`` is the resolved ``video_count`` for the route. The payload is
-    rewritten only when the request actually has to change: a request that is
-    already within budget is returned as-is, so a legacy caller sending a single
-    ``reference_video`` reaches the adapter with its original spelling intact
-    and no adapter-visible difference from before this setting existed.
-
-    When clips must be dropped the survivors are rewritten to the canonical
-    plural ``reference_videos`` array, which every adapter reads, and all the
-    other spellings are removed so an adapter's fallback lookup cannot
-    resurrect a clip that was meant to be dropped.
-    """
-    if limit is None:
-        return payload
-    videos = _reference_video_aliases(payload)
-    if len(videos) <= limit:
-        return payload
-    trimmed = {
-        key: value
-        for key, value in payload.items()
-        if key not in REFERENCE_VIDEO_FIELDS
-    }
-    if limit > 0:
-        trimmed['reference_videos'] = videos[:limit]
-    return trimmed
 
 
 def transform_create_payload(

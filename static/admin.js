@@ -401,21 +401,31 @@ function updateDurationSummary(row) {
   updateRouteSummary(row)
 }
 
+// 数量是唯一事实来源：留空与 0 同义（不支持），所以读取时统一按 0 处理。
+function readMediaCount(row, field) {
+  const raw = row.querySelector(`[data-route-field="${field}"]`).value.trim()
+  if (raw === '') return 0
+  const parsed = Math.trunc(Number(raw))
+  if (!Number.isFinite(parsed)) return 0
+  return Math.max(0, Math.min(50, parsed))
+}
+
+function mediaCountLabel(label, count) {
+  return count > 0 ? `${label}${count}` : `${label}不支持`
+}
+
 function routeParamSummary(row) {
   const durations = durationRanges(JSON.parse(row.dataset.durations || '[]'))
   const resolutions = row.querySelector('[data-route-field="resolutions"]').value
     .split(/[,，]/).map((value) => value.trim()).filter(Boolean)
-  const imageCount = Number(row.querySelector('[data-route-field="image_count"]').value)
-  const videoCountValue = row.querySelector('[data-route-field="video_count"]').value.trim()
   const parts = [
     durations.length ? durations.map(formatDurationRange).join(', ') : '默认时长',
     resolutions.length ? resolutions.join(', ') : '默认分辨率',
-    `图${Number.isFinite(imageCount) ? imageCount : 0}`,
-    videoCountValue === '' ? '视默认' : `视${Number(videoCountValue) || 0}`,
+    mediaCountLabel('图', readMediaCount(row, 'image_count')),
+    mediaCountLabel('视', readMediaCount(row, 'video_count')),
+    mediaCountLabel('音', readMediaCount(row, 'audio_count')),
   ]
   if (!row.querySelector('[data-route-forward="resolution"]').checked) parts.push('不传分辨率')
-  if (!row.querySelector('[data-route-support="video"]').checked) parts.push('无视频')
-  if (!row.querySelector('[data-route-support="audio"]').checked) parts.push('无音频')
   return parts.join(' · ')
 }
 
@@ -580,19 +590,16 @@ function addRouteRow(route = {}) {
         <input data-route-field="resolutions" maxlength="620" value="${escapeHtml((route.resolutions || []).join(', '))}" placeholder="工作台默认" aria-label="支持分辨率" title="多个分辨率用逗号分隔">
       </label>
       <label class="route-param"><span>图片数量</span>
-        <span class="route-param-number"><input data-route-field="image_count" type="number" min="0" max="50" value="${route.image_count ?? 1}" aria-label="图片数量"><span>张</span></span>
+        <span class="route-param-number"><input data-route-field="image_count" type="number" min="0" max="50" placeholder="0" value="${route.image_count ?? ''}" aria-label="图片数量" title="该模型最多能接收几张参考图片；留空或 0 表示不支持，用户传了会直接拒绝"><span>张</span></span>
       </label>
-      <label class="route-param" title="留空表示沿用渠道默认；填 0 表示不接收参考视频"><span>视频数量</span>
-        <span class="route-param-number"><input data-route-field="video_count" type="number" min="0" max="50" placeholder="默认" value="${route.video_count ?? ''}" aria-label="视频数量"><span>个</span></span>
+      <label class="route-param"><span>视频数量</span>
+        <span class="route-param-number"><input data-route-field="video_count" type="number" min="0" max="50" placeholder="0" value="${route.video_count ?? ''}" aria-label="视频数量" title="该模型最多能接收几段参考视频；留空或 0 表示不支持，用户传了会直接拒绝"><span>个</span></span>
+      </label>
+      <label class="route-param"><span>音频数量</span>
+        <span class="route-param-number"><input data-route-field="audio_count" type="number" min="0" max="50" placeholder="0" value="${route.audio_count ?? ''}" aria-label="音频数量" title="该模型最多能接收几段参考音频；留空或 0 表示不支持，用户传了会直接拒绝"><span>个</span></span>
       </label>
       <label class="route-param route-param-flag"><span>传分辨率</span>
         <input data-route-forward="resolution" type="checkbox"${route.forward_resolution !== false ? ' checked' : ''} aria-label="传分辨率">
-      </label>
-      <label class="route-param route-param-flag"><span>支持视频</span>
-        <input data-route-support="video" type="checkbox"${route.supports_video !== false ? ' checked' : ''} aria-label="支持视频">
-      </label>
-      <label class="route-param route-param-flag"><span>支持音频</span>
-        <input data-route-support="audio" type="checkbox"${route.supports_audio !== false ? ' checked' : ''} aria-label="支持音频">
       </label>
     </div>`
   routeRows.appendChild(row)
@@ -616,14 +623,6 @@ function readRoutes(allowEmpty = false, preserveBlankModel = false) {
     const durations = JSON.parse(row.dataset.durations || '[]')
     const resolutions = [...new Set(row.querySelector('[data-route-field="resolutions"]').value
       .split(/[,，]/).map((value) => value.trim()).filter(Boolean))]
-    const imageCount = Math.max(0, Math.min(50, Number(row.querySelector('[data-route-field="image_count"]').value) || 0))
-    // Blank keeps the route unconfigured so the channel default still applies.
-    // An explicit 0 is meaningful (drop every reference video), so the two must
-    // not collapse into the same value.
-    const videoCountValue = row.querySelector('[data-route-field="video_count"]').value.trim()
-    const videoCount = videoCountValue === ''
-      ? null
-      : Math.max(0, Math.min(50, Number(videoCountValue) || 0))
     const effectiveModel = model || upstreamModel
     if (!effectiveModel) throw new Error('每一行都必须填写对外模型名或映射上游模型名')
     return {
@@ -634,12 +633,10 @@ function readRoutes(allowEmpty = false, preserveBlankModel = false) {
       durations,
       resolutions,
       duration_override: durations.length === 1 ? durations[0] : null,
-      image_count: imageCount,
-      video_count: videoCount,
-      supports_image: imageCount > 0,
+      image_count: readMediaCount(row, 'image_count'),
+      video_count: readMediaCount(row, 'video_count'),
+      audio_count: readMediaCount(row, 'audio_count'),
       forward_resolution: row.querySelector('[data-route-forward="resolution"]').checked,
-      supports_video: row.querySelector('[data-route-support="video"]').checked,
-      supports_audio: row.querySelector('[data-route-support="audio"]').checked,
       enabled: row.querySelector('[data-route-enabled]').checked,
     }
   })
@@ -840,7 +837,7 @@ routeRows.addEventListener('change', (event) => {
   // Number and text edits need the same refresh, otherwise the collapsed summary
   // keeps advertising the previous limits until the row is reopened.
   const editedRow = target?.closest('.route-editor-row')
-  if (editedRow && target?.matches('[data-route-field="resolutions"], [data-route-field="image_count"], [data-route-field="video_count"], [data-route-forward="resolution"], [data-route-support="video"], [data-route-support="audio"]')) {
+  if (editedRow && target?.matches('[data-route-field="resolutions"], [data-route-field="image_count"], [data-route-field="video_count"], [data-route-field="audio_count"], [data-route-forward="resolution"]')) {
     updateRouteSummary(editedRow)
   }
   if (!target?.matches('[data-route-field="protocol"]')) return

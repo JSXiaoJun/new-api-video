@@ -46,9 +46,7 @@ CHECKED_FIELDS = (
     "resolutions",
     "image_count",
     "video_count",
-    "supports_image",
-    "supports_video",
-    "supports_audio",
+    "audio_count",
     "forward_resolution",
     "enabled",
 )
@@ -234,6 +232,17 @@ def run(args) -> int:
         # Later comparisons must expect the edit, not the value it replaced.
         expected = [dict(route) for route in stored["routes"]]
         expected[0]["video_count"] = 7
+
+        # 留空与 0 同义（不支持），摘要也必须如实说出来，不能只留一个数字。
+        checker.evaluate(
+            "(() => { const input = document.querySelectorAll('[data-route-field=\"audio_count\"]')[0]; input.value = ''; input.dispatchEvent(new Event('change', {bubbles: true})); })()"
+        )
+        time.sleep(0.3)
+        saved = checker.json("readRoutes()")
+        checker.check(saved[0]["audio_count"] == 0, f"blank audio count should read back as 0: {saved[0]['audio_count']!r}")
+        summary = checker.evaluate("document.querySelectorAll('[data-route-params-summary]')[0].textContent")
+        checker.check("音不支持" in (summary or ""), f"summary did not report unsupported audio: {summary!r}")
+        expected[0]["audio_count"] = 0
 
         # The duration picker is a button holding a summary string, and its menu
         # is rendered by a delegated handler, so drive it through the real page.

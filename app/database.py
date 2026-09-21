@@ -8,7 +8,13 @@ from contextlib import contextmanager
 from typing import Any, Iterator, NamedTuple
 
 from .config import DEFAULT_PUBLIC_LINK_BASE_URL, PUBLIC_LINK_BASE_URLS, settings
-from .model_profiles import MAX_DURATION_SECONDS, capabilities_for, suggest_profile
+from .model_profiles import (
+    MAX_DURATION_SECONDS,
+    capabilities_for,
+    resolve_media_counts,
+    route_media_counts,
+    suggest_profile,
+)
 from .security import secret_box
 
 
@@ -62,6 +68,7 @@ def _ensure_protocol_constraint(conn: sqlite3.Connection) -> None:
                 supports_audio INTEGER NOT NULL DEFAULT 1,
                 image_count INTEGER,
                 video_count INTEGER,
+                audio_count INTEGER,
                 enabled INTEGER NOT NULL DEFAULT 1,
                 forward_resolution INTEGER NOT NULL DEFAULT 1,
                 UNIQUE(upstream_id, model)
@@ -69,12 +76,12 @@ def _ensure_protocol_constraint(conn: sqlite3.Connection) -> None:
             INSERT INTO model_routes(
                 id, upstream_id, model, upstream_model, protocol, profile, duration_override,
                 durations_json, resolutions_json, supports_image, supports_video, supports_audio, image_count,
-                video_count, enabled, forward_resolution
+                video_count, audio_count, enabled, forward_resolution
             )
             SELECT
                 id, upstream_id, model, upstream_model, protocol, profile, duration_override,
                 durations_json, resolutions_json, supports_image, supports_video, supports_audio, image_count,
-                video_count, enabled, forward_resolution
+                video_count, audio_count, enabled, forward_resolution
             FROM model_routes_before_protocol_expand;
             DROP TABLE model_routes_before_protocol_expand;
             CREATE INDEX idx_model_routes_model ON model_routes(model);
@@ -273,6 +280,9 @@ def initialize() -> None:
             conn.execute("ALTER TABLE model_routes ADD COLUMN image_count INTEGER")
         if "video_count" not in route_columns:
             conn.execute("ALTER TABLE model_routes ADD COLUMN video_count INTEGER")
+        audio_count_added = "audio_count" not in route_columns
+        if audio_count_added:
+            conn.execute("ALTER TABLE model_routes ADD COLUMN audio_count INTEGER")
         if "enabled" not in route_columns:
             conn.execute("ALTER TABLE model_routes ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1")
         if "forward_resolution" not in route_columns:
@@ -296,6 +306,12 @@ def initialize() -> None:
                     "UPDATE model_routes SET profile = ? WHERE model = ? AND profile = 'default'",
                     (suggest_profile(model, "videos"), model),
                 )
+        if audio_count_added:
+            # 一次性迁移：过去“勾选 + 数量”的两种写法统一换算成明确的媒体数量。
+            # 必须回填，否则新规则（留空 = 不支持）会让所有现存路由突然拒收参考
+            # 媒体；回填用的是当时对外公布的数字，所以已上线的行为不变。这一步
+            # 必须放在 profile 修正之后，否则算出来的是 default 渠道的默认值。
+            _backfill_media_counts(conn)
         legacy_tasks = conn.execute(
             """
             SELECT task_id, upstream_id, model, protocol, status, source_video_url, error, created_at, updated_at
@@ -331,7 +347,7 @@ def _route_rows(conn: sqlite3.Connection, upstream_id: int) -> list[dict[str, An
     rows = conn.execute(
         """
         SELECT model, upstream_model, protocol, profile, duration_override, durations_json,
-               resolutions_json, image_count, video_count, supports_image, supports_video, supports_audio,
+               resolutions_json, image_count, video_count, audio_count,
                enabled, forward_resolution
         FROM model_routes WHERE upstream_id = ? ORDER BY model
         """,
@@ -342,22 +358,55 @@ def _route_rows(conn: sqlite3.Connection, upstream_id: int) -> list[dict[str, An
         item = dict(row)
         item["durations"] = _decode_durations(item.pop("durations_json"), item["duration_override"])
         item["resolutions"] = _decode_resolutions(item.pop("resolutions_json"))
-        if item["image_count"] is None:
-            item["image_count"] = capabilities_for(
-                item["profile"],
-                item["durations"],
-                bool(item["supports_image"]),
-                bool(item["supports_video"]),
-                bool(item["supports_audio"]),
-            ).get("maxImages", 0)
-        item["supports_image"] = bool(item["supports_image"])
-        item["supports_video"] = bool(item["supports_video"])
-        item["supports_audio"] = bool(item["supports_audio"])
+        # 数量是唯一事实来源，留空（NULL）等同于 0 = 不支持；旧版前端还会读这
+        # 三个布尔字段，因此按数量推导后一并返回，保持与执行结果一致。
+        counts = {f"{kind}_count": value for kind, value in route_media_counts(item).items()}
+        item.update(counts)
+        item["supports_image"] = item["image_count"] > 0
+        item["supports_video"] = item["video_count"] > 0
+        item["supports_audio"] = item["audio_count"] > 0
         item["enabled"] = bool(item["enabled"])
         item["forward_resolution"] = bool(item["forward_resolution"])
         item["mapped_upstream_model"] = "" if item["model"] == item["upstream_model"] else item["upstream_model"]
         result.append(item)
     return result
+
+
+def _backfill_media_counts(conn: sqlite3.Connection) -> None:
+    """把旧路由的“勾选 + 可能为空的数量”换算成明确的媒体数量。"""
+    rows = conn.execute(
+        """
+        SELECT id, profile, image_count, video_count, supports_image, supports_video, supports_audio
+        FROM model_routes
+        """
+    ).fetchall()
+    for row in rows:
+        counts = resolve_media_counts(
+            row["profile"],
+            row["image_count"],
+            row["video_count"],
+            None,
+            bool(row["supports_image"]),
+            bool(row["supports_video"]),
+            bool(row["supports_audio"]),
+        )
+        conn.execute(
+            """
+            UPDATE model_routes
+            SET image_count = ?, video_count = ?, audio_count = ?,
+                supports_image = ?, supports_video = ?, supports_audio = ?
+            WHERE id = ?
+            """,
+            (
+                counts["image_count"],
+                counts["video_count"],
+                counts["audio_count"],
+                int(counts["image_count"] > 0),
+                int(counts["video_count"] > 0),
+                int(counts["audio_count"] > 0),
+                row["id"],
+            ),
+        )
 
 
 def _decode_durations(value: str | None, legacy_duration: int | None = None) -> list[int]:
@@ -432,6 +481,15 @@ def save_upstream(payload: dict[str, Any], upstream_id: int | None = None) -> di
             route,
             route.get("durations")
             or ([route["duration_override"]] if isinstance(route.get("duration_override"), int) and 1 <= route["duration_override"] <= MAX_DURATION_SECONDS else []),
+            resolve_media_counts(
+                route.get("profile", "default"),
+                route.get("image_count"),
+                route.get("video_count"),
+                route.get("audio_count"),
+                route.get("supports_image", True),
+                route.get("supports_video", True),
+                route.get("supports_audio", True),
+            ),
         )
         for route in routes
     ]
@@ -485,9 +543,9 @@ def save_upstream(payload: dict[str, Any], upstream_id: int | None = None) -> di
             """
             INSERT INTO model_routes(
                 upstream_id, model, upstream_model, protocol, profile, duration_override, durations_json,
-                resolutions_json, image_count, video_count, supports_image, supports_video, supports_audio,
-                enabled, forward_resolution
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                resolutions_json, image_count, video_count, audio_count,
+                supports_image, supports_video, supports_audio, enabled, forward_resolution
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
@@ -499,15 +557,16 @@ def save_upstream(payload: dict[str, Any], upstream_id: int | None = None) -> di
                     durations[0] if len(durations) == 1 else None,
                     json.dumps(durations),
                     json.dumps(route.get("resolutions", []), ensure_ascii=False),
-                    route.get("image_count"),
-                    route.get("video_count"),
-                    int(route.get("supports_image", route.get("image_count") is None or route.get("image_count", 0) > 0)),
-                    int(route.get("supports_video", True)),
-                    int(route.get("supports_audio", True)),
+                    counts["image_count"],
+                    counts["video_count"],
+                    counts["audio_count"],
+                    int(counts["image_count"] > 0),
+                    int(counts["video_count"] > 0),
+                    int(counts["audio_count"] > 0),
                     int(route.get("enabled", True)),
                     int(route.get("forward_resolution", True)),
                 )
-                for route, durations in prepared_routes
+                for route, durations, counts in prepared_routes
             ],
         )
     item = get_upstream(upstream_id)
@@ -547,7 +606,7 @@ def select_upstream(model: str) -> dict[str, Any] | None:
         row = conn.execute(
             """
             SELECT u.*, r.protocol, r.profile, r.duration_override, r.upstream_model,
-                   r.enabled, r.forward_resolution, r.video_count, r.supports_video
+                   r.enabled, r.forward_resolution, r.image_count, r.video_count, r.audio_count
             FROM upstreams u
             JOIN model_routes r ON r.upstream_id = u.id
             WHERE u.enabled = 1 AND u.deleted_at IS NULL AND r.enabled = 1 AND r.model = ?
@@ -1120,8 +1179,7 @@ def list_model_capabilities() -> list[dict[str, Any]]:
         rows = conn.execute(
             """
             SELECT r.model, r.profile, r.duration_override, r.durations_json,
-                   r.resolutions_json, r.image_count, r.video_count, r.supports_image,
-                   r.supports_video, r.supports_audio, r.enabled
+                   r.resolutions_json, r.image_count, r.video_count, r.audio_count, r.enabled
             FROM model_routes r
             JOIN upstreams u ON u.id = r.upstream_id
             WHERE u.enabled = 1 AND u.deleted_at IS NULL AND r.enabled = 1
@@ -1134,17 +1192,16 @@ def list_model_capabilities() -> list[dict[str, Any]]:
         if row["model"] in seen:
             continue
         seen.add(row["model"])
+        counts = route_media_counts(row)
         result.append({
             "id": row["model"],
             "capabilities": capabilities_for(
                 row["profile"],
                 _decode_durations(row["durations_json"], row["duration_override"]),
-                bool(row["supports_image"]),
-                bool(row["supports_video"]),
-                bool(row["supports_audio"]),
-                row["image_count"],
+                counts["image"],
+                counts["video"],
+                counts["audio"],
                 _decode_resolutions(row["resolutions_json"]),
-                row["video_count"],
             ),
         })
     return result

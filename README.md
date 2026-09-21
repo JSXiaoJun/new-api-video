@@ -9,7 +9,7 @@ Independent video upstream adapter for New API. It exposes a normalized `/v1/vid
 - Automatic or forwarded `Idempotency-Key`
 - Same-origin New API upload presign forwarding for the workbench
 - Multiple upstreams, model routing, priority, and enable/disable controls
-- Multi-clip reference videos with a per-model, admin-configurable `video_count`
+- Per-model media budgets (`image_count` / `video_count` / `audio_count`) enforced on every relayed request
 - SQLite task ownership so polling returns to the original upstream
 - Upstream task IDs, media URLs, and error details stay internal to the adapter
 - Request correlation with New API logs through `upstream_request_id`
@@ -60,18 +60,27 @@ substituted only when forwarding the request. Leaving it empty uses the public m
 models preserves existing aliases by upstream model name, adds newly discovered models, and removes models that have
 disappeared upstream. `WORKBENCH_ORIGIN` controls which browser origin may read the public model capability endpoint.
 
-### Reference Videos
+### Reference Media Budgets
+
+参考图片、参考视频、参考音频的数量分别由后台的「图片数量」「视频数量」「音频数量」决定，
+不需要改代码。数量是唯一事实来源：留空或填 `0` 表示该模型不支持这类参考媒体。实际上限与
+拒绝行为完全一致，并通过 `/v1/model-capabilities` 的 `maxImages` / `maxVideos` / `maxAudios`
+暴露给工作台和对接文档。
+
+超出上限的请求会被**直接拒绝**（HTTP 400），错误信息写明是哪种媒体、超了几个，例如
+`视频数量超过上限：本次请求 4 个，当前模型最多 3 个`。配置为 0 时提示该模型不支持该媒体。
+服务端绝不会静默丢掉参考素材，避免用户以为拿到的是图生视频结果、实际却是文生视频。
 
 参考视频既可以用文档里的单数字段 `reference_video`（一个 URL），也可以用数组字段
-`reference_videos` / `video_urls`（多个 URL）。数组会按顺序转发，超出上限的素材会被截断。
-单数字段属于旧格式，仍然完全兼容：只传一个参考视频时请求会原样转发，不受本设置影响。
+`reference_videos` / `video_urls`（多个 URL）。单数字段属于旧格式，仍然完全兼容：只要在
+预算内就原样转发，不会因为这次改动被改写。
 
-每个模型能上传几个参考视频由后台的「视频数量」决定，不需要改代码。留空表示沿用渠道默认值，
-填 `0` 表示该模型不接收参考视频。实际生效的上限会通过 `/v1/model-capabilities` 的 `maxVideos`
-暴露给工作台和对接文档，与转发行为保持一致。
+渠道默认值写在 `app/channels/*.py` 与 `app/model_profiles.py` 的 `PROFILE_DEFINITIONS` 里，
+新接入上游时把该渠道能读到的每个参考媒体字段登记到 `model_profiles.py` 的 `MEDIA_FIELD_NAMES`
+（见文件顶部注释），否则调用方换个字段名就能绕开数量限制。
 
-渠道默认上限写在 `app/channels/*.py` 的 `PROFILE_DEFINITIONS` 里：Ark、933、Pro666、RollDek、
-MAI Token 支持多个参考视频；FunAI、AutoDL、Sub2API 以及 Gemini Omni 默认只接受一个。
+升级已有部署时会自动做一次迁移：把过去的「勾选 + 数量」换算成明确的三个数量，勾选了但没有
+数量的路由按渠道默认值回填，因此升级后老路由的行为不变；运营之后清空的数量不会被重新回填。
 
 ### Volcengine Ark v3
 
