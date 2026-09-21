@@ -790,26 +790,33 @@ document.querySelectorAll('#model-selection-cancel, #model-selection-cancel-acti
 addRouteButton.addEventListener('click', () => addRouteRow())
 toggleRouteParamsButton.addEventListener('click', () => {
   const rows = [...routeRows.children]
-  const expanded = rows.some((row) => !row.querySelector('[data-route-params]')?.hidden)
+  // Collapse only when every row is already open. Testing "any row is open"
+  // instead would collapse everything from a half-open state, while the button
+  // still reads `展开全部参数` -- the label and the action have to agree.
+  const collapseAll = rows.length > 0
+    && rows.every((row) => !row.querySelector('[data-route-params]')?.hidden)
   for (const row of rows) {
     const panel = row.querySelector('[data-route-params]')
     const trigger = row.querySelector('[data-route-params-toggle]')
     if (!panel || !trigger) continue
-    panel.hidden = expanded
+    panel.hidden = collapseAll
     trigger.setAttribute('aria-expanded', String(!panel.hidden))
     updateRouteSummary(row)
   }
-  if (expanded) closeDurationMenu()
+  if (collapseAll) closeDurationMenu()
   syncRouteParamsButton()
 })
 routeRows.addEventListener('click', (event) => {
   const target = event.target instanceof Element ? event.target : null
-  if (target?.matches('[data-route-params-toggle]')) {
-    const row = target.closest('.route-editor-row')
+  // The toggle holds the summary text and the caret, so the click usually lands
+  // on a child element. Look up from `event.target` instead of matching it.
+  const toggle = target?.closest('[data-route-params-toggle]')
+  if (toggle) {
+    const row = toggle.closest('.route-editor-row')
     const panel = row?.querySelector('[data-route-params]')
     if (!panel) return
     panel.hidden = !panel.hidden
-    target.setAttribute('aria-expanded', String(!panel.hidden))
+    toggle.setAttribute('aria-expanded', String(!panel.hidden))
     updateRouteSummary(row)
     return
   }
@@ -817,10 +824,12 @@ routeRows.addEventListener('click', (event) => {
     openDurationMenu(target.closest('.route-editor-row'), target)
     return
   }
-  if (!target?.classList.contains('route-remove')) return
+  const removeButton = target?.closest('.route-remove')
+  if (!removeButton) return
   closeDurationMenu()
-  target.closest('.route-editor-row').remove()
+  removeButton.closest('.route-editor-row').remove()
   updateRouteEmpty()
+  syncRouteParamsButton()
 })
 routeRows.addEventListener('change', (event) => {
   const target = event.target instanceof Element ? event.target : null

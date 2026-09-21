@@ -23,6 +23,7 @@ import http.cookiejar
 import json
 import os
 import re
+import shutil
 import socket
 import struct
 import subprocess
@@ -51,7 +52,10 @@ def start_server(port: int) -> subprocess.Popen:
     deleted again, and a left-over scratch row in the real database would look
     like a live upstream.
     """
+    # Start from an empty database, otherwise a previous run's routes survive and
+    # a check can pass against the wrong data.
     scratch = os.path.join(WORK_DIR, "data")
+    shutil.rmtree(scratch, ignore_errors=True)
     os.makedirs(scratch, exist_ok=True)
     env = dict(os.environ)
     env["DATA_DIR"] = scratch
