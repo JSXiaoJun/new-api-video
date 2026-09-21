@@ -135,6 +135,15 @@ Firefly model names contain `seedance`, but they must keep
 the auto-selected `videos` protocol because Pro666 exposes them through `POST /v1/videos` rather than
 `POST /v1/video/generations`.
 
+The `wan3.0-*` family is recognized by name shape (`wan<version>-<resolution>`, optional trailing
+tier such as `-prime`), not by a hard-coded list, so a new tier published upstream routes to the same
+capabilities after `同步上游模型` alone. These models are advertised on the Pro666 pricing page but
+are missing from `pro666.top/docs`, whose matrix still lists only 13 models: they take 5–30 seconds,
+480p / 720p / 1080p according to the suffix, and up to 10 images, 5 reference videos, and 5 reference
+audios, using the documented multi-reference payload (`images` / `videos` / `audios`). Without this
+rule the name would fall through to the generic `default` profile and inherit 5 images / 1 video /
+1 audio, so a second reference clip would be rejected by the media budget.
+
 Use `生成对接文档` in the video or image admin page to download a Markdown document generated from the currently
 enabled public models and their configured capabilities.
 

@@ -1,10 +1,36 @@
+"""Pro666 (晚风 API) video upstream adapter.
+
+请求体形态（``request_format``）与能力区间（``capabilities``）分开描述，新增一个
+模型家族时只做两件事，不需要动别的渠道：
+
+1. 在 ``PROFILE_DEFINITIONS`` 里补一条 profile，写明它用哪种 ``request_format``
+   以及时长、分辨率、参考图片/视频/音频数量；
+2. 在 ``suggest_route`` 里补一条识别规则。
+
+识别规则按「模型名的形状」写，不要写死模型清单：模型名由后台的
+``同步上游模型`` 实时探测，代码里只负责回答「长这样的名字属于哪个家族、有哪些
+能力」。已按这个约定实现的家族见下面的 ``WAN_MODEL_PATTERN``。
+上游文档没有收录的模型也要一并支持：``pro666.top/docs`` 只列了 13 个公开模型，
+``wan3.0-*`` 只出现在价格页的模型说明里，如果这里认不出来就会掉进「通用视频」
+档位，能力被当成 5 图 / 1 视频 / 1 音频。
+"""
+
 from __future__ import annotations
 
+import re
 from typing import Any
 from urllib.parse import urlsplit
 
 
 RATIOS_WIDE = ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16']
+
+# wan3.0 系列按「产品名 + 分辨率后缀」识别，不写模型清单：上游之后再加
+# ``wan3.1-720p``、``wan3.0-720p-turbo`` 这类档位会自动落到同一套能力上。
+# 接入新的模型家族时照抄这个形状（正则 + 一个 _route 分支），不要往这里堆名字：
+# 模型名走实时发现（``同步上游模型``），代码里只描述「这个名字长什么样的模型
+# 有哪些能力」。下面三个档位的能力取自 pro666 价格页的模型说明：
+# 「支持10图5视频5音频参考 原生过真人，可5-30s」，-prime 变体能力相同。
+WAN_MODEL_PATTERN = re.compile(r'^wan\d+(?:\.\d+)*-(480p|720p|1080p)(?:-[a-z0-9]+)*$')
 
 
 PROFILE_DEFINITIONS: dict[str, dict[str, Any]] = {
@@ -175,10 +201,58 @@ PROFILE_DEFINITIONS: dict[str, dict[str, Any]] = {
             'maxAudios': 0,
         },
     },
+    # wan3.0 是分辨率档位驱动的家族：真正落到哪条路由由 ``suggest_route`` 按
+    # 模型名里的后缀选模板，下面三条只是「480p/720p/1080p 各自的输出分辨率」，
+    # 能力数字三档一致。上游新增分辨率档位时补一条同形状的模板即可。
+    'pro666-wan-480p': {
+        'label': 'Pro666 · wan3.0 480p',
+        'request_format': 'pro666-sd2',
+        'capabilities': {
+            'ratios': RATIOS_WIDE,
+            'durations': list(range(5, 31)),
+            'resolutions': ['480p'],
+            'maxImages': 10,
+            'referenceVideo': True,
+            'maxVideos': 5,
+            'maxAudios': 5,
+        },
+    },
+    'pro666-wan-720p': {
+        'label': 'Pro666 · wan3.0 720p',
+        'request_format': 'pro666-sd2',
+        'capabilities': {
+            'ratios': RATIOS_WIDE,
+            'durations': list(range(5, 31)),
+            'resolutions': ['720p'],
+            'maxImages': 10,
+            'referenceVideo': True,
+            'maxVideos': 5,
+            'maxAudios': 5,
+        },
+    },
+    'pro666-wan-1080p': {
+        'label': 'Pro666 · wan3.0 1080p',
+        'request_format': 'pro666-sd2',
+        'capabilities': {
+            'ratios': RATIOS_WIDE,
+            'durations': list(range(5, 31)),
+            'resolutions': ['1080p'],
+            'maxImages': 10,
+            'referenceVideo': True,
+            'maxVideos': 5,
+            'maxAudios': 5,
+        },
+    },
 }
 
 
 REQUEST_FORMATS = {definition['request_format'] for definition in PROFILE_DEFINITIONS.values()}
+
+WAN_PROFILE_BY_RESOLUTION = {
+    '480p': 'pro666-wan-480p',
+    '720p': 'pro666-wan-720p',
+    '1080p': 'pro666-wan-1080p',
+}
 
 
 def suggest_route(model: str) -> dict[str, Any] | None:
@@ -215,6 +289,10 @@ def suggest_route(model: str) -> dict[str, Any] | None:
         return _route(profile, list(range(4, 16)), 9, True, True)
     if normalized == 'veo-omni':
         return _route('pro666-veo-omni', [10], 9, False, False)
+    if (wan := WAN_MODEL_PATTERN.match(normalized)) is not None:
+        # 分辨率档位由模型名决定，这里只挑对应的能力模板；能力数字（10 图 /
+        # 5 视频 / 5 音频、5-30 秒）取自上游价格页的模型说明。
+        return _route(WAN_PROFILE_BY_RESOLUTION[wan.group(1)], list(range(5, 31)), 10, True, True)
     return None
 
 

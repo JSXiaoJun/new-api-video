@@ -26,20 +26,24 @@ TEST_DATA_DIR = tempfile.TemporaryDirectory()
 os.environ["DATA_DIR"] = TEST_DATA_DIR.name
 
 from app import database, image_database
-from app.channels import o10_grok
+from app.channels import o10_grok, pro666
 from app.config import settings
 from app.main import app, normalize_discovered_models
 from app.image_proxy import ASSET_LINK_HEADER, classify_health_outcome, forward_json
 from app.model_profiles import (
+    PROFILE_DEFINITIONS,
     capabilities_for,
     enforce_reference_media_limits,
     MediaLimitError,
     media_reference_counts,
     resolve_media_counts,
     route_media_counts,
+    suggest_profile,
+    suggest_protocol,
     transform_create_payload,
 )
 from app.proxy import create_video, fetch_task, normalize_status, normalize_task_payload, stream_content, upstream_error
+from app.schemas import RouteInput
 from app.security import SESSION_COOKIE, create_session, csrf_token, read_session, secret_box
 from fastapi.responses import Response
 from fastapi.testclient import TestClient
@@ -2945,6 +2949,94 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(payload["images"], ["https://cdn/image.png"])
         self.assertEqual(payload["videos"], ["https://cdn/video.mp4"])
         self.assertEqual(payload["audios"], ["https://cdn/audio.mp3"])
+
+    def test_pro666_wan_family_routes_by_resolution_suffix(self):
+        # wan3.0 没有出现在公开文档的模型矩阵里，能力取自价格页说明：
+        # 「支持10图5视频5音频参考 原生过真人，可5-30s」。档位按后缀推导，
+        # 上游再加 tier（-prime / -turbo 之类）不需要改代码。
+        discovered = normalize_discovered_models({
+            "data": [
+                "wan3.0-480p",
+                "wan3.0-720p",
+                "wan3.0-1080p-prime",
+                "wan3.0-720p-turbo",
+            ]
+        })
+        routes = {route["upstream_model"]: route for route in discovered}
+
+        self.assertEqual(routes["wan3.0-480p"]["profile"], "pro666-wan-480p")
+        self.assertEqual(routes["wan3.0-720p"]["profile"], "pro666-wan-720p")
+        self.assertEqual(routes["wan3.0-1080p-prime"]["profile"], "pro666-wan-1080p")
+        self.assertEqual(routes["wan3.0-720p-turbo"]["profile"], "pro666-wan-720p")
+        for route in routes.values():
+            # 上游走的是 /v1/videos，请求体沿用全能参考格式（images/videos/audios）。
+            self.assertEqual(route["protocol"], "videos")
+            self.assertEqual(route["durations"], list(range(5, 31)))
+            self.assertEqual(route["image_count"], 10)
+            self.assertEqual(route["video_count"], 5)
+            self.assertEqual(route["audio_count"], 5)
+
+        self.assertEqual(capabilities_for("pro666-wan-480p")["resolutions"], ["480p"])
+        self.assertEqual(capabilities_for("pro666-wan-720p")["resolutions"], ["720p"])
+        self.assertEqual(capabilities_for("pro666-wan-1080p")["resolutions"], ["1080p"])
+        self.assertEqual(capabilities_for("pro666-wan-720p")["durations"], list(range(5, 31)))
+
+    def test_pro666_wan_does_not_capture_other_model_families(self):
+        # 只有 ``wan<版本>-<分辨率>`` 形状的名字属于这个家族，别把别家的
+        # wan 名字（或者是别的模型）误判成 pro666 的路由。
+        for model in ("wanx-720p", "wan2.6-t2v", "wan-720p", "wan3-t2v-720p", "minimax_h3_lightx2v_no_pic"):
+            with self.subTest(model=model):
+                self.assertIsNone(pro666.suggest_route(model))
+        self.assertEqual(suggest_protocol("wan2.6-t2v"), "videos")
+        self.assertEqual(suggest_profile("wan2.6-t2v", "videos"), "default")
+
+    def test_pro666_wan_payload_keeps_every_reference_array(self):
+        # wan 用 pro666 文档里的全能参考格式：图片/视频/音频三种数组一起下发，
+        # 且不能悄悄截断——数量上限由路由配置决定，越界在代理层就拒绝了。
+        payload = transform_create_payload(
+            {
+                "model": "wan3.0-720p-prime",
+                "prompt": "参考 @Image1 @Video1 @Audio1",
+                "duration": 12,
+                "aspect_ratio": "9:16",
+                "generate_audio": True,
+                "image_urls": ["https://cdn/a.png", "https://cdn/b.png"],
+                "reference_videos": ["https://cdn/1.mp4", "https://cdn/2.mp4"],
+                "audio_urls": ["https://cdn/voice.mp3"],
+            },
+            "pro666-wan-720p",
+        )
+
+        self.assertEqual(payload["model"], "wan3.0-720p-prime")
+        self.assertEqual(payload["duration"], 12)
+        self.assertEqual(payload["aspect_ratio"], "9:16")
+        self.assertTrue(payload["generateAudio"])
+        self.assertEqual(payload["images"], ["https://cdn/a.png", "https://cdn/b.png"])
+        self.assertEqual(payload["videos"], ["https://cdn/1.mp4", "https://cdn/2.mp4"])
+        self.assertEqual(payload["audios"], ["https://cdn/voice.mp3"])
+
+        counts = route_media_counts({
+            "image_count": 10, "video_count": 5, "audio_count": 5,
+        })
+        enforce_reference_media_limits(payload, counts)
+        with self.assertRaises(MediaLimitError) as context:
+            enforce_reference_media_limits(
+                {**payload, "reference_videos": [f"https://cdn/{i}.mp4" for i in range(6)]},
+                counts,
+            )
+        self.assertIn("视频数量超过上限", str(context.exception))
+
+    def test_route_schema_accepts_every_registered_profile(self):
+        # 后台保存接口过去把 profile 写成写死的枚举清单，新增渠道 profile 时
+        # 下拉框里有、保存却 422。这里锁住「渠道登记过的 profile 都能存」，
+        # 同时确认瞎写的名字仍被拒绝。
+        for profile, definition in PROFILE_DEFINITIONS.items():
+            with self.subTest(profile=profile):
+                route = RouteInput(model=f"model-{profile}", upstream_model="", profile=profile)
+                self.assertEqual(route.profile, profile)
+                self.assertIn("request_format", definition)
+        with self.assertRaises(ValueError):
+            RouteInput(model="model-x", profile="not-a-registered-profile")
 
     def test_pro666_sd2_accepts_current_first_last_image_fields(self):
         payload = transform_create_payload(

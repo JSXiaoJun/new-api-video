@@ -6,59 +6,22 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, field_validator
 
-from .model_profiles import MAX_DURATION_SECONDS
+from .model_profiles import MAX_DURATION_SECONDS, PROFILE_DEFINITIONS
 
 
 class RouteInput(BaseModel):
     model: str = Field(min_length=1, max_length=160)
     upstream_model: str = Field(default="", max_length=160)
+    # 请求协议是运输层的封闭集合：每加一个都要在 proxy.py 里接一条 endpoint
+    # 与转换分支，所以这里保留枚举。
     protocol: Literal[
         "videos", "seedance", "ark-v3", "o10-grok", "sub2api-video", "mai-token", "funai",
         "autodl-comfyui", "rolldek"
     ] = "videos"
-    profile: Literal[
-        "default",
-        "gemini-omni",
-        "sora2",
-        "veo31-fast",
-        "manxue-900",
-        "manxue-933",
-        "ark-seedance-2",
-        "grok-auto",
-        "grok-fast",
-        "sub2api-video",
-        "mai-token-1080p",
-        "mai-token-720p",
-        "mai-token-480p",
-        "funai-minimax-h3",
-        "funai-kling",
-        "funai-kling-frames",
-        "funai-runway",
-        "funai-sora",
-        "funai-gemini-omni",
-        "funai-veo",
-        "pro666-video-v1",
-        "pro666-video-900",
-        "pro666-sd2-431",
-        "pro666-sd2-5",
-        "pro666-sd2-5-480p",
-        "pro666-sd2-mini",
-        "pro666-v1-seedance-480p",
-        "pro666-v1-seedance-720p",
-        "pro666-v1-seedance-mini-720p",
-        "pro666-firefly-480p",
-        "pro666-firefly-720p",
-        "pro666-firefly-1080p",
-        "pro666-veo-omni",
-        "autodl-comfyui",
-        "rolldek-sd20-ch1",
-        "rolldek-sd25-ch1",
-        "rolldek-sd25-ch2",
-        "rolldek-sd2-ch3",
-        "rolldek-sd25-ch3",
-        "rolldek-sd25-ch1-15s",
-        "rolldek-sd2-ch4",
-    ] = "default"
+    # 请求格式必须是渠道适配器真的声明过的 profile。这里刻意不写死清单：
+    # 渠道新增 profile 时只要在它自己的 ``PROFILE_DEFINITIONS`` 里登记，
+    # 后台保存与模型发现立刻可用，不会出现「下拉里有、保存 422」的错位。
+    profile: str = "default"
     durations: list[int] = Field(default_factory=list, max_length=MAX_DURATION_SECONDS)
     resolutions: list[str] = Field(default_factory=list, max_length=20)
     # 三个数量是该模型能接受的参考媒体上限，也是唯一事实来源：留空或 0 都表示
@@ -78,6 +41,13 @@ class RouteInput(BaseModel):
     @classmethod
     def normalize_model(cls, value: str) -> str:
         return value.strip()
+
+    @field_validator("profile")
+    @classmethod
+    def validate_profile(cls, value: str) -> str:
+        if value not in PROFILE_DEFINITIONS:
+            raise ValueError(f"unknown request format: {value}")
+        return value
 
     @field_validator("durations")
     @classmethod
