@@ -49,6 +49,9 @@ KNOWN_MODELS = (
     "sd-mini-480p",
 )
 
+# The catalog documented by MAI Token. Only used to recognise the channel and
+# as the emergency fallback when the upstream model list cannot be read; new
+# models are discovered from ``GET /v1/models`` instead of this table.
 _MODEL_RESOLUTIONS = {
     "sd-2.0-1080p": "1080p",
     "sd-2.0-720p": "720p",
@@ -58,6 +61,15 @@ _MODEL_RESOLUTIONS = {
     "sd-mini-720p": "720p",
     "sd-mini-480p": "480p",
 }
+
+# The upstream names every tier with a trailing resolution suffix and derives
+# the output size from the model name alone, so an unrecognised name can still
+# be routed by its suffix.
+_RESOLUTION_SUFFIXES = (
+    ("-1080p", "1080p"),
+    ("-720p", "720p"),
+    ("-480p", "480p"),
+)
 
 _PROFILE_BY_RESOLUTION = {
     "1080p": "mai-token-1080p",
@@ -116,7 +128,7 @@ def is_mai_token_base_url(base_url: str) -> bool:
 
 
 def suggest_route(model: str) -> dict[str, Any] | None:
-    resolution = _MODEL_RESOLUTIONS.get(model.strip().lower())
+    resolution = resolve_resolution(model)
     if resolution is None:
         return None
     return {
@@ -128,6 +140,38 @@ def suggest_route(model: str) -> dict[str, Any] | None:
         "supports_video": True,
         "supports_audio": True,
     }
+
+
+def resolve_resolution(model: str) -> str | None:
+    """Map a model name to its output tier, or ``None`` for a foreign name.
+
+    Known names resolve through the documented table. Anything else must still
+    resolve by suffix: the upstream derives the output size from the model name,
+    so a newly published tier such as ``sd-3.0-720p`` has to keep routing to
+    ``mai-token-720p`` without a code change. ``None`` means the name is not an
+    MAI Token video model at all.
+    """
+    normalized = model.strip().lower()
+    if not normalized:
+        return None
+    known = _MODEL_RESOLUTIONS.get(normalized)
+    if known is not None:
+        return known
+    for suffix, resolution in _RESOLUTION_SUFFIXES:
+        if normalized.endswith(suffix):
+            return resolution
+    return None
+
+
+def is_known_model(model: str) -> bool:
+    """Return whether the name is one this channel documents.
+
+    Protocol detection must stay strict and use this rather than
+    ``suggest_route``: the suffix rule is deliberately loose, so feeding it to
+    detection would let another channel's model -- ``v1-seedance-2.0-720p``
+    also ends in ``-720p`` -- be mistaken for a MAI Token one.
+    """
+    return model.strip().lower() in _MODEL_RESOLUTIONS
 
 
 def transform_create_payload(payload: dict[str, Any]) -> dict[str, Any]:

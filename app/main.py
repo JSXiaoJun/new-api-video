@@ -410,6 +410,16 @@ async def audit_task_content(
 
 @app.post("/admin/api/upstreams/models")
 async def discover_upstream_models(payload: ModelDiscoveryInput, _: dict = Depends(admin_mutation)):
+    """Probe the upstream's model list; never answer from a local catalog first.
+
+    接入新上游时，若该上游提供 ``GET /v1/models``，只需要把它的协议加进下面的
+    ``discovery_protocol`` 分支，探测结果就会带着正确的协议返回；不要在函数开头
+    加 ``if is_xxx_base_url(...): return {"models": [...KNOWN_MODELS...]}`` 之类的
+    提前返回，那样会把实时清单换成写死的快照，上游新增模型后后台同步不出来。
+
+    只有在确定「该上游根本没有模型接口」时才使用本地清单，并且要放在探测之后：
+    探测返回 ``404`` 说明接口不存在，才回退到渠道文档里列出的模型。
+    """
     api_key = payload.api_key.strip()
     if payload.upstream_id and not api_key:
         existing = database.get_upstream(payload.upstream_id, include_key=True)
@@ -429,13 +439,6 @@ async def discover_upstream_models(payload: ModelDiscoveryInput, _: dict = Depen
                 list(sub2api_video.KNOWN_MODELS), sub2api_video.PROTOCOL
             )
         }
-    if mai_token.is_mai_token_base_url(payload.base_url):
-        return {
-            "models": normalize_discovered_models(
-                list(mai_token.KNOWN_MODELS), mai_token.PROTOCOL
-            )
-        }
-
     headers = {"Accept": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
@@ -446,6 +449,8 @@ async def discover_upstream_models(payload: ModelDiscoveryInput, _: dict = Depen
         if o10_grok.is_o10_base_url(payload.base_url)
         else rolldek.PROTOCOL
         if rolldek.is_rolldek_base_url(payload.base_url)
+        else mai_token.PROTOCOL
+        if mai_token.is_mai_token_base_url(payload.base_url)
         else None
     )
     try:
@@ -456,8 +461,17 @@ async def discover_upstream_models(payload: ModelDiscoveryInput, _: dict = Depen
                 else f"{payload.base_url}/v1/models"
             )
             response = await client.get(discovery_url, headers=headers)
-            if response.status_code == 404 and discovery_protocol == rolldek.PROTOCOL:
-                return {"models": normalize_discovered_models(list(rolldek.KNOWN_MODELS), discovery_protocol)}
+            # A 404 means the endpoint does not exist, so fall back to the
+            # catalog the channel documents. Every other status -- 401 for a
+            # bad key, 5xx for an upstream outage -- is a real failure and must
+            # reach the operator instead of being masked by a local list.
+            if response.status_code == 404 and discovery_protocol in {rolldek.PROTOCOL, mai_token.PROTOCOL}:
+                documented = (
+                    rolldek.KNOWN_MODELS
+                    if discovery_protocol == rolldek.PROTOCOL
+                    else mai_token.KNOWN_MODELS
+                )
+                return {"models": normalize_discovered_models(list(documented), discovery_protocol)}
             if response.status_code == 404 and discovery_protocol is None:
                 response = await client.get(f"{payload.base_url}/api/v3/models", headers=headers)
                 discovery_protocol = "ark-v3"

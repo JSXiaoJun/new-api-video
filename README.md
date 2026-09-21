@@ -143,11 +143,10 @@ enabled public models and their configured capabilities.
 为 `https://api.mai-token.com` 新建视频上游并点击 `同步上游模型`。MAI Token 使用独立的 `mai-token`
 协议和 `app/channels/mai_token.py` 适配器，不会改动其他渠道的请求体。它按
 `POST /v1/videos` 创建任务、`GET /v1/videos/{task_id}` 轮询、`GET /v1/videos/{task_id}/content`
-下载视频，并在管理后台按模型名自动分配请求格式：
-
-- `sd-2.0-1080p` → `mai-token-1080p`
-- `sd-2.0-720p`、`sd-fast-720p`、`sd-mini-720p` → `mai-token-720p`
-- `sd-2.0-480p`、`sd-fast-480p`、`sd-mini-480p` → `mai-token-480p`
+下载视频。模型列表通过上游的 `GET /v1/models` 实时获取，不在本地写死，因此上游新增档位后
+点一次 `同步上游模型` 即可看到；只有在探测返回 `404`（确认没有该接口）时才回退到文档里的
+七个模型。请求格式按模型名自动分配：`-1080p` → `mai-token-1080p`，`-720p` →
+`mai-token-720p`，`-480p` → `mai-token-480p`，未知后缀的模型不会被认成该渠道。
 
 上游只接受 `content[]` 多模态请求体，因此适配器会把标准请求转换为
 `{text, image_url, audio_url, video_url}` 元素数组：顶层 `prompt` 与首条 `content[].text`

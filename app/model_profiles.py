@@ -205,7 +205,12 @@ def suggest_protocol(model: str) -> str:
         return o10_grok.PROTOCOL
     if sub2api_video.suggest_route(model):
         return sub2api_video.PROTOCOL
-    if mai_token.suggest_route(model):
+    # Protocol detection must stay strict. ``suggest_route`` routes any
+    # ``-720p``/``-1080p`` suffix to this channel so newly published tiers keep
+    # working, but that rule is far too loose to identify the channel itself:
+    # Pro666's ``v1-seedance-2.0-720p`` would be captured here and get the
+    # wrong request body.
+    if mai_token.is_known_model(model):
         return mai_token.PROTOCOL
     if rolldek.suggest_route(model):
         return rolldek.PROTOCOL

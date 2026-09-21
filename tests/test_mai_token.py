@@ -23,9 +23,11 @@ from fastapi.responses import Response
 
 from app import database
 from app.channels import mai_token
-from app.model_profiles import capabilities_for
-from app.main import normalize_discovered_models
+from app.model_profiles import capabilities_for, suggest_protocol
+from app.main import app, normalize_discovered_models
 from app.proxy import create_video, fetch_task, stream_content
+from app.security import SESSION_COOKIE, create_session, csrf_token
+from fastapi.testclient import TestClient
 
 
 class MaiTokenAdapterTests(unittest.TestCase):
@@ -40,7 +42,14 @@ class MaiTokenAdapterTests(unittest.TestCase):
         self.assertFalse(mai_token.is_mai_token_base_url("https://api.pro666.top"))
 
     def test_documented_models_map_to_their_resolution_profiles(self):
-        self.assertIsNone(mai_token.suggest_route("sd-3.0-720p"))
+        # A model nobody hardcoded still routes by its resolution suffix, so a
+        # tier published upstream after this adapter shipped keeps working.
+        self.assertEqual(mai_token.suggest_route("sd-3.0-720p")["profile"], "mai-token-720p")
+        self.assertEqual(mai_token.suggest_route("sd-3.0-1080p")["resolutions"], ["1080p"])
+        # A name with no resolution suffix cannot be routed and must be refused
+        # rather than guessed at.
+        self.assertIsNone(mai_token.suggest_route("sd-3.0"))
+        self.assertIsNone(mai_token.suggest_route(""))
         expected = {
             "sd-2.0-1080p": ("mai-token-1080p", "1080p"),
             "sd-2.0-720p": ("mai-token-720p", "720p"),
@@ -57,6 +66,15 @@ class MaiTokenAdapterTests(unittest.TestCase):
             self.assertEqual(route["resolutions"], [resolution])
             self.assertEqual(route["durations"], list(range(4, 16)))
 
+    def test_protocol_detection_stays_strict(self):
+        # ``suggest_route`` is intentionally loose, so detection must not use
+        # it: another channel's model would otherwise be captured here.
+        self.assertTrue(mai_token.is_known_model("sd-2.0-720p"))
+        self.assertFalse(mai_token.is_known_model("sd-3.0-720p"))
+        self.assertFalse(mai_token.is_known_model("v1-seedance-2.0-720p"))
+        self.assertEqual(suggest_protocol("v1-seedance-2.0-720p"), "videos")
+        self.assertEqual(suggest_protocol("sd-2.0-720p"), mai_token.PROTOCOL)
+
     def test_discovered_routes_keep_resolution_isolated_per_model(self):
         routes = normalize_discovered_models(
             list(mai_token.KNOWN_MODELS), mai_token.PROTOCOL
@@ -66,6 +84,108 @@ class MaiTokenAdapterTests(unittest.TestCase):
         self.assertEqual(by_model["sd-2.0-1080p"]["resolutions"], ["1080p"])
         self.assertEqual(by_model["sd-2.0-720p"]["resolutions"], ["720p"])
         self.assertEqual(by_model["sd-mini-480p"]["resolutions"], ["480p"])
+
+    def test_model_discovery_probes_the_upstream_and_returns_live_models(self):
+        # The catalog must come from the upstream, so a model published after
+        # this adapter shipped shows up in the console without a code change.
+        captured = []
+
+        class MockAsyncClient:
+            def __init__(self, **_kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_):
+                return None
+
+            async def get(self, url, **kwargs):
+                captured.append((url, kwargs.get("headers", {})))
+                return httpx.Response(
+                    200,
+                    request=httpx.Request("GET", url),
+                    json={"data": [{"id": "sd-2.0-720p"}, {"id": "sd-4.0-720p"}]},
+                )
+
+        client = TestClient(app)
+        session = create_session("admin")
+        client.cookies.set(SESSION_COOKIE, session)
+        with patch("app.main.httpx.AsyncClient", MockAsyncClient):
+            response = client.post(
+                "/admin/api/upstreams/models",
+                headers={"X-CSRF-Token": csrf_token(session)},
+                json={"base_url": "https://api.mai-token.com", "api_key": "mai-key"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([url for url, _ in captured], ["https://api.mai-token.com/v1/models"])
+        # The probe has to carry the channel key, otherwise the upstream
+        # answers 401 and the console cannot tell models from an auth failure.
+        self.assertEqual(captured[0][1]["Authorization"], "Bearer mai-key")
+        models = {item["upstream_model"]: item for item in response.json()["models"]}
+        self.assertIn("sd-4.0-720p", models)
+        self.assertEqual(models["sd-4.0-720p"]["protocol"], mai_token.PROTOCOL)
+        self.assertEqual(models["sd-4.0-720p"]["profile"], "mai-token-720p")
+
+    def test_model_discovery_falls_back_to_documented_models_when_endpoint_is_absent(self):
+        # A 404 proves the endpoint does not exist, so the documented catalog is
+        # the only source left and discovery must still succeed.
+        class MockAsyncClient:
+            def __init__(self, **_kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_):
+                return None
+
+            async def get(self, url, **_kwargs):
+                return httpx.Response(404, request=httpx.Request("GET", url), json={"error": "not found"})
+
+        client = TestClient(app)
+        session = create_session("admin")
+        client.cookies.set(SESSION_COOKIE, session)
+        with patch("app.main.httpx.AsyncClient", MockAsyncClient):
+            response = client.post(
+                "/admin/api/upstreams/models",
+                headers={"X-CSRF-Token": csrf_token(session)},
+                json={"base_url": "https://api.mai-token.com", "api_key": "mai-key"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        models = {item["upstream_model"] for item in response.json()["models"]}
+        self.assertEqual(models, set(mai_token.KNOWN_MODELS))
+
+    def test_model_discovery_surfaces_an_auth_failure_instead_of_a_local_list(self):
+        # A 401 is a real failure. Answering it with the local catalog would
+        # hide a bad key behind a plausible-looking model list.
+        class MockAsyncClient:
+            def __init__(self, **_kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_):
+                return None
+
+            async def get(self, url, **_kwargs):
+                return httpx.Response(401, request=httpx.Request("GET", url), json={"error": "bad key"})
+
+        client = TestClient(app)
+        session = create_session("admin")
+        client.cookies.set(SESSION_COOKIE, session)
+        with patch("app.main.httpx.AsyncClient", MockAsyncClient):
+            response = client.post(
+                "/admin/api/upstreams/models",
+                headers={"X-CSRF-Token": csrf_token(session)},
+                json={"base_url": "https://api.mai-token.com", "api_key": "wrong-key"},
+            )
+
+        self.assertEqual(response.status_code, 502)
+        self.assertIn("401", response.json()["detail"])
 
     def test_capabilities_match_the_documented_limits(self):
         caps = capabilities_for("mai-token-720p")
