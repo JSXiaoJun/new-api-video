@@ -21,6 +21,8 @@ from .model_profiles import (
     MEDIA_FIELD_PREFIXES,
     URL_VALUE_KEYS,
     MediaLimitError,
+    ResolutionMismatchError,
+    apply_pinned_resolution,
     enforce_reference_media_limits,
     route_media_counts,
     transform_create_payload,
@@ -280,6 +282,16 @@ async def create_video(
         raise HTTPException(status_code=400, detail=str(error)) from error
     video_limit = media_counts["video"]
     routed_payload = {**payload, "model": upstream["upstream_model"]}
+    # A route whose public name promises a resolution (``wan3.0-video-720p``
+    # split off ``wan3.0-video``) must produce it. Routes that do not forward
+    # resolution leave it to the model, so nothing is pinned there.
+    if upstream.get("forward_resolution", True):
+        try:
+            routed_payload = apply_pinned_resolution(
+                routed_payload, upstream.get("resolutions"), model, upstream["upstream_model"]
+            )
+        except ResolutionMismatchError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
     allows_promptless = (
         protocol == ark_video.PROTOCOL and ark_video.has_reference_content(routed_payload)
     ) or (
