@@ -863,7 +863,9 @@ routeRows.addEventListener('change', (event) => {
   } else if (target.value === 'rolldek') {
     profile.value = 'rolldek-sd25-ch1-15s'
   } else if (target.value === 'fuyao') {
-    profile.value = 'fuyao-video'
+    // Keep a Fuyao family the operator already picked; only fall back to the
+    // generic profile when the row carried another channel's format.
+    if (!profile.value.startsWith('fuyao-')) profile.value = 'fuyao-video'
   } else if (profile.value === 'ark-seedance-2' || profile.value === 'autodl-comfyui' || profile.value === 'sub2api-video' || profile.value.startsWith('mai-token-') || profile.value.startsWith('funai-') || profile.value.startsWith('rolldek-') || profile.value.startsWith('fuyao-')) {
     profile.value = 'default'
   }
