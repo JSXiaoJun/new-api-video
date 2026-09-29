@@ -11,7 +11,6 @@ import httpx
 from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Path as ApiPath, Query, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from . import database, image_database, image_proxy, new_api_gateway, proxy
@@ -20,6 +19,7 @@ from .config import PUBLIC_LINK_BASE_URLS, ROOT_DIR, settings
 from .integration_doc import build_integration_document
 from .image_integration_doc import build_image_integration_document
 from .model_profiles import profile_options, suggest_protocol, suggest_route
+from .static_assets import STATIC_DIR, VersionedStaticFiles, asset_url
 from .schemas import (
     ImageUpstreamInput,
     LoginInput,
@@ -57,8 +57,13 @@ app.add_middleware(
         "Accept-Ranges",
     ],
 )
-app.mount("/static", StaticFiles(directory=ROOT_DIR / "static"), name="static")
+app.mount("/static", VersionedStaticFiles(directory=STATIC_DIR), name="static")
 templates = Jinja2Templates(directory=ROOT_DIR / "templates")
+# Templates reference static files only through ``asset_url`` so the URL
+# changes whenever the file does; see app/static_assets.py.
+templates.env.globals["asset_url"] = asset_url
+# The pages carry the asset URLs, so a cached page would pin old assets.
+ADMIN_PAGE_HEADERS = {"Cache-Control": "no-store"}
 
 
 @app.on_event("startup")
@@ -211,7 +216,12 @@ def root() -> RedirectResponse:
 def login_page(request: Request, session: str | None = Cookie(default=None, alias=SESSION_COOKIE)):
     if read_session(session):
         return RedirectResponse("/admin", status_code=302)
-    return templates.TemplateResponse(request=request, name="login.html", context={"version": settings.app_version})
+    return templates.TemplateResponse(
+        request=request,
+        name="login.html",
+        context={"version": settings.app_version},
+        headers=ADMIN_PAGE_HEADERS,
+    )
 
 
 @app.post("/admin/api/login")
@@ -256,6 +266,7 @@ def dashboard(request: Request, session: str | None = Cookie(default=None, alias
             "csrf_token": csrf_token(session),
             "version": settings.app_version,
         },
+        headers=ADMIN_PAGE_HEADERS,
     )
 
 
@@ -272,6 +283,7 @@ def image_dashboard(request: Request, session: str | None = Cookie(default=None,
             "csrf_token": csrf_token(session),
             "version": settings.app_version,
         },
+        headers=ADMIN_PAGE_HEADERS,
     )
 
 

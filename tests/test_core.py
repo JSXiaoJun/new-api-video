@@ -157,6 +157,19 @@ class CoreTests(unittest.TestCase):
         self.assertIn('max="50"', admin_script.text)
         self.assertIn("data-route-enabled", admin_script.text)
 
+    def test_route_editor_offers_every_accepted_protocol(self):
+        # The protocol dropdown is hardcoded in admin.js while the backend enum
+        # lives in schemas.py; a protocol missing from the dropdown cannot be
+        # selected at all, so the two lists must stay in step.
+        from typing import get_args
+
+        from app.schemas import RouteInput
+
+        client = TestClient(app)
+        admin_script = client.get("/static/admin.js")
+        for protocol in get_args(RouteInput.model_fields["protocol"].annotation):
+            self.assertIn(f'<option value="{protocol}"', admin_script.text, protocol)
+
     def test_image_admin_page_and_api_require_admin_session(self):
         client = TestClient(app)
         self.assertEqual(client.get("/admin/images", follow_redirects=False).status_code, 302)
