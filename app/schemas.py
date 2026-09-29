@@ -16,7 +16,7 @@ class RouteInput(BaseModel):
     # 与转换分支，所以这里保留枚举。
     protocol: Literal[
         "videos", "seedance", "ark-v3", "o10-grok", "sub2api-video", "mai-token", "funai",
-        "autodl-comfyui", "rolldek"
+        "autodl-comfyui", "rolldek", "fuyao"
     ] = "videos"
     # 请求格式必须是渠道适配器真的声明过的 profile。这里刻意不写死清单：
     # 渠道新增 profile 时只要在它自己的 ``PROFILE_DEFINITIONS`` 里登记，

@@ -13,7 +13,7 @@ from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from . import ark_video, database
-from .channels import autodl_comfyui, funai, mai_token, o10_grok, pro666, rolldek, sub2api_video
+from .channels import autodl_comfyui, funai, fuyao, mai_token, o10_grok, pro666, rolldek, sub2api_video
 from .config import settings
 from .model_profiles import (
     INLINE_VALUE_KEYS,
@@ -309,6 +309,18 @@ async def create_video(
         upstream_payload = mai_token.transform_create_payload(routed_payload)
     elif protocol == rolldek.PROTOCOL:
         upstream_payload = rolldek.transform_create_payload(routed_payload)
+    elif protocol == fuyao.PROTOCOL:
+        try:
+            upstream_payload = fuyao.transform_create_payload(routed_payload, upstream["profile"])
+        except fuyao.FuyaoRequestError as error:
+            # The model family cannot serve this request; say why instead of
+            # sending a trimmed task the caller did not ask for.
+            database.fail_audit_request(relay_request_id, str(error))
+            raise HTTPException(
+                status_code=400,
+                detail=str(error),
+                headers={REQUEST_ID_HEADER: relay_request_id},
+            ) from error
     else:
         upstream_payload = transform_create_payload(
             routed_payload, upstream["profile"], video_limit
@@ -330,6 +342,8 @@ async def create_video(
         if protocol == mai_token.PROTOCOL
         else rolldek.CREATE_PATH
         if protocol == rolldek.PROTOCOL
+        else fuyao.CREATE_PATH
+        if protocol == fuyao.PROTOCOL
         else "/v1/video/generations" if protocol == "seedance" else "/v1/videos"
     )
     headers = (
@@ -404,6 +418,8 @@ async def create_video(
         if protocol == mai_token.PROTOCOL
         else rolldek.extract_create_task_id(upstream_payload)
         if protocol == rolldek.PROTOCOL
+        else fuyao.extract_create_task_id(upstream_payload)
+        if protocol == fuyao.PROTOCOL
         else str(upstream_payload.get("task_id") or upstream_payload.get("id") or "").strip()
     )
     if not task_id:
@@ -420,6 +436,8 @@ async def create_video(
     create_status = (
         autodl_comfyui.extract_create_status(upstream_payload)
         if protocol == autodl_comfyui.PROTOCOL
+        else fuyao.normalize_status(upstream_payload.get("status"))
+        if protocol == fuyao.PROTOCOL
         else upstream_payload.get("status")
     )
     if create_status is None and upstream_payload.get("error"):
@@ -519,6 +537,12 @@ def normalize_task_payload(task: dict[str, Any], payload: dict[str, Any]) -> tup
         video_url = fields["video_url"]
         error_value = fields["error"]
         progress = fields["progress"]
+    elif task["protocol"] == fuyao.PROTOCOL:
+        fields = fuyao.extract_task_fields(payload, task["task_id"])
+        status_value = fields["status"]
+        video_url = fields["video_url"]
+        error_value = fields["error"]
+        progress = fields["progress"]
 
     if status_value is None and error_value:
         status_value = "failed"
@@ -577,6 +601,8 @@ async def fetch_task(task_id: str, timeout_seconds: float | None = None) -> JSON
         if task["protocol"] == mai_token.PROTOCOL
         else rolldek.task_path(task_id)
         if task["protocol"] == rolldek.PROTOCOL
+        else fuyao.task_path(task_id)
+        if task["protocol"] == fuyao.PROTOCOL
         else f"/v1/videos/{task_id}"
     )
     try:
@@ -754,6 +780,8 @@ async def stream_content(task_id: str, request: Request) -> StreamingResponse:
         source_url = funai.api_url(task["base_url"], funai.content_path(task_id))
     elif task["protocol"] == rolldek.PROTOCOL:
         source_url = f"{task['base_url']}{rolldek.content_path(task_id)}"
+    elif task["protocol"] == fuyao.PROTOCOL:
+        source_url = f"{task['base_url']}{fuyao.content_path(task_id)}"
     else:
         source_url = f"{task['base_url']}/v1/videos/{task_id}/content"
 
