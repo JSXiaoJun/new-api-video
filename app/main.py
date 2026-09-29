@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from . import database, image_database, image_proxy, new_api_gateway, proxy
-from .channels import autodl_comfyui, funai, mai_token, o10_grok, rolldek, sub2api_video
+from .channels import autodl_comfyui, funai, fuyao, mai_token, o10_grok, rolldek, sub2api_video
 from .config import PUBLIC_LINK_BASE_URLS, ROOT_DIR, settings
 from .integration_doc import build_integration_document
 from .image_integration_doc import build_image_integration_document
@@ -167,6 +167,13 @@ def normalize_discovered_models(payload: Any, protocol_override: str | None = No
         if not model_id or len(model_id) > 160 or model_id in seen:
             continue
         if protocol_override == funai.PROTOCOL and not funai.is_video_model(model_id):
+            continue
+        # The Fuyao token also sees chat and image models; only video models
+        # may become video routes.
+        if protocol_override == fuyao.PROTOCOL and not fuyao.is_video_model(
+            model_id,
+            item.get("supported_endpoint_types") if isinstance(item, dict) else None,
+        ):
             continue
         seen.add(model_id)
         protocol = protocol_override or suggest_protocol(model_id)
@@ -451,6 +458,8 @@ async def discover_upstream_models(payload: ModelDiscoveryInput, _: dict = Depen
         if rolldek.is_rolldek_base_url(payload.base_url)
         else mai_token.PROTOCOL
         if mai_token.is_mai_token_base_url(payload.base_url)
+        else fuyao.PROTOCOL
+        if fuyao.is_fuyao_base_url(payload.base_url)
         else None
     )
     try:

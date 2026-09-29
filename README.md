@@ -182,6 +182,29 @@ enabled public models and their configured capabilities.
 和 `last_frame` 角色并计入 9 张图片总额。每个任务最多 9 张图片、3 段音频和 3 段视频，
 比例支持 `16:9`、`9:16`、`1:1`、`4:3`、`3:4`、`21:9`，时长 `4`–`15` 秒。
 
+### 扶摇 API（Fuyao）Channel
+
+为 `https://fuyao47.xyz` 新建视频上游并点击 `同步上游模型`。扶摇使用独立的 `fuyao` 协议和
+`app/channels/fuyao/` 适配器包：`catalog.py` 负责域名识别、模型家族和请求格式，`payload.py`
+按家族生成请求体，`tasks.py` 负责任务路径与状态解析。任务按 `POST /v1/videos` 创建、
+`GET /v1/videos/{id}` 轮询；完成后固定走 `GET /v1/videos/{id}/content` 下载，不使用上游返回的临时地址。
+模型列表来自 `GET /v1/models`，同一令牌下的聊天和图片模型会被过滤掉。
+
+请求格式按模型名自动分配，运营也可以在路由上手动改：
+
+- `grok-imagine-video-1.5`（含 `（zj）`）→ `fuyao-grok`：`seconds` 以整数下发，4–15 秒，480p/720p，
+  最多 7 张参考图；单图转成 `image: {"url"}`，多图转成 `reference_images`；不支持参考视频和尾帧，
+  `first_frame` 不能与其他参考图混用。
+- `Minimax-H3-*` → `fuyao-minimax-h3`：分辨率和时长由模型 ID 固定，`seconds` 必须与 ID 里的
+  `10s`/`15s` 一致（单一时长会自动补齐），不下发 `resolution`。
+- `【官方稳定版】sd2.0-{480p,720p}-*` → `fuyao-sd2`：4–15 秒，分辨率由模型 ID 固定；`mini` 不支持纯文生视频。
+- `wan3.0-video*` → `fuyao-wan3`：2–30 秒，480p/720p/1080p，最多 10 张图、5 段视频、5 段音频。
+- 其他视频模型 → `fuyao-video`：上游未公布上限，默认只开放 1 张参考图，按实测在路由上放宽。
+
+参考素材统一以公网 URL 下发：图片为 `reference_images: [{"url", "role"}]`（`reference_image` /
+`first_frame` / `last_frame`），视频为 `reference_videos`，音频为 `reference_audios`。
+家族不支持的组合会直接返回 400，不会裁剪后提交。
+
 输出分辨率由模型名决定，所以 `resolution` 不会被转发，避免与模型档位冲突；`seconds` 会按文档
 格式化为字符串，`generate_audio` 和 `seed` 原样保留。上游声明的 `video_url` 会经过现有的
 内容代理与鉴权隔离，未声明该字段时回退到 `/v1/videos/{task_id}/content`。
