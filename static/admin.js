@@ -435,6 +435,7 @@ function updateRouteSummary(row) {
   const summary = row.querySelector('[data-route-params-summary]')
   if (!summary) return
   summary.textContent = routeParamSummary(row)
+  syncRouteSplitButton(row)
 }
 
 function closeDurationMenu() {
@@ -542,7 +543,7 @@ function openDurationMenu(row, trigger) {
   renderValues()
 }
 
-function addRouteRow(route = {}) {
+function addRouteRow(route = {}, before = null) {
   const row = document.createElement('div')
   row.className = `route-editor-row${route.enabled === false ? ' route-disabled' : ''}`
   const mappedUpstreamModel = route.upstream_model || route.mapped_upstream_model || ''
@@ -582,6 +583,7 @@ function addRouteRow(route = {}) {
     </div>
     <label class="route-enabled-cell" data-route-cell="enabled"><span class="route-cell-label">启用</span><input data-route-enabled type="checkbox"${route.enabled !== false ? ' checked' : ''} aria-label="启用模型"></label>
     <button class="route-remove" type="button" title="移除此模型" aria-label="移除此模型">×</button>
+    <button class="route-split" data-route-split type="button" aria-label="按分辨率拆分">拆</button>
     </div>
     <div class="route-row-params" data-route-params hidden>
       <label class="route-param"><span>支持时长</span>
@@ -603,10 +605,11 @@ function addRouteRow(route = {}) {
         <input data-route-forward="resolution" type="checkbox"${route.forward_resolution !== false ? ' checked' : ''} aria-label="传分辨率">
       </label>
     </div>`
-  routeRows.appendChild(row)
+  routeRows.insertBefore(row, before)
   updateRouteSummary(row)
   updateRouteEmpty()
   syncRouteParamsButton()
+  return row
 }
 
 function setRouteRows(routes) {
@@ -617,36 +620,102 @@ function setRouteRows(routes) {
   syncRouteParamsButton()
 }
 
+function readRowResolutions(row) {
+  return [...new Set(row.querySelector('[data-route-field="resolutions"]').value
+    .split(/[,，]/).map((value) => value.trim()).filter(Boolean))]
+}
+
+function readRouteRow(row, preserveBlankModel = false) {
+  const model = row.querySelector('[data-route-field="model"]').value.trim()
+  const upstreamModel = row.querySelector('[data-route-field="upstream_model"]').value.trim()
+  const durations = JSON.parse(row.dataset.durations || '[]')
+  const effectiveModel = model || upstreamModel
+  if (!effectiveModel) throw new Error('每一行都必须填写对外模型名或映射上游模型名')
+  return {
+    model: preserveBlankModel ? model : effectiveModel,
+    upstream_model: upstreamModel,
+    protocol: row.querySelector('[data-route-field="protocol"]').value,
+    profile: row.querySelector('[data-route-field="profile"]').value,
+    durations,
+    resolutions: readRowResolutions(row),
+    duration_override: durations.length === 1 ? durations[0] : null,
+    image_count: readMediaCount(row, 'image_count'),
+    video_count: readMediaCount(row, 'video_count'),
+    audio_count: readMediaCount(row, 'audio_count'),
+    forward_resolution: row.querySelector('[data-route-forward="resolution"]').checked,
+    enabled: row.querySelector('[data-route-enabled]').checked,
+  }
+}
+
 function readRoutes(allowEmpty = false, preserveBlankModel = false) {
-  const routes = [...routeRows.children].map((row) => {
-    const model = row.querySelector('[data-route-field="model"]').value.trim()
-    const upstreamModel = row.querySelector('[data-route-field="upstream_model"]').value.trim()
-    const durations = JSON.parse(row.dataset.durations || '[]')
-    const resolutions = [...new Set(row.querySelector('[data-route-field="resolutions"]').value
-      .split(/[,，]/).map((value) => value.trim()).filter(Boolean))]
-    const effectiveModel = model || upstreamModel
-    if (!effectiveModel) throw new Error('每一行都必须填写对外模型名或映射上游模型名')
-    return {
-      model: preserveBlankModel ? model : effectiveModel,
-      upstream_model: upstreamModel,
-      protocol: row.querySelector('[data-route-field="protocol"]').value,
-      profile: row.querySelector('[data-route-field="profile"]').value,
-      durations,
-      resolutions,
-      duration_override: durations.length === 1 ? durations[0] : null,
-      image_count: readMediaCount(row, 'image_count'),
-      video_count: readMediaCount(row, 'video_count'),
-      audio_count: readMediaCount(row, 'audio_count'),
-      forward_resolution: row.querySelector('[data-route-forward="resolution"]').checked,
-      enabled: row.querySelector('[data-route-enabled]').checked,
-    }
-  })
+  const routes = [...routeRows.children].map((row) => readRouteRow(row, preserveBlankModel))
   if (!routes.length && !allowEmpty) throw new Error('至少需要一个模型路由')
+  // Only public names must be unique: split rows share one upstream model.
   const publicModels = routes.map((route) => route.model || route.upstream_model)
   if (new Set(publicModels).size !== publicModels.length) throw new Error('对外模型名不能重复')
-  const upstreamModels = routes.map((route) => route.upstream_model || route.model)
-  if (new Set(upstreamModels).size !== upstreamModels.length) throw new Error('同一个上游模型不能重复映射')
   return routes
+}
+
+// The split button only makes sense for a row that lists several resolutions
+// and forwards them; otherwise every split row would behave the same.
+function syncRouteSplitButton(row) {
+  const button = row.querySelector('[data-route-split]')
+  if (!button) return
+  const count = readRowResolutions(row).length
+  const forwards = row.querySelector('[data-route-forward="resolution"]').checked
+  button.disabled = count < 2 || !forwards
+  button.title = !forwards
+    ? '这一行不传分辨率，拆分后各行效果相同'
+    : count < 2
+      ? '至少需要两个分辨率才能拆分'
+      : `按分辨率拆成 ${count} 行：对外模型名-分辨率`
+}
+
+// One row per resolution, named ``<public name>-<resolution>``, all mapped to
+// the same upstream model. The proxy pins a single-resolution route to that
+// resolution, so each split name really produces its own size.
+function splitRouteRow(row) {
+  const route = readRouteRow(row)
+  if (route.resolutions.length < 2) {
+    showToast('至少需要两个分辨率才能拆分', 'error')
+    return
+  }
+  if (!route.forward_resolution) {
+    showToast('这一行不传分辨率，拆分后各行效果相同', 'error')
+    return
+  }
+  const baseName = route.model
+  const splitNames = route.resolutions.map((resolution) => `${baseName}-${resolution}`)
+  const tooLong = splitNames.find((name) => name.length > 160)
+  if (tooLong) {
+    showToast(`对外模型名超过 160 个字符：${tooLong}`, 'error')
+    return
+  }
+  const otherNames = new Set([...routeRows.children]
+    .filter((other) => other !== row)
+    .map((other) => {
+      const model = other.querySelector('[data-route-field="model"]').value.trim()
+      return model || other.querySelector('[data-route-field="upstream_model"]').value.trim()
+    }))
+  const clash = splitNames.find((name) => otherNames.has(name))
+  if (clash) {
+    showToast(`对外模型名已存在：${clash}`, 'error')
+    return
+  }
+  closeDurationMenu()
+  const upstreamModel = route.upstream_model || baseName
+  for (const [index, resolution] of route.resolutions.entries()) {
+    addRouteRow({
+      ...route,
+      model: splitNames[index],
+      upstream_model: upstreamModel,
+      resolutions: [resolution],
+    }, row)
+  }
+  row.remove()
+  updateRouteEmpty()
+  syncRouteParamsButton()
+  showToast(`已拆分为 ${splitNames.length} 个模型，保存后生效`)
 }
 
 function openDialog(upstream = null) {
@@ -820,6 +889,15 @@ routeRows.addEventListener('click', (event) => {
   }
   if (target?.matches('[data-duration-trigger]')) {
     openDurationMenu(target.closest('.route-editor-row'), target)
+    return
+  }
+  const splitButton = target?.closest('[data-route-split]')
+  if (splitButton) {
+    try {
+      splitRouteRow(splitButton.closest('.route-editor-row'))
+    } catch (error) {
+      showToast(error.message, 'error')
+    }
     return
   }
   const removeButton = target?.closest('.route-remove')

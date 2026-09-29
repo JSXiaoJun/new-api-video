@@ -86,8 +86,6 @@ def _ensure_protocol_constraint(conn: sqlite3.Connection) -> None:
             FROM model_routes_before_protocol_expand;
             DROP TABLE model_routes_before_protocol_expand;
             CREATE INDEX idx_model_routes_model ON model_routes(model);
-            CREATE UNIQUE INDEX idx_model_routes_upstream_model
-                ON model_routes(upstream_id, upstream_model);
             """
         )
     finally:
@@ -288,9 +286,11 @@ def initialize() -> None:
             conn.execute("ALTER TABLE model_routes ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1")
         if "forward_resolution" not in route_columns:
             conn.execute("ALTER TABLE model_routes ADD COLUMN forward_resolution INTEGER NOT NULL DEFAULT 1")
-        conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_model_routes_upstream_model ON model_routes(upstream_id, upstream_model)"
-        )
+        # One upstream model may back several public names, e.g. the per-
+        # resolution routes the console's split button creates
+        # (``wan3.0-video-480p`` and ``wan3.0-video-720p`` both call
+        # ``wan3.0-video``). Public names stay unique via UNIQUE(upstream_id, model).
+        conn.execute("DROP INDEX IF EXISTS idx_model_routes_upstream_model")
         _ensure_protocol_constraint(conn)
         if profile_added:
             for model in (
@@ -607,7 +607,8 @@ def select_upstream(model: str) -> dict[str, Any] | None:
         row = conn.execute(
             """
             SELECT u.*, r.protocol, r.profile, r.duration_override, r.upstream_model,
-                   r.enabled, r.forward_resolution, r.image_count, r.video_count, r.audio_count
+                   r.enabled, r.forward_resolution, r.image_count, r.video_count, r.audio_count,
+                   r.resolutions_json
             FROM upstreams u
             JOIN model_routes r ON r.upstream_id = u.id
             WHERE u.enabled = 1 AND u.deleted_at IS NULL AND r.enabled = 1 AND r.model = ?
@@ -621,6 +622,7 @@ def select_upstream(model: str) -> dict[str, Any] | None:
         conn.execute("UPDATE upstreams SET last_used_at = ? WHERE id = ?", (int(time.time()), row["id"]))
         item = dict(row)
         item["api_key"] = secret_box.decrypt(item.pop("api_key_encrypted"))
+        item["resolutions"] = _decode_resolutions(item.pop("resolutions_json"))
         return item
 
 

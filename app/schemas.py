@@ -96,12 +96,11 @@ class UpstreamInput(BaseModel):
     @field_validator("routes")
     @classmethod
     def unique_models(cls, routes: list[RouteInput]) -> list[RouteInput]:
+        # Only public names must be unique. Several public names may map to the
+        # same upstream model, e.g. one route per resolution.
         models = [route.model for route in routes]
         if len(models) != len(set(models)):
             raise ValueError("model routes must be unique")
-        upstream_models = [route.upstream_model or route.model for route in routes]
-        if len(upstream_models) != len(set(upstream_models)):
-            raise ValueError("upstream model mappings must be unique")
         return routes
 
 

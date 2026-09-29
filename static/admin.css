@@ -58,7 +58,7 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); box-sha
    second line. The header labels the top line only, so it shares one grid
    template and the same horizontal padding with `.route-row-main`; changing one
    without the other shifts the labels off their columns. */
-.route-editor-header, .route-row-main { min-width: 940px; display: grid; grid-template-columns: minmax(150px, 1.3fr) 100px 156px minmax(150px, 1.3fr) minmax(210px, 1.15fr) 52px 30px; align-items: center; gap: 8px; }
+.route-editor-header, .route-row-main { min-width: 982px; display: grid; grid-template-columns: minmax(150px, 1.3fr) 100px 156px minmax(150px, 1.3fr) minmax(210px, 1.15fr) 52px 30px 34px; align-items: center; gap: 8px; }
 .route-editor-header { padding: 9px 10px; color: var(--muted); border-bottom: 1px solid var(--line); font-size: 11px; font-weight: 650; }
 .route-editor-rows { display: grid; }
 .route-editor-row { background: #fff; border-bottom: 1px solid #e6ebe8; }
@@ -83,7 +83,7 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); box-sha
 .route-enabled-cell { display: flex; align-items: center; justify-content: center; min-width: 0; }
 .route-enabled-cell input { width: 14px; height: 14px; margin: 0; padding: 0; accent-color: var(--accent); }
 .route-editor-row.route-disabled { background: #f7f9f7; }
-.route-editor-row.route-disabled .route-row-main > :not(.route-enabled-cell):not(.route-remove),
+.route-editor-row.route-disabled .route-row-main > :not(.route-enabled-cell):not(.route-remove):not(.route-split),
 .route-editor-row.route-disabled .route-row-params { opacity: .58; }
 /* Collapsed by default: the summary has to describe the parameters it hides,
    otherwise an operator cannot tell a row's limits without opening it. */
@@ -104,6 +104,10 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); box-sha
 .route-param-flag span { color: #4d5852; font-size: 11px; font-weight: 600; }
 .route-remove { width: 34px; height: 34px; padding: 0; border: 0; border-radius: 4px; color: #768078; background: transparent; font-size: 18px; line-height: 1; }
 .route-remove:hover { color: var(--danger); background: #fff0ee; }
+/* Splits a multi-resolution row into one row per resolution. */
+.route-split { width: 34px; height: 34px; padding: 0; border: 1px solid #b7d3c4; border-radius: 4px; color: var(--accent); background: #fff; font-size: 12px; font-weight: 650; line-height: 1; cursor: pointer; }
+.route-split:hover:not(:disabled) { background: #eef7f1; }
+.route-split:disabled { border-color: #dde3df; color: #b3bbb6; background: #fafbfa; cursor: not-allowed; }
 .route-editor-empty { padding: 34px 16px; color: var(--muted); text-align: center; font-size: 12px; font-weight: 500; }
 .model-selection-dialog { width: min(580px, calc(100vw - 32px)); max-height: calc(100svh - 32px); border: 0; border-radius: 8px; padding: 0; box-shadow: 0 28px 70px rgba(13, 27, 20, .28); }
 .model-selection-form { display: grid; gap: 16px; padding: 24px; }
@@ -370,7 +374,7 @@ dialog::backdrop { background: rgba(17, 26, 21, .62); backdrop-filter: blur(2px)
 @media (max-width: 1180px) {
   .route-editor-header { display: none; }
   .route-editor-video { overflow-x: visible; }
-  .route-row-main { min-width: 0; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 34px; grid-template-areas: "model model remove" "protocol profile remove" "upstream upstream remove" "params params remove" "enabled enabled remove"; gap: 10px; }
+  .route-row-main { min-width: 0; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 34px; grid-template-areas: "model model remove" "protocol profile split" "upstream upstream ." "params params ." "enabled enabled ."; gap: 10px; }
   .route-row-main > [data-route-cell="model"] { grid-area: model; }
   .route-row-main > [data-route-cell="protocol"] { grid-area: protocol; }
   .route-row-main > [data-route-cell="profile"] { grid-area: profile; }
@@ -378,6 +382,7 @@ dialog::backdrop { background: rgba(17, 26, 21, .62); backdrop-filter: blur(2px)
   .route-row-main > [data-route-cell="params"] { grid-area: params; }
   .route-row-main > [data-route-cell="enabled"] { grid-area: enabled; }
   .route-row-main > .route-remove { grid-area: remove; align-self: start; }
+  .route-row-main > .route-split { grid-area: split; align-self: start; }
   .route-cell-label { display: block; margin-bottom: 5px; color: var(--muted); font-size: 10px; font-weight: 700; }
   .route-enabled-cell { justify-content: flex-start; gap: 8px; }
   .route-enabled-cell .route-cell-label { margin-bottom: 0; }

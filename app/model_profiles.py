@@ -128,6 +128,66 @@ def enforce_reference_media_limits(payload: dict[str, Any], counts: Mapping[str,
         )
 
 
+class ResolutionMismatchError(Exception):
+    """请求的分辨率与该路由固定的分辨率不一致。"""
+
+
+_RESOLUTION_VALUE = re.compile(r'^\d{3,4}p$', re.IGNORECASE)
+
+
+def pinned_resolution(
+    resolutions: list[str] | None,
+    model: str | None = None,
+    upstream_model: str | None = None,
+) -> str | None:
+    """返回这条路由在对外模型名里承诺的分辨率，没有承诺就返回 ``None``。
+
+    只有同时满足三点才固定：只配置了一个分辨率；对外模型名以 ``-<分辨率>`` 结尾；
+    上游模型名本身不带这个后缀。这正是拆分按钮生成的形状
+    （``wan3.0-video-720p`` → ``wan3.0-video``）。只配了一个分辨率的老路由不受
+    影响：它们的名字没有承诺分辨率，一些渠道（如 MAI Token）还会直接忽略
+    ``resolution``，在这里拒绝会让原本能用的请求开始报错。
+    """
+    values = [value.strip() for value in resolutions or [] if value and value.strip() and value.strip() != '自动']
+    if len(values) != 1:
+        return None
+    resolution = values[0]
+    suffix = f'-{resolution}'.lower()
+    public_name = (model or '').strip().lower()
+    upstream_name = (upstream_model or model or '').strip().lower()
+    if not public_name.endswith(suffix) or upstream_name.endswith(suffix):
+        return None
+    return resolution
+
+
+def apply_pinned_resolution(
+    payload: dict[str, Any],
+    resolutions: list[str] | None,
+    model: str | None = None,
+    upstream_model: str | None = None,
+) -> dict[str, Any]:
+    """让名字里写了分辨率的路由真的按这个分辨率出片。
+
+    按分辨率拆分出来的路由（``wan3.0-video-720p``）共用同一个上游模型，区别只在
+    分辨率。调用方没传分辨率时补上路由的分辨率；传了别的分辨率就拒绝——不能让
+    名叫 720p 的模型悄悄出 1080p。``quality`` 只有写成 ``720p`` 这种形式时才当
+    分辨率比较，``high`` 之类的画质参数不受影响。
+    """
+    pinned = pinned_resolution(resolutions, model, upstream_model)
+    if pinned is None:
+        return payload
+    metadata = payload.get('metadata') if isinstance(payload.get('metadata'), dict) else {}
+    requested = [
+        value.strip()
+        for value in (payload.get('resolution'), metadata.get('resolution'), payload.get('quality'))
+        if isinstance(value, str) and _RESOLUTION_VALUE.match(value.strip())
+    ]
+    for value in requested:
+        if value.lower() != pinned.lower():
+            raise ResolutionMismatchError(f'当前模型固定为 {pinned}，不支持 {value}')
+    return {**payload, 'resolution': pinned}
+
+
 PROFILE_DEFINITIONS: dict[str, dict[str, Any]] = {
     'default': {
         'label': '通用视频',

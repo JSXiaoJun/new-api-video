@@ -100,6 +100,13 @@ discovery suggests a format only for new rows; editing and later synchronization
 Synchronization is non-destructive: models missing from a later discovery response remain in the editor. If an upstream
 renames a model, update that route's `映射上游模型名` manually, verify its saved `请求格式`, then save the upstream.
 
+The `拆` button at the end of a row splits it by resolution: a row listing `480p, 720p, 1080p` becomes three rows named
+`<对外模型名>-480p` and so on, each with a single resolution and every other setting copied, all mapped to the same upstream
+model. It is disabled when the row has fewer than two resolutions or `传分辨率` is off. Several public names may therefore
+share one `映射上游模型名`; only public names must be unique. A route whose public name ends in `-<resolution>` while its
+upstream model does not, and which lists only that resolution, is pinned to it: the relay fills in `resolution` when the
+caller omits it and rejects a different one with HTTP 400. Routes whose name does not promise a resolution are unchanged.
+
 Each route is edited on two lines. The first carries the routing fields and a summary of the capacity parameters; the
 parameters themselves sit on a collapsible second line, opened per row or in bulk with `展开全部参数`. Below roughly
 1180 px the row restacks into labelled fields instead of scrolling sideways, because a CSS Grid item cannot pin its own
