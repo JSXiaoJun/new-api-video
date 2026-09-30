@@ -37,6 +37,7 @@ from .tasks import (
     content_path,
     extract_create_task_id,
     extract_task_fields,
+    extract_video_link,
     normalize_status,
     task_path,
 )
@@ -51,6 +52,7 @@ __all__ = [
     "content_path",
     "extract_create_task_id",
     "extract_task_fields",
+    "extract_video_link",
     "family_for_model",
     "is_fuyao_base_url",
     "is_video_model",

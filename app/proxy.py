@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import time
@@ -694,6 +695,7 @@ async def stream_upstream_content(
     default_media_type: str = "application/octet-stream",
     error_message: str = "Upstream download failed",
     source_url_validator: Callable[[str], bool] | None = None,
+    reject_json: bool = False,
 ) -> StreamingResponse:
     request_headers = dict(headers or {})
     if request.headers.get("range"):
@@ -729,6 +731,14 @@ async def stream_upstream_content(
         await upstream_response.aclose()
         await client.aclose()
         logger.warning("%s: upstream returned HTTP %s", error_message, upstream_response.status_code)
+        raise HTTPException(status_code=502, detail=error_message)
+    # A JSON body where a video was expected is an upstream task document, and
+    # it usually names the upstream host and a signed storage link. Never
+    # forward it: public links are meant to hide exactly those.
+    if reject_json and _is_json_response(upstream_response.headers):
+        await upstream_response.aclose()
+        await client.aclose()
+        logger.warning("%s: upstream returned JSON instead of a video", error_message)
         raise HTTPException(status_code=502, detail=error_message)
 
     async def iterator():
@@ -767,8 +777,6 @@ async def stream_content(task_id: str, request: Request) -> StreamingResponse:
     source_url = task.get("source_video_url")
     if not source_url:
         task_response = await fetch_task(task_id)
-        import json
-
         status_payload = json.loads(bytes(task_response.body))
         refreshed_task = database.get_task(task_id)
         if refreshed_task is not None:
@@ -797,6 +805,9 @@ async def stream_content(task_id: str, request: Request) -> StreamingResponse:
     else:
         source_url = f"{task['base_url']}/v1/videos/{task_id}/content"
 
+    if task["protocol"] == fuyao.PROTOCOL and same_origin(source_url, task["base_url"]):
+        source_url = await _resolve_fuyao_video_link(source_url, task)
+
     request_headers = {}
     if same_origin(source_url, task["base_url"]) or pro666.permits_api_key_forwarding(
         source_url, task["base_url"]
@@ -813,7 +824,50 @@ async def stream_content(task_id: str, request: Request) -> StreamingResponse:
         headers=request_headers,
         default_media_type="video/mp4",
         error_message="Video upstream download failed",
+        reject_json=True,
     )
+
+
+async def _resolve_fuyao_video_link(content_url: str, task: dict[str, Any]) -> str:
+    """Turn Fuyao's ``/content`` endpoint into the actual video file URL.
+
+    Despite the documented download endpoint, ``/content`` can answer with the
+    task JSON instead of the MP4. Streaming that body would hand the viewer the
+    upstream host and its signed storage link, so the link is read from the
+    JSON and the file is streamed from it. A real video response is kept.
+    """
+    payload: Any = None
+    try:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=False) as client:
+            # Streamed so a real MP4 answer is not read into memory just to
+            # learn its content type; only a JSON body is read.
+            async with client.stream(
+                "GET", content_url, headers={"Authorization": f"Bearer {task['api_key']}"}
+            ) as response:
+                if response.is_redirect and response.headers.get("location"):
+                    return urljoin(content_url, response.headers["location"])
+                if response.status_code != 200 or not _is_json_response(response.headers):
+                    return content_url
+                body = await response.aread()
+    except httpx.RequestError as exc:
+        logger.warning("Fuyao content lookup failed: %s", exc)
+        raise HTTPException(status_code=502, detail="Video upstream download failed") from exc
+    try:
+        payload = json.loads(body)
+    except ValueError:
+        payload = None
+    link = fuyao.extract_video_link(payload)
+    if link is None:
+        logger.warning("Fuyao content endpoint returned JSON without a video link")
+        raise HTTPException(status_code=502, detail="Video upstream download failed")
+    # Not cached: the link is signed and expires (``Expires=...``), so every
+    # download asks ``/content`` for a fresh one.
+    return link
+
+
+def _is_json_response(headers: httpx.Headers) -> bool:
+    media_type = headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    return media_type == "application/json" or media_type.endswith("+json")
 
 
 def same_origin(left_url: str, right_url: str) -> bool:
