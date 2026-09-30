@@ -73,6 +73,25 @@ def extract_task_fields(payload: dict[str, Any], task_id: str) -> dict[str, Any]
     }
 
 
+# ``/content`` answers with the task body rather than the video bytes; every
+# one of these fields carries the same signed object-storage link.
+_VIDEO_LINK_FIELDS = ("download_url", "content_url", "video_url", "url", "result_url")
+
+
+def extract_video_link(payload: Any) -> str | None:
+    """Return the absolute video link from a Fuyao task body, if any."""
+    if not isinstance(payload, dict):
+        return None
+    output = payload.get("output")
+    candidates = [payload.get(field) for field in _VIDEO_LINK_FIELDS]
+    if isinstance(output, dict):
+        candidates.append(output.get("video_url"))
+    for candidate in candidates:
+        if isinstance(candidate, str) and candidate.strip().lower().startswith(("https://", "http://")):
+            return candidate.strip()
+    return None
+
+
 def _progress(value: Any) -> int | None:
     if isinstance(value, str):
         value = value.strip().rstrip("%").strip()

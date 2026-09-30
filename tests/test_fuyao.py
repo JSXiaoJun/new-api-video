@@ -392,18 +392,115 @@ class FuyaoIntegrationTests(unittest.TestCase):
         self.assertEqual(captured["get"][0][0], f"https://fuyao47.xyz/v1/videos/{task_id}")
         self.assertEqual(json.loads(fetched.body)["status"], "completed")
 
+        # /content answers with the file itself: it is streamed unchanged.
+        _looked_up, downloaded = self._download_with_content_answer(
+            task_id, httpx.Response(200, headers={"content-type": "video/mp4"}, content=b"video")
+        )
+        self.assertEqual(downloaded["url"], f"https://fuyao47.xyz/v1/videos/{task_id}/content")
+        self.assertEqual(downloaded["headers"]["Authorization"], "Bearer fuyao-secret")
+
+    def _completed_task(self) -> str:
+        public_model = self._save_route("wan3.0-video-prime", "fuyao-wan3")
+        task_id = f"wan_{time.time_ns()}"
+        mock = _mock_client(
+            {},
+            post_json={"id": task_id, "status": "queued"},
+            get_json={"id": task_id, "status": "completed", "progress": 100},
+        )
+        with patch("app.proxy.httpx.AsyncClient", mock):
+            asyncio.run(create_video({"model": public_model, "prompt": "p", "seconds": 5}, None))
+            asyncio.run(fetch_task(task_id))
+        return task_id
+
+    def _download_with_content_answer(self, task_id: str, answer: httpx.Response):
+        """Run a download where Fuyao's ``/content`` gives ``answer``."""
+        looked_up: list = []
+
+        class ContentClient:
+            def __init__(self, **_kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            def stream(self, method, url, **kwargs):
+                looked_up.append((method, url, kwargs))
+
+                class Ctx:
+                    async def __aenter__(self_inner):
+                        return answer
+
+                    async def __aexit__(self_inner, *_args):
+                        return None
+
+                return Ctx()
+
         downloaded: dict = {}
 
-        async def mock_stream(source_url, _request, headers=None, **_kwargs):
-            downloaded["url"] = source_url
-            downloaded["headers"] = headers
+        async def mock_stream(source_url, _request, headers=None, **kwargs):
+            downloaded.update(url=source_url, headers=headers, kwargs=kwargs)
             return Response(content=b"video", media_type="video/mp4")
 
         request = httpx.Request("GET", f"https://media.yyapi.cloud/public/videos/{task_id}/content")
-        with patch("app.proxy.stream_upstream_content", new=mock_stream):
+        with patch("app.proxy.httpx.AsyncClient", ContentClient), patch(
+            "app.proxy.stream_upstream_content", new=mock_stream
+        ):
             asyncio.run(stream_content(task_id, request))
+        return looked_up, downloaded
+
+    def test_json_content_answer_is_resolved_to_the_video_file(self):
+        # The body Fuyao really returned from /content for a finished wan task.
+        signed = (
+            "https://dashscope-a717.oss-accelerate.aliyuncs.com/1d/76/20260930/c46670cb/"
+            "89564464-metadata.mp4?Expires=1790816809&OSSAccessKeyId=AK&Signature=SIG%3D"
+        )
+        task_id = self._completed_task()
+        answer = httpx.Response(200, json={
+            "id": task_id,
+            "object": "video",
+            "status": "completed",
+            "task_status": "SUCCESS",
+            "status_url": f"https://fuyao47.xyz/v1/videos/{task_id}",
+            "content_url": signed,
+            "url": signed,
+            "video_url": signed,
+            "download_url": signed,
+            "output": {"task_status": "SUCCEEDED", "video_url": signed},
+        })
+        looked_up, downloaded = self._download_with_content_answer(task_id, answer)
+
+        self.assertEqual(looked_up[0][1], f"https://fuyao47.xyz/v1/videos/{task_id}/content")
+        self.assertEqual(looked_up[0][2]["headers"]["Authorization"], "Bearer fuyao-secret")
+        # The viewer gets the file, streamed from storage without our key.
+        self.assertEqual(downloaded["url"], signed)
+        self.assertNotIn("Authorization", downloaded["headers"])
+        self.assertTrue(downloaded["kwargs"]["reject_json"])
+
+    def test_real_video_content_answer_is_streamed_as_before(self):
+        task_id = self._completed_task()
+        answer = httpx.Response(200, headers={"content-type": "video/mp4"}, content=b"\x00mp4")
+        _looked_up, downloaded = self._download_with_content_answer(task_id, answer)
         self.assertEqual(downloaded["url"], f"https://fuyao47.xyz/v1/videos/{task_id}/content")
         self.assertEqual(downloaded["headers"]["Authorization"], "Bearer fuyao-secret")
+
+    def test_json_content_answer_without_a_link_is_a_502(self):
+        task_id = self._completed_task()
+        answer = httpx.Response(200, json={"id": task_id, "status": "completed"})
+        with self.assertRaises(HTTPException) as raised:
+            self._download_with_content_answer(task_id, answer)
+        self.assertEqual(raised.exception.status_code, 502)
+        self.assertNotIn("fuyao47", raised.exception.detail)
+
+    def test_extract_video_link_ignores_relative_and_missing_values(self):
+        self.assertIsNone(fuyao.extract_video_link({"url": "/v1/videos/x/content"}))
+        self.assertIsNone(fuyao.extract_video_link(["not", "a", "dict"]))
+        self.assertEqual(
+            fuyao.extract_video_link({"output": {"video_url": "https://oss.example/v.mp4"}}),
+            "https://oss.example/v.mp4",
+        )
 
     def test_unserviceable_request_is_a_400_before_any_upstream_call(self):
         public_model = self._save_route(SD_MINI, "fuyao-sd2", image_count=9)
