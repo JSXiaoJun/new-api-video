@@ -267,6 +267,7 @@ class FuyaoPayloadTests(unittest.TestCase):
             },
             {"seconds": 1},
             {"seconds": 31},
+            {"seconds": None},
             {"resolution": "1440p"},
             {"metadata": {"input": {"media": [{"type": "reference_image", "url": "https://x/y.jpg"}]}}},
         ]
@@ -315,7 +316,7 @@ class FuyaoPayloadTests(unittest.TestCase):
         self.assertEqual(len(body["reference_images"]), counts["image"])
         self.assertEqual(len(body["reference_videos"]), counts["video"])
         self.assertEqual(len(body["reference_audios"]), counts["audio"])
-        wan = fuyao.transform_create_payload({**payload, "model": "wan3.0-video"})
+        wan = fuyao.transform_create_payload({**payload, "model": "wan3.0-video", "seconds": 8})
         media = wan["metadata"]["input"]["media"]
         for kind in ("image", "video", "audio"):
             forwarded = [item for item in media if item["type"] == f"reference_{kind}"]

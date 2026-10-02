@@ -189,6 +189,10 @@ def _wan3_body(
         if value is None or key in parameters:
             continue
         parameters[key] = _wan3_resolution(value) if key == "resolution" and isinstance(value, str) else value
+    # Wan3 bills per second, and the gateway requires the duration to be
+    # explicit for that; -1 is the explicit way to ask for automatic length.
+    if "duration" not in parameters:
+        raise FuyaoRequestError("Wan3 按秒计费，必须提供时长（2–30 秒，或 -1 表示自动时长）")
 
     media = [{"type": role, "url": url} for role, url in images]
     media += [{"type": "reference_video", "url": url} for url in videos]
