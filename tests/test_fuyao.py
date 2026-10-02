@@ -205,33 +205,104 @@ class FuyaoPayloadTests(unittest.TestCase):
             fuyao.transform_create_payload({"model": SD_FULL, "prompt": "p", "seconds": 5}),
         )
 
-    def test_wan3_orders_frames_and_forwards_every_media_kind(self):
+    def test_wan3_uses_metadata_parameters_and_typed_media(self):
+        body = fuyao.transform_create_payload({
+            "model": "wan3.0-video",
+            "prompt": "使用图片1的人物，参考视频1的镜头运动，并参考音频1生成视频",
+            "duration": 8,
+            "resolution": "720p",
+            "aspect_ratio": "16:9",
+            "generate_audio": True,
+            "seed": 7,
+            "image_urls": ["https://cdn.example/person.jpg"],
+            "video_urls": ["https://cdn.example/reference.mp4"],
+            "metadata": {"audio_urls": ["https://cdn.example/reference.mp3"]},
+        }, "fuyao-wan3")
+        self.assertEqual(body, {
+            "model": "wan3.0-video",
+            "prompt": "使用图片1的人物，参考视频1的镜头运动，并参考音频1生成视频",
+            "metadata": {
+                "parameters": {
+                    "duration": 8,
+                    "resolution": "720P",
+                    "ratio": "16:9",
+                    "audio": True,
+                    "seed": 7,
+                },
+                "input": {"media": [
+                    {"type": "reference_image", "url": "https://cdn.example/person.jpg"},
+                    {"type": "reference_video", "url": "https://cdn.example/reference.mp4"},
+                    {"type": "reference_audio", "url": "https://cdn.example/reference.mp3"},
+                ]},
+            },
+        })
+
+    def test_wan3_first_and_last_frame(self):
+        body = fuyao.transform_create_payload({
+            "model": "wan3.0-video-prime",
+            "prompt": "镜头从第一帧平滑过渡到最后一帧",
+            "seconds": 5,
+            "last_frame_url": "https://cdn.example/last.jpg",
+            "first_frame": {"url": "https://cdn.example/first.jpg"},
+            "aspect_ratio": "adaptive",
+        })
+        self.assertEqual(body["metadata"], {
+            "parameters": {"duration": 5},
+            "input": {"media": [
+                {"type": "first_frame", "url": "https://cdn.example/first.jpg"},
+                {"type": "last_frame", "url": "https://cdn.example/last.jpg"},
+            ]},
+        })
+
+    def test_wan3_rejects_what_the_gateway_documents_as_invalid(self):
+        cases = [
+            {"last_frame_url": "https://cdn.example/last.jpg"},
+            {
+                "first_frame_url": "https://cdn.example/first.jpg",
+                "image_urls": ["https://cdn.example/ref.jpg"],
+            },
+            {
+                "first_frame_url": "https://cdn.example/first.jpg",
+                "video_urls": ["https://cdn.example/v.mp4"],
+            },
+            {"seconds": 1},
+            {"seconds": 31},
+            {"resolution": "1440p"},
+            {"metadata": {"input": {"media": [{"type": "reference_image", "url": "https://x/y.jpg"}]}}},
+        ]
+        for extra in cases:
+            with self.assertRaises(fuyao.FuyaoRequestError, msg=extra):
+                fuyao.transform_create_payload({"model": "wan3.0-video", "prompt": "p", **extra})
+
+    def test_wan3_auto_duration_size_and_explicit_parameters(self):
         body = fuyao.transform_create_payload({
             "model": "wan3.0-video",
             "prompt": "p",
-            "duration": 12,
-            "resolution": "1080p",
-            "reference_images": [
-                {"url": "https://cdn.example/ref.jpg", "role": "reference_image"},
-                {"url": "https://cdn.example/last.jpg", "role": "last_frame"},
-            ],
-            "first_frame": {"url": "https://cdn.example/first.jpg"},
-            "video_urls": ["https://cdn.example/v.mp4"],
-            "metadata": {"audio_urls": ["https://cdn.example/a.mp3"]},
-        }, "fuyao-wan3")
-        self.assertEqual(body["reference_images"], [
-            {"url": "https://cdn.example/first.jpg", "role": "first_frame"},
-            {"url": "https://cdn.example/last.jpg", "role": "last_frame"},
-            {"url": "https://cdn.example/ref.jpg", "role": "reference_image"},
-        ])
-        self.assertEqual(body["reference_videos"], ["https://cdn.example/v.mp4"])
-        self.assertEqual(body["reference_audios"], ["https://cdn.example/a.mp3"])
-        self.assertEqual(body["resolution"], "1080p")
-        self.assertEqual(body["seconds"], "12")
+            "seconds": -1,
+            "size": "1280x720",
+            "generate_audio": "false",
+            "metadata": {"parameters": {"duration": 10, "ratio": "9:16", "watermark": False, "resolution": "1080P"}},
+        })
+        # Relay fields win over metadata.parameters, which only fills gaps.
+        self.assertEqual(body["metadata"]["parameters"], {
+            "duration": -1,
+            "resolution": "720P",
+            "ratio": "16:9",
+            "audio": False,
+            "watermark": False,
+        })
+        self.assertNotIn("seconds", body)
+        self.assertNotIn("size", body)
+        only_explicit = fuyao.transform_create_payload({
+            "model": "wan3.0-video",
+            "prompt": "p",
+            "metadata": {"parameters": {"duration": 6, "audio": True}},
+        })
+        self.assertEqual(only_explicit["metadata"], {"parameters": {"duration": 6, "audio": True}})
 
     def test_forwarded_media_matches_what_the_relay_counts(self):
         payload = {
-            "model": "wan3.0-video",
+            "model": SD_FULL,
             "prompt": "p",
             "image": {"url": "https://cdn.example/a.jpg"},
             "images": ["https://cdn.example/b.jpg"],
@@ -244,6 +315,11 @@ class FuyaoPayloadTests(unittest.TestCase):
         self.assertEqual(len(body["reference_images"]), counts["image"])
         self.assertEqual(len(body["reference_videos"]), counts["video"])
         self.assertEqual(len(body["reference_audios"]), counts["audio"])
+        wan = fuyao.transform_create_payload({**payload, "model": "wan3.0-video"})
+        media = wan["metadata"]["input"]["media"]
+        for kind in ("image", "video", "audio"):
+            forwarded = [item for item in media if item["type"] == f"reference_{kind}"]
+            self.assertEqual(len(forwarded), counts[kind], kind)
 
     def test_conflicting_or_fractional_seconds_are_rejected(self):
         for extra in ({"seconds": 5, "duration": 6}, {"seconds": "5.5"}, {"seconds": "abc"}):
@@ -291,6 +367,8 @@ class FuyaoTaskTests(unittest.TestCase):
         self.assertEqual(running["progress"], 56)
         failed = fuyao.extract_task_fields({"status": "error", "message": "bad prompt"}, "t")
         self.assertEqual((failed["status"], failed["error"]), ("failed", "bad prompt"))
+        reason = fuyao.extract_task_fields({"status": "failed", "fail_reason": "audit rejected"}, "t")
+        self.assertEqual(reason["error"], "audit rejected")
 
 
 class FuyaoIntegrationTests(unittest.TestCase):
@@ -377,7 +455,8 @@ class FuyaoIntegrationTests(unittest.TestCase):
         url, kwargs = captured["post"]
         self.assertEqual(url, "https://fuyao47.xyz/v1/videos")
         self.assertEqual(kwargs["headers"]["Authorization"], "Bearer fuyao-secret")
-        self.assertNotIn("Idempotency-Key", kwargs["headers"])
+        # One fresh key per generation, so the gateway never bills a resubmit twice.
+        self.assertTrue(kwargs["headers"]["Idempotency-Key"])
         self.assertEqual(kwargs["json"], {
             "model": "grok-imagine-video-1.5",
             "prompt": "主体向镜头走来",

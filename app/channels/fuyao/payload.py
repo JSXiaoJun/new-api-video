@@ -9,6 +9,9 @@ URLs (the relay rejects base64 before it gets here):
 * videos -> ``reference_videos: [url]``
 * audios -> ``reference_audios: [url]``
 
+Wan3 is the exception: options go under ``metadata.parameters`` and media
+under ``metadata.input.media[]`` as ``{type, url}`` items (see ``_wan3_body``).
+
 A request the family cannot serve raises :class:`FuyaoRequestError` instead of
 being trimmed, so the caller never gets a different task than it asked for.
 """
@@ -61,6 +64,8 @@ def transform_create_payload(payload: dict[str, Any], profile: str | None = None
 
     if family == catalog.GROK:
         return _grok_body(body, images, videos, audios, seconds, ratio, resolution)
+    if family == catalog.WAN3:
+        return _wan3_body(body, payload, images, videos, audios, seconds, ratio, resolution)
 
     if family == catalog.MINIMAX_H3:
         allowed = catalog.fixed_durations(model)
@@ -80,7 +85,7 @@ def transform_create_payload(payload: dict[str, Any], profile: str | None = None
         body["aspect_ratio"] = ratio
     # H3 and SD 2.0 encode the output resolution in the model ID; a second
     # value could only conflict with it.
-    if family in {catalog.WAN3, catalog.GENERIC} and resolution:
+    if family == catalog.GENERIC and resolution:
         body["resolution"] = resolution
     if family == catalog.GENERIC and isinstance(payload.get("size"), str) and payload["size"].strip():
         body["size"] = payload["size"].strip()
@@ -119,6 +124,115 @@ def _grok_body(
     if audios:
         body["reference_audios"] = audios
     return body
+
+
+WAN3_AUTO_DURATION = -1
+_WAN3_RESOLUTIONS = ("480P", "720P", "1080P")
+_WAN3_AUTO_RATIOS = frozenset({"adaptive", "auto"})
+_WAN3_EXTRA_PARAMETERS = ("prompt_extend", "watermark", "seed")
+
+
+def _wan3_body(
+    body: dict[str, Any],
+    payload: dict[str, Any],
+    images: list[tuple[str, str]],
+    videos: list[str],
+    audios: list[str],
+    seconds: int | None,
+    ratio: str | None,
+    resolution: str | None,
+) -> dict[str, Any]:
+    """Wan3 takes its options under ``metadata.parameters`` and its media as
+    typed items in ``metadata.input.media`` (tutorial update of 2026-10-02).
+
+    The gateway still converts the legacy top-level fields, but documents the
+    structured form as the one it bills and validates against, and asks not to
+    send ``metadata.video_urls``/``metadata.audio_urls`` at all.
+    """
+    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    if isinstance(metadata.get("input"), dict) and metadata["input"].get("media"):
+        # Media given here would bypass the relay's per-route media limits.
+        raise FuyaoRequestError(
+            "请用 reference_images / reference_videos / reference_audios 传参考素材，"
+            "不要直接传 metadata.input.media"
+        )
+    explicit = metadata.get("parameters") if isinstance(metadata.get("parameters"), dict) else {}
+
+    roles = [role for role, _ in images]
+    has_frames = FIRST_FRAME in roles or LAST_FRAME in roles
+    if LAST_FRAME in roles and FIRST_FRAME not in roles:
+        raise FuyaoRequestError("Wan3 的尾帧必须配合首帧使用")
+    if has_frames and (REFERENCE_IMAGE in roles or videos or audios):
+        raise FuyaoRequestError("Wan3 的首尾帧模式不能与参考图、参考视频或参考音频混用")
+
+    parameters: dict[str, Any] = {}
+    if seconds is not None:
+        if seconds != WAN3_AUTO_DURATION and not 2 <= seconds <= 30:
+            raise FuyaoRequestError("Wan3 的时长必须是 2–30 秒，或 -1 表示自动时长")
+        parameters["duration"] = seconds
+    resolution = resolution or _resolution_from_size(payload.get("size") or metadata.get("size"))
+    if resolution:
+        parameters["resolution"] = _wan3_resolution(resolution)
+    # ``adaptive``/``auto`` mean "let the model decide", which Wan3 expresses
+    # by leaving ``ratio`` out.
+    if ratio and ratio.lower() not in _WAN3_AUTO_RATIOS:
+        parameters["ratio"] = ratio
+    audio = _first_bool(payload, metadata, ("generate_audio", "generateAudio"))
+    if audio is not None:
+        parameters["audio"] = audio
+    for key in _WAN3_EXTRA_PARAMETERS:
+        if payload.get(key) is not None:
+            parameters[key] = payload[key]
+    # A caller who already speaks the Wan3 form fills the gaps; the relay's own
+    # fields carry a split route's pinned resolution, so they come first.
+    for key, value in explicit.items():
+        if value is None or key in parameters:
+            continue
+        parameters[key] = _wan3_resolution(value) if key == "resolution" and isinstance(value, str) else value
+
+    media = [{"type": role, "url": url} for role, url in images]
+    media += [{"type": "reference_video", "url": url} for url in videos]
+    media += [{"type": "reference_audio", "url": url} for url in audios]
+
+    wan_metadata: dict[str, Any] = {}
+    if parameters:
+        wan_metadata["parameters"] = parameters
+    if media:
+        wan_metadata["input"] = {"media": media}
+    if wan_metadata:
+        body["metadata"] = wan_metadata
+    return body
+
+
+def _wan3_resolution(value: str) -> str:
+    normalized = value.strip().upper()
+    if normalized not in _WAN3_RESOLUTIONS:
+        raise FuyaoRequestError("Wan3 的分辨率只能是 480P、720P 或 1080P")
+    return normalized
+
+
+def _resolution_from_size(value: Any) -> str | None:
+    """``size=720P`` names the resolution; ``size=1280x720`` implies it."""
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().lower()
+    if normalized[:-1].isdigit() and normalized.endswith("p"):
+        return normalized
+    parts = normalized.split("x")
+    if len(parts) == 2 and all(part.strip().isdigit() and int(part) > 0 for part in parts):
+        return f"{min(int(part) for part in parts)}p"
+    return None
+
+
+def _first_bool(payload: dict[str, Any], metadata: dict[str, Any], keys: tuple[str, ...]) -> bool | None:
+    for source in (payload, metadata):
+        for key in keys:
+            value = source.get(key)
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, str) and value.strip().lower() in {"true", "false"}:
+                return value.strip().lower() == "true"
+    return None
 
 
 def _with_media(

@@ -183,7 +183,25 @@ class SplitRouteProxyTests(unittest.TestCase):
         public_model = self._save()
         sent = self._create({"model": public_model, "prompt": "p", "seconds": 5})
         self.assertEqual(sent["json"]["model"], "wan3.0-video")
-        self.assertEqual(sent["json"]["resolution"], "720p")
+        self.assertEqual(sent["json"]["metadata"]["parameters"]["resolution"], "720P")
+
+    def test_split_route_checks_metadata_parameters_resolution(self):
+        public_model = self._save()
+        with self.assertRaises(HTTPException) as raised:
+            self._create({
+                "model": public_model,
+                "prompt": "p",
+                "seconds": 5,
+                "metadata": {"parameters": {"resolution": "1080P"}},
+            })
+        self.assertEqual(raised.exception.status_code, 400)
+        sent = self._create({
+            "model": public_model,
+            "prompt": "p",
+            "seconds": 5,
+            "metadata": {"parameters": {"resolution": "720P"}},
+        })
+        self.assertEqual(sent["json"]["metadata"]["parameters"]["resolution"], "720P")
 
     def test_split_route_rejects_another_resolution(self):
         public_model = self._save()
@@ -194,8 +212,15 @@ class SplitRouteProxyTests(unittest.TestCase):
 
     def test_route_that_does_not_forward_resolution_is_not_pinned(self):
         public_model = self._save(forward_resolution=False)
-        sent = self._create({"model": public_model, "prompt": "p", "seconds": 5, "resolution": "1080p"})
+        sent = self._create({
+            "model": public_model,
+            "prompt": "p",
+            "seconds": 5,
+            "resolution": "1080p",
+            "metadata": {"parameters": {"resolution": "1080P"}},
+        })
         self.assertNotIn("resolution", sent["json"])
+        self.assertNotIn("resolution", sent["json"].get("metadata", {}).get("parameters", {}))
 
 
 class SplitButtonTests(unittest.TestCase):

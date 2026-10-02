@@ -205,12 +205,16 @@ enabled public models and their configured capabilities.
 - `Minimax-H3-*` → `fuyao-minimax-h3`：分辨率和时长由模型 ID 固定，`seconds` 必须与 ID 里的
   `10s`/`15s` 一致（单一时长会自动补齐），不下发 `resolution`。
 - `【官方稳定版】sd2.0-{480p,720p}-*` → `fuyao-sd2`：4–15 秒，分辨率由模型 ID 固定；`mini` 不支持纯文生视频。
-- `wan3.0-video*` → `fuyao-wan3`：2–30 秒，480p/720p/1080p，最多 10 张图、5 段视频、5 段音频。
+- `wan3.0-video*` → `fuyao-wan3`：2–30 秒（`-1` 为自动时长），480P/720P/1080P，最多 10 张图、5 段视频、
+  5 段音频。按扶摇 2026-10-02 的 Wan3 专用说明，时长、分辨率、比例和 `generate_audio` 统一放进
+  `metadata.parameters`（`duration` / `resolution` / `ratio` / `audio`），参考素材放进
+  `metadata.input.media[]: {"type", "url"}`；`adaptive` 比例不下发，交给模型决定。尾帧必须配合首帧，
+  首尾帧模式不能与参考图、参考视频、参考音频混用。
 - 其他视频模型 → `fuyao-video`：上游未公布上限，默认只开放 1 张参考图，按实测在路由上放宽。
 
-参考素材统一以公网 URL 下发：图片为 `reference_images: [{"url", "role"}]`（`reference_image` /
+除 Wan3 外，参考素材统一以公网 URL 下发：图片为 `reference_images: [{"url", "role"}]`（`reference_image` /
 `first_frame` / `last_frame`），视频为 `reference_videos`，音频为 `reference_audios`。
-家族不支持的组合会直接返回 400，不会裁剪后提交。
+家族不支持的组合会直接返回 400，不会裁剪后提交。每次创建都带一个新的 `Idempotency-Key`，避免重试时重复扣费。
 
 输出分辨率由模型名决定，所以 `resolution` 不会被转发，避免与模型档位冲突；`seconds` 会按文档
 格式化为字符串，`generate_audio` 和 `seed` 原样保留。上游声明的 `video_url` 会经过现有的

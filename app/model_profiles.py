@@ -177,9 +177,15 @@ def apply_pinned_resolution(
     if pinned is None:
         return payload
     metadata = payload.get('metadata') if isinstance(payload.get('metadata'), dict) else {}
+    parameters = metadata.get('parameters') if isinstance(metadata.get('parameters'), dict) else {}
     requested = [
         value.strip()
-        for value in (payload.get('resolution'), metadata.get('resolution'), payload.get('quality'))
+        for value in (
+            payload.get('resolution'),
+            metadata.get('resolution'),
+            parameters.get('resolution'),
+            payload.get('quality'),
+        )
         if isinstance(value, str) and _RESOLUTION_VALUE.match(value.strip())
     ]
     for value in requested:

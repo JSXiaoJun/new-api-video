@@ -64,7 +64,7 @@ def extract_task_fields(payload: dict[str, Any], task_id: str) -> dict[str, Any]
     status = normalize_status(payload.get("status"))
     error = payload.get("error")
     if status == "failed" and not error:
-        error = payload.get("message")
+        error = payload.get("fail_reason") or payload.get("message")
     return {
         "status": status,
         "video_url": content_path(task_id) if status == "completed" else None,

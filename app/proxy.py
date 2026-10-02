@@ -305,9 +305,14 @@ async def create_video(
     if not upstream.get("forward_resolution", True):
         routed_payload.pop("resolution", None)
         if isinstance(routed_payload.get("metadata"), dict):
-            routed_payload["metadata"] = {
+            metadata = {
                 key: value for key, value in routed_payload["metadata"].items() if key != "resolution"
             }
+            if isinstance(metadata.get("parameters"), dict):
+                metadata["parameters"] = {
+                    key: value for key, value in metadata["parameters"].items() if key != "resolution"
+                }
+            routed_payload["metadata"] = metadata
     if protocol == ark_video.PROTOCOL:
         upstream_payload = ark_video.transform_create_payload(routed_payload)
     elif protocol == funai.PROTOCOL:
@@ -374,7 +379,9 @@ async def create_video(
     # one for every generic ``videos`` request and safely retry the POST once.
     # The same key lets the provider return the original task instead of
     # creating a duplicate generation.
-    if protocol in {"videos", "seedance"}:
+    # Fuyao asks for a fresh key per generation so a resubmitted body is not
+    # billed twice.
+    if protocol in {"videos", "seedance", fuyao.PROTOCOL}:
         explicit_key = str(payload.get("idempotency_key", "")).strip()
         headers["Idempotency-Key"] = incoming_idempotency_key or explicit_key or str(
             uuid.uuid5(uuid.NAMESPACE_URL, relay_request_id)

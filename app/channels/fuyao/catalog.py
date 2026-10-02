@@ -127,6 +127,8 @@ PROFILE_DEFINITIONS: dict[str, dict[str, Any]] = {
     "fuyao-wan3": {
         "label": "扶摇 · Wan 3.0",
         "request_format": PROFILE,
+        # ``adaptive`` leaves the ratio to the model. ``seconds=-1`` (automatic
+        # duration) is accepted by the payload builder but is not a route value.
         "capabilities": _capabilities(
             WAN3,
             ["adaptive", "16:9", "4:3", "1:1", "3:4", "9:16"],
