@@ -424,7 +424,7 @@ async def audit_task_content(
     task = database.get_task_by_relay_request_id(relay_request_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
-    return await proxy.stream_content(task["task_id"], request)
+    return await proxy.stream_content(task["task_id"], request, filename_stem=relay_request_id)
 
 
 @app.post("/admin/api/upstreams/models")
@@ -661,7 +661,7 @@ async def public_video_content(public_task_id: str, request: Request):
         if reservation != "reserved":
             raise HTTPException(status_code=404, detail="Public video not found")
     try:
-        response = await proxy.stream_content(task["task_id"], request)
+        response = await proxy.stream_content(task["task_id"], request, filename_stem=public_task_id)
         response.headers["Cache-Control"] = "private, no-store"
         return response
     except Exception:

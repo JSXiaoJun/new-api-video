@@ -25,7 +25,7 @@ os.environ.setdefault("PUBLIC_BASE_URL", "https://video-admin.yyapi.cloud")
 TEST_DATA_DIR = tempfile.TemporaryDirectory()
 os.environ["DATA_DIR"] = TEST_DATA_DIR.name
 
-from app import database, image_database
+from app import database, image_database, proxy
 from app.channels import o10_grok, pro666
 from app.config import settings
 from app.main import app, normalize_discovered_models
@@ -1312,8 +1312,10 @@ class CoreTests(unittest.TestCase):
         database.update_task(task_id, "completed", "https://cdn.example/public.mp4", None)
         self.assertTrue(database.set_public_task_id(relay_request_id, public_task_id))
 
-        async def mock_stream(selected_task_id, request):
+        async def mock_stream(selected_task_id, request, filename_stem=None):
             self.assertEqual(selected_task_id, task_id)
+            # The public link names the file after the public id only.
+            self.assertEqual(filename_stem, public_task_id)
             return Response(content=b"video", media_type="video/mp4")
 
         original_limit = database.get_public_video_download_limit()
@@ -1480,6 +1482,66 @@ class CoreTests(unittest.TestCase):
             database.delete_upstream(upstream["id"])
 
         self.assertEqual(captured["headers"]["Authorization"], "Bearer pro666-key")
+
+    def test_video_stream_labels_generic_storage_type_as_mp4(self):
+        # The CDN behind sd2.0 labels finished videos ``binary/octet-stream``
+        # and sends no file name, so saved/forwarded files had no type.
+        def handler(_request):
+            return httpx.Response(
+                200,
+                headers={"content-type": "binary/octet-stream", "content-length": "5"},
+                content=b"video",
+            )
+
+        real_async_client = httpx.AsyncClient
+
+        def cdn_client(*_args, **kwargs):
+            kwargs["transport"] = httpx.MockTransport(handler)
+            return real_async_client(**kwargs)
+
+        request = httpx.Request("GET", "https://media.yyapi.cloud/public/videos/task_public/content")
+        with patch("app.proxy.httpx.AsyncClient", side_effect=cdn_client):
+            response = asyncio.run(proxy.stream_upstream_content(
+                "https://v16-dola.example/video/?mime_type=video_mp4",
+                request,
+                default_media_type="video/mp4",
+                filename_stem="task_public",
+            ))
+            asyncio.run(response.body_iterator.aclose())
+
+        self.assertEqual(response.media_type, "video/mp4")
+        self.assertEqual(response.headers["content-type"], "video/mp4")
+        self.assertEqual(response.headers["content-disposition"], 'inline; filename="task_public.mp4"')
+
+    def test_video_stream_keeps_specific_upstream_type_and_name(self):
+        def handler(_request):
+            return httpx.Response(
+                200,
+                headers={
+                    "content-type": "video/webm",
+                    "content-disposition": 'attachment; filename="clip.webm"',
+                },
+                content=b"video",
+            )
+
+        real_async_client = httpx.AsyncClient
+
+        def cdn_client(*_args, **kwargs):
+            kwargs["transport"] = httpx.MockTransport(handler)
+            return real_async_client(**kwargs)
+
+        request = httpx.Request("GET", "https://media.yyapi.cloud/public/videos/task_public/content")
+        with patch("app.proxy.httpx.AsyncClient", side_effect=cdn_client):
+            response = asyncio.run(proxy.stream_upstream_content(
+                "https://cdn.example/clip.webm",
+                request,
+                default_media_type="video/mp4",
+                filename_stem="task_public",
+            ))
+            asyncio.run(response.body_iterator.aclose())
+
+        self.assertEqual(response.media_type, "video/webm")
+        self.assertEqual(response.headers["content-disposition"], 'attachment; filename="clip.webm"')
 
     def test_initialize_migrates_legacy_tasks_without_data_loss(self):
         with tempfile.TemporaryDirectory() as data_dir:

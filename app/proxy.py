@@ -703,6 +703,7 @@ async def stream_upstream_content(
     error_message: str = "Upstream download failed",
     source_url_validator: Callable[[str], bool] | None = None,
     reject_json: bool = False,
+    filename_stem: str | None = None,
 ) -> StreamingResponse:
     request_headers = dict(headers or {})
     if request.headers.get("range"):
@@ -768,15 +769,36 @@ async def stream_upstream_content(
     ):
         if key in upstream_response.headers:
             response_headers[key] = upstream_response.headers[key]
+    media_type = upstream_response.headers.get("content-type", "")
+    # Object stores often label every file ``binary/octet-stream``. Players
+    # sniff the bytes and cope, but downloads and apps receiving a forwarded
+    # file go by the type and name alone, so a generic label gets the
+    # caller's known type instead.
+    if media_type.split(";", 1)[0].strip().lower() in _GENERIC_MEDIA_TYPES:
+        media_type = default_media_type
+    if filename_stem and "content-disposition" not in response_headers:
+        stem = re.sub(r"[^A-Za-z0-9._-]", "_", filename_stem)
+        extension = _MEDIA_EXTENSIONS.get(media_type.split(";", 1)[0].strip().lower(), "")
+        response_headers["content-disposition"] = f'inline; filename="{stem}{extension}"'
     return StreamingResponse(
         iterator(),
         status_code=upstream_response.status_code,
-        media_type=upstream_response.headers.get("content-type", default_media_type),
+        media_type=media_type,
         headers=response_headers,
     )
 
 
-async def stream_content(task_id: str, request: Request) -> StreamingResponse:
+_GENERIC_MEDIA_TYPES = {"", "application/octet-stream", "binary/octet-stream", "application/binary"}
+_MEDIA_EXTENSIONS = {
+    "video/mp4": ".mp4",
+    "video/webm": ".webm",
+    "video/quicktime": ".mov",
+}
+
+
+async def stream_content(
+    task_id: str, request: Request, filename_stem: str | None = None
+) -> StreamingResponse:
     task = database.get_task(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
@@ -832,6 +854,7 @@ async def stream_content(task_id: str, request: Request) -> StreamingResponse:
         default_media_type="video/mp4",
         error_message="Video upstream download failed",
         reject_json=True,
+        filename_stem=filename_stem or task_id,
     )
 
 
