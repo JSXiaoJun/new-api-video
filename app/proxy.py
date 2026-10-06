@@ -11,7 +11,7 @@ from urllib.parse import urljoin, urlsplit
 
 import httpx
 from fastapi import HTTPException, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from . import ark_video, database
 from .channels import autodl_comfyui, funai, fuyao, mai_token, o10_grok, pro666, rolldek, sub2api_video
@@ -749,14 +749,6 @@ async def stream_upstream_content(
         logger.warning("%s: upstream returned JSON instead of a video", error_message)
         raise HTTPException(status_code=502, detail=error_message)
 
-    async def iterator():
-        try:
-            async for chunk in upstream_response.aiter_bytes(1024 * 256):
-                yield chunk
-        finally:
-            await upstream_response.aclose()
-            await client.aclose()
-
     response_headers = {}
     for key in (
         "content-length",
@@ -769,6 +761,52 @@ async def stream_upstream_content(
     ):
         if key in upstream_response.headers:
             response_headers[key] = upstream_response.headers[key]
+
+    # Some providers advertise Accept-Ranges but answer every Range request
+    # with the full 200 body. Browsers reject that for <video>: an MP4 whose
+    # moov box sits at the end can only be opened with a 206 tail request.
+    status_code = upstream_response.status_code
+    skip, limit = 0, None
+    if status_code == 200 and "Range" in request_headers:
+        size = _identity_content_length(upstream_response.headers)
+        byte_range = parse_byte_range(request_headers["Range"], size) if size is not None else None
+        if byte_range is None or request.headers.get("if-range"):
+            response_headers.pop("accept-ranges", None)
+        elif byte_range == UNSATISFIABLE_RANGE:
+            await upstream_response.aclose()
+            await client.aclose()
+            return Response(
+                status_code=416,
+                headers={"Content-Range": f"bytes */{size}", "Accept-Ranges": "bytes"},
+            )
+        else:
+            skip, limit = byte_range[0], byte_range[1] - byte_range[0] + 1
+            status_code = 206
+            response_headers["accept-ranges"] = "bytes"
+            response_headers["content-length"] = str(limit)
+            response_headers["content-range"] = f"bytes {byte_range[0]}-{byte_range[1]}/{size}"
+
+    async def iterator():
+        to_skip, remaining = skip, limit
+        try:
+            async for chunk in upstream_response.aiter_bytes(1024 * 256):
+                if to_skip:
+                    if len(chunk) <= to_skip:
+                        to_skip -= len(chunk)
+                        continue
+                    chunk = chunk[to_skip:]
+                    to_skip = 0
+                if remaining is not None:
+                    chunk = chunk[:remaining]
+                    remaining -= len(chunk)
+                if chunk:
+                    yield chunk
+                if remaining == 0:
+                    break
+        finally:
+            await upstream_response.aclose()
+            await client.aclose()
+
     media_type = upstream_response.headers.get("content-type", "")
     # Object stores often label every file ``binary/octet-stream``. Players
     # sniff the bytes and cope, but downloads and apps receiving a forwarded
@@ -782,7 +820,7 @@ async def stream_upstream_content(
         response_headers["content-disposition"] = f'inline; filename="{stem}{extension}"'
     return StreamingResponse(
         iterator(),
-        status_code=upstream_response.status_code,
+        status_code=status_code,
         media_type=media_type,
         headers=response_headers,
     )
@@ -794,6 +832,49 @@ _MEDIA_EXTENSIONS = {
     "video/webm": ".webm",
     "video/quicktime": ".mov",
 }
+UNSATISFIABLE_RANGE = (-1, -1)
+
+
+def _identity_content_length(headers: httpx.Headers) -> int | None:
+    # httpx decodes compressed bodies, so Content-Length only describes the
+    # streamed bytes when no Content-Encoding was applied.
+    if headers.get("content-encoding", "identity").strip().lower() != "identity":
+        return None
+    try:
+        size = int(headers.get("content-length", ""))
+    except ValueError:
+        return None
+    return size if size >= 0 else None
+
+
+def parse_byte_range(header: str, size: int) -> tuple[int, int] | None:
+    """Resolve a single ``bytes=`` range to inclusive offsets within ``size``.
+
+    Returns ``None`` when the header cannot be served as one range (multiple
+    ranges, other units, malformed values) and ``UNSATISFIABLE_RANGE`` when a
+    well-formed range selects no bytes.
+    """
+    unit, _, spec = header.strip().partition("=")
+    if unit.strip().lower() != "bytes" or "," in spec:
+        return None
+    first, separator, last = spec.strip().partition("-")
+    first, last = first.strip(), last.strip()
+    if not separator or not all(part.isascii() and part.isdigit() for part in (first, last) if part):
+        return None
+    if not first:
+        if not last:
+            return None
+        suffix = int(last)
+        if suffix == 0 or size == 0:
+            return UNSATISFIABLE_RANGE
+        return max(size - suffix, 0), size - 1
+    start = int(first)
+    if last and int(last) < start:
+        return None
+    if start >= size:
+        return UNSATISFIABLE_RANGE
+    end = min(int(last), size - 1) if last else size - 1
+    return start, end
 
 
 async def stream_content(

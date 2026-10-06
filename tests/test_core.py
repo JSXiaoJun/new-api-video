@@ -13,7 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import httpx
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException, Request
 
 os.environ.setdefault("ADMIN_USERNAME", "admin")
 os.environ.setdefault("ADMIN_PASSWORD", "test-password")
@@ -42,7 +42,15 @@ from app.model_profiles import (
     suggest_protocol,
     transform_create_payload,
 )
-from app.proxy import create_video, fetch_task, normalize_status, normalize_task_payload, stream_content, upstream_error
+from app.proxy import (
+    create_video,
+    fetch_task,
+    normalize_status,
+    normalize_task_payload,
+    stream_content,
+    stream_upstream_content,
+    upstream_error,
+)
 from app.schemas import RouteInput
 from app.security import SESSION_COOKIE, create_session, csrf_token, read_session, secret_box
 from fastapi.responses import Response
@@ -3857,6 +3865,108 @@ class CoreTests(unittest.TestCase):
         ).json()
         self.assertEqual(empty["pagination"], {"page": 1, "page_size": 10, "pages": 1, "total": 0})
         self.assertEqual(empty["tasks"], [])
+
+
+class UpstreamRangeTests(unittest.TestCase):
+    """The browser <video> element needs 206 for Range requests even when the
+    provider ignores Range and returns the whole file."""
+
+    BODY = b"0123456789"
+
+    def fetch(self, upstream_status, upstream_headers, request_headers):
+        captured = {}
+
+        def handler(request):
+            captured["range"] = request.headers.get("range")
+            body = self.BODY if upstream_status == 200 else self.BODY[:4]
+            return httpx.Response(upstream_status, headers=upstream_headers, content=body)
+
+        real_client = httpx.AsyncClient
+
+        def client_factory(**kwargs):
+            return real_client(transport=httpx.MockTransport(handler), **kwargs)
+
+        test_app = FastAPI()
+
+        @test_app.get("/content")
+        async def content(request: Request):
+            return await stream_upstream_content("https://cdn.example/video.mp4", request)
+
+        with patch("app.proxy.httpx.AsyncClient", new=client_factory):
+            response = TestClient(test_app).get("/content", headers=request_headers)
+        return response, captured
+
+    def test_ignored_range_is_served_as_partial_content(self):
+        cases = [
+            ("bytes=4-", b"456789", "bytes 4-9/10"),
+            ("bytes=-3", b"789", "bytes 7-9/10"),
+            ("bytes=8-20", b"89", "bytes 8-9/10"),
+            ("bytes=0-0", b"0", "bytes 0-0/10"),
+        ]
+        for range_header, body, content_range in cases:
+            with self.subTest(range_header=range_header):
+                response, captured = self.fetch(
+                    200,
+                    {"content-type": "video/mp4", "accept-ranges": "bytes"},
+                    {"Range": range_header},
+                )
+                self.assertEqual(captured["range"], range_header)
+                self.assertEqual(response.status_code, 206)
+                self.assertEqual(response.content, body)
+                self.assertEqual(response.headers["content-range"], content_range)
+                self.assertEqual(response.headers["content-length"], str(len(body)))
+                self.assertEqual(response.headers["accept-ranges"], "bytes")
+
+    def test_tail_range_spanning_many_chunks_returns_exact_bytes(self):
+        large_body = bytes(range(256)) * 4096
+        start = len(large_body) - 300_000
+        original_body = self.BODY
+        self.BODY = large_body
+        try:
+            response, _ = self.fetch(200, {"content-type": "video/mp4"}, {"Range": f"bytes={start}-"})
+        finally:
+            self.BODY = original_body
+        self.assertEqual(response.status_code, 206)
+        self.assertEqual(response.content, large_body[start:])
+        self.assertEqual(response.headers["content-range"], f"bytes {start}-{len(large_body) - 1}/{len(large_body)}")
+
+    def test_range_beyond_size_is_unsatisfiable(self):
+        response, _ = self.fetch(200, {"content-type": "video/mp4"}, {"Range": "bytes=10-"})
+        self.assertEqual(response.status_code, 416)
+        self.assertEqual(response.headers["content-range"], "bytes */10")
+
+    def test_unservable_range_returns_full_body_without_accept_ranges(self):
+        cases = [
+            {"Range": "bytes=0-1,4-5"},
+            {"Range": "bytes=5-2"},
+            {"Range": "items=0-1"},
+            {"Range": "bytes=4-", "If-Range": '"etag"'},
+        ]
+        for request_headers in cases:
+            with self.subTest(request_headers=request_headers):
+                response, _ = self.fetch(
+                    200, {"content-type": "video/mp4", "accept-ranges": "bytes"}, request_headers
+                )
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.content, self.BODY)
+                self.assertNotIn("accept-ranges", response.headers)
+
+    def test_upstream_partial_content_passes_through(self):
+        response, _ = self.fetch(
+            206,
+            {"content-type": "video/mp4", "content-range": "bytes 0-3/10", "accept-ranges": "bytes"},
+            {"Range": "bytes=0-3"},
+        )
+        self.assertEqual(response.status_code, 206)
+        self.assertEqual(response.content, b"0123")
+        self.assertEqual(response.headers["content-range"], "bytes 0-3/10")
+
+    def test_request_without_range_is_unchanged(self):
+        response, captured = self.fetch(200, {"content-type": "video/mp4", "accept-ranges": "bytes"}, {})
+        self.assertIsNone(captured["range"])
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, self.BODY)
+        self.assertEqual(response.headers["accept-ranges"], "bytes")
 
 
 if __name__ == "__main__":
