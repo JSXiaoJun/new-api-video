@@ -27,14 +27,49 @@ KNOWN_MODELS = (
     "veo-3.1-lite",
 )
 
-COMPATIBLE_MODELS = {
-    "sora",
-    "sora2",
+ALIASES = {
+    "sora": "sora-2",
+    "sora2": "sora-2",
+    "sora-pro": "sora-2-pro",
+    "sora2-pro": "sora-2-pro",
+    "veo-3.1-generate-preview": "veo-3.1",
+    "veo-3.1-generate-001": "veo-3.1",
+    "veo-3.1-fast-generate-preview": "veo-3.1-fast",
+    "veo-3.1-fast-generate-001": "veo-3.1-fast",
+    "veo-3.1-lite-generate": "veo-3.1-lite",
+    "veo:3.1-lite-generate": "veo-3.1-lite",
+    "veo@3.1-lite-generate": "veo-3.1-lite",
+    "gemini-omni@omni-flash": "gemini-omni-flash",
+    "gemini-omni:omni-flash": "gemini-omni-flash",
+    "kling-video-o3-pro-reference-video-to-video": "kling-o3-pro-v2v-reference",
+    "kling:kling-o3-pro-v2v-reference": "kling-o3-pro-v2v-reference",
+    "kling@kling-o3-pro-v2v-reference": "kling-o3-pro-v2v-reference",
+    "kling-video-o3-standard-reference-video-to-video": "kling-o3-standard-v2v-reference",
+    "kling:kling-o3-standard-v2v-reference": "kling-o3-standard-v2v-reference",
+    "kling@kling-o3-standard-v2v-reference": "kling-o3-standard-v2v-reference",
+    "kling-video-o3-v2v-create": "kling-v3-omni-v2v-create",
+    "kling:kling-v3-omni-v2v-create": "kling-v3-omni-v2v-create",
+    "kling@kling-v3-omni-v2v-create": "kling-v3-omni-v2v-create",
+}
+
+# ``veo-3.1-fl`` / ``veo-3.1-fast-fl`` 不是别名：``-fl`` 后缀本身就是首尾帧
+# 模式的开关，归一化会丢掉画像里的图片数量差异。
+COMPATIBLE_MODELS = set(ALIASES) | {
     "veo-3.1-fl",
     "veo-3.1-fast-fl",
-    "gemini-omni@omni-flash",
-    "gemini-omni:omni-flash",
 }
+
+# 结果音轨开关（``audio``）的模型差异：MiniMax H3 固定生成原生音频，只能
+# 省略或传 ``true``；Gemini Omni 与 Runway 都不接受这个字段。
+AUDIO_LOCKED_TRUE = frozenset({"minimax-h3"})
+AUDIO_UNSUPPORTED = frozenset({"gemini-omni", "gemini-omni-flash", "runway-gen4-turbo", "runway-gen4.5"})
+
+
+def canonical_model(model: str) -> str:
+    """把文档里的兼容名称折叠成规范名，原样名返回自身。"""
+    normalized = model.strip().lower()
+    return ALIASES.get(normalized, normalized)
+
 
 PROFILE_DEFINITIONS: dict[str, dict[str, Any]] = {
     "funai-minimax-h3": {
@@ -148,7 +183,7 @@ def is_video_model(model: str) -> bool:
 
 
 def suggest_route(model: str) -> dict[str, Any] | None:
-    normalized = model.strip().lower()
+    normalized = canonical_model(model)
     if not is_video_model(normalized):
         return None
     if normalized == "minimax-h3":
@@ -214,7 +249,9 @@ def transform_create_payload(
     profile: str | None = None,
 ) -> dict[str, Any]:
     model = str(payload.get("model") or "").strip()
-    normalized_model = model.lower()
+    # 兼容名称（``sora-pro``、``kling:kling-o3-pro-v2v-reference``…）指向同一族
+    # 模型，字段映射必须按规范名判断，否则会落到错误的参考字段上。
+    normalized_model = canonical_model(model)
     metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
     canonical_fields = {
         "model",
@@ -252,8 +289,7 @@ def transform_create_payload(
         result["aspect_ratio"] = aspect_ratio
     if resolution:
         result["resolution"] = resolution
-    if "audio" not in result and "generate_audio" in payload:
-        result["audio"] = payload["generate_audio"]
+    _apply_audio_switch(result, normalized_model, payload)
 
     images, singular_reference = _reference_images(payload)
 
@@ -313,6 +349,37 @@ def _string_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return [item.strip() for item in value if isinstance(item, str) and item.strip()]
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() not in {"", "false", "0", "no"}
+    return bool(value)
+
+
+def _apply_audio_switch(result: dict[str, Any], model: str, payload: dict[str, Any]) -> None:
+    """把工作台的 ``generate_audio`` 映射成 FunAI 的结果音轨开关 ``audio``。
+
+    文档对三个模型族另有约束：MiniMax H3 固定生成原生音频（只能省略或传
+    ``true``），Gemini Omni 与 Runway 不接受该字段。这两种情况下原样下发都会被
+    上游 400 拒掉，所以按模型收敛：锁定的模型只在请求为真时补 ``true``，不支持的
+    模型直接不带这个字段。
+    """
+    if model in AUDIO_UNSUPPORTED:
+        result.pop("audio", None)
+        return
+    supplied = result["audio"] if "audio" in result else payload.get("generate_audio")
+    if supplied is None:
+        return
+    if model in AUDIO_LOCKED_TRUE:
+        if _truthy(supplied):
+            result["audio"] = True
+        else:
+            result.pop("audio", None)
+        return
+    result["audio"] = supplied
 
 
 def _reference_images(payload: dict[str, Any]) -> tuple[list[str], bool]:

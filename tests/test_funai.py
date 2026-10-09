@@ -225,6 +225,84 @@ class FunAIChannelTests(unittest.TestCase):
         self.assertNotIn("reference_image", payload)
         self.assertNotIn("reference_images", payload)
 
+    def test_compatible_names_resolve_to_their_canonical_model(self):
+        cases = {
+            "sora": "funai-sora",
+            "sora2": "funai-sora",
+            "sora-pro": "funai-sora",
+            "sora2-pro": "funai-sora",
+            "veo-3.1-generate-001": "funai-veo",
+            "veo-3.1-fast-generate-preview": "funai-veo",
+            "veo:3.1-lite-generate": "funai-veo",
+            "gemini-omni@omni-flash": "funai-gemini-omni",
+            "kling-video-o3-v2v-create": "funai-kling",
+            "kling:kling-o3-standard-v2v-reference": "funai-kling",
+        }
+        for alias, profile in cases.items():
+            with self.subTest(alias=alias):
+                self.assertTrue(funai.is_video_model(alias))
+                self.assertEqual(funai.suggest_route(alias)["profile"], profile)
+
+        # ``-fl`` 是首尾帧模式的模型名，不是别名：它按 2 张图而不是 3 张图建议。
+        self.assertEqual(funai.suggest_route("veo-3.1-fl")["image_count"], 2)
+        self.assertEqual(funai.suggest_route("veo-3.1")["image_count"], 3)
+
+    def test_compatible_name_keeps_its_model_specific_reference_fields(self):
+        kling_reference = funai.transform_create_payload({
+            "model": "kling:kling-o3-pro-v2v-reference",
+            "prompt": "Keep both characters",
+            "image_urls": [
+                "https://cdn.example/character-one.png",
+                "https://cdn.example/character-two.png",
+            ],
+        })
+        self.assertEqual(kling_reference["element_references"], [
+            "https://cdn.example/character-one.png",
+            "https://cdn.example/character-two.png",
+        ])
+        self.assertNotIn("images", kling_reference)
+
+        kling_o3 = funai.transform_create_payload({
+            "model": "kling-video-o3-v2v-create",
+            "prompt": "Restyle the characters",
+            "image_urls": ["https://cdn.example/character.png"],
+        })
+        self.assertEqual(kling_o3["element_references"], ["https://cdn.example/character.png"])
+        self.assertNotIn("images", kling_o3)
+
+    def test_audio_switch_follows_each_model_contract(self):
+        # MiniMax H3 固定生成原生音频：true 照发，false 直接省略。
+        h3_true = funai.transform_create_payload({
+            "model": "minimax-h3",
+            "prompt": "Night market",
+            "generate_audio": True,
+        })
+        self.assertIs(h3_true["audio"], True)
+        h3_false = funai.transform_create_payload({
+            "model": "minimax-h3",
+            "prompt": "Night market",
+            "generate_audio": False,
+        })
+        self.assertNotIn("audio", h3_false)
+
+        # Gemini Omni 与 Runway 不接受结果音轨开关。
+        for model in ("gemini-omni", "gemini-omni-flash", "runway-gen4-turbo", "runway-gen4.5"):
+            with self.subTest(model=model):
+                payload = funai.transform_create_payload({
+                    "model": model,
+                    "prompt": "Product shot",
+                    "generate_audio": True,
+                })
+                self.assertNotIn("audio", payload)
+
+        # 其余支持音轨的模型保持工作台的布尔值。
+        veo = funai.transform_create_payload({
+            "model": "veo-3.1",
+            "prompt": "Ocean waves",
+            "generate_audio": True,
+        })
+        self.assertIs(veo["audio"], True)
+
     def test_create_and_poll_use_funai_adapter_only(self):
         captured: dict[str, object] = {}
         task_id = "video_funai_1"

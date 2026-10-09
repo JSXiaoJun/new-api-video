@@ -230,6 +230,15 @@ enabled public models and their configured capabilities.
 MiniMax、Kling、Runway、Sora、Gemini Omni 和 Veo 的要求分别映射参考图片、参考视频与参考音频字段。
 轮询会读取 FunAI 完成响应中的 `url` 或 `content_url`，视频下载仍经过现有的内容代理与鉴权隔离。
 
+文档里的兼容模型名（`sora-pro`、`veo-3.1-generate-001`、`veo:3.1-lite-generate`、
+`kling:kling-o3-pro-v2v-reference` 等）会先归一化到规范模型名再决定画像与参考字段，因此它们在
+`同步上游模型` 里不会被漏掉，也不会落错模型族。例外是 `veo-3.1-fl` 与 `veo-3.1-fast-fl`：
+`-fl` 后缀本身就是首尾帧模式的开关，保留为独立名称。
+
+结果音轨开关按模型收敛：MiniMax H3 固定生成原生音频（只发 `true`，`false` 直接省略），
+Gemini Omni 与 Runway 不接受该字段（不下发）。参考音频（`audio_reference`）与结果音轨是两回事，
+前者仍按 MiniMax H3 的规则单独处理。
+
 ### AutoDL.Art ComfyUI Channel
 
 在管理后台新建视频上游，Base URL 填写 `https://autodl.art`，API Key 填写 AutoDL 的 ComfyUI 分组令牌，
