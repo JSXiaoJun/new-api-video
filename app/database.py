@@ -11,6 +11,7 @@ from .config import DEFAULT_PUBLIC_LINK_BASE_URL, PUBLIC_LINK_BASE_URLS, setting
 from .model_profiles import (
     MAX_DURATION_SECONDS,
     capabilities_for,
+    iter_media_references,
     resolve_media_counts,
     route_media_counts,
     suggest_profile,
@@ -72,17 +73,18 @@ def _ensure_protocol_constraint(conn: sqlite3.Connection) -> None:
                 audio_count INTEGER,
                 enabled INTEGER NOT NULL DEFAULT 1,
                 forward_resolution INTEGER NOT NULL DEFAULT 1,
+                measure_reference_video INTEGER NOT NULL DEFAULT 0,
                 UNIQUE(upstream_id, model)
             );
             INSERT INTO model_routes(
                 id, upstream_id, model, upstream_model, protocol, profile, duration_override,
                 durations_json, resolutions_json, supports_image, supports_video, supports_audio, image_count,
-                video_count, audio_count, enabled, forward_resolution
+                video_count, audio_count, enabled, forward_resolution, measure_reference_video
             )
             SELECT
                 id, upstream_id, model, upstream_model, protocol, profile, duration_override,
                 durations_json, resolutions_json, supports_image, supports_video, supports_audio, image_count,
-                video_count, audio_count, enabled, forward_resolution
+                video_count, audio_count, enabled, forward_resolution, measure_reference_video
             FROM model_routes_before_protocol_expand;
             DROP TABLE model_routes_before_protocol_expand;
             CREATE INDEX idx_model_routes_model ON model_routes(model);
@@ -235,6 +237,8 @@ def initialize() -> None:
         task_columns = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()}
         if "relay_request_id" not in task_columns:
             conn.execute("ALTER TABLE tasks ADD COLUMN relay_request_id TEXT")
+        if "reference_videos_encrypted" not in task_columns:
+            conn.execute("ALTER TABLE tasks ADD COLUMN reference_videos_encrypted TEXT")
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_relay_request_id ON tasks(relay_request_id)")
 
         audit_columns = {row["name"] for row in conn.execute("PRAGMA table_info(audit_requests)").fetchall()}
@@ -300,6 +304,8 @@ def initialize() -> None:
             conn.execute("ALTER TABLE model_routes ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1")
         if "forward_resolution" not in route_columns:
             conn.execute("ALTER TABLE model_routes ADD COLUMN forward_resolution INTEGER NOT NULL DEFAULT 1")
+        if "measure_reference_video" not in route_columns:
+            conn.execute("ALTER TABLE model_routes ADD COLUMN measure_reference_video INTEGER NOT NULL DEFAULT 0")
         # One upstream model may back several public names, e.g. the per-
         # resolution routes the console's split button creates
         # (``wan3.0-video-480p`` and ``wan3.0-video-720p`` both call
@@ -363,7 +369,7 @@ def _route_rows(conn: sqlite3.Connection, upstream_id: int) -> list[dict[str, An
         """
         SELECT model, upstream_model, protocol, profile, duration_override, durations_json,
                resolutions_json, image_count, video_count, audio_count,
-               enabled, forward_resolution
+               enabled, forward_resolution, measure_reference_video
         FROM model_routes WHERE upstream_id = ? ORDER BY model
         """,
         (upstream_id,),
@@ -382,6 +388,7 @@ def _route_rows(conn: sqlite3.Connection, upstream_id: int) -> list[dict[str, An
         item["supports_audio"] = item["audio_count"] > 0
         item["enabled"] = bool(item["enabled"])
         item["forward_resolution"] = bool(item["forward_resolution"])
+        item["measure_reference_video"] = bool(item["measure_reference_video"])
         item["mapped_upstream_model"] = "" if item["model"] == item["upstream_model"] else item["upstream_model"]
         result.append(item)
     return result
@@ -559,8 +566,9 @@ def save_upstream(payload: dict[str, Any], upstream_id: int | None = None) -> di
             INSERT INTO model_routes(
                 upstream_id, model, upstream_model, protocol, profile, duration_override, durations_json,
                 resolutions_json, image_count, video_count, audio_count,
-                supports_image, supports_video, supports_audio, enabled, forward_resolution
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                supports_image, supports_video, supports_audio, enabled, forward_resolution,
+                measure_reference_video
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
@@ -580,6 +588,7 @@ def save_upstream(payload: dict[str, Any], upstream_id: int | None = None) -> di
                     int(counts["audio_count"] > 0),
                     int(route.get("enabled", True)),
                     int(route.get("forward_resolution", True)),
+                    int(route.get("measure_reference_video", False)),
                 )
                 for route, durations, counts in prepared_routes
             ],
@@ -622,7 +631,7 @@ def select_upstream(model: str) -> dict[str, Any] | None:
             """
             SELECT u.*, r.protocol, r.profile, r.duration_override, r.upstream_model,
                    r.enabled, r.forward_resolution, r.image_count, r.video_count, r.audio_count,
-                   r.resolutions_json
+                   r.resolutions_json, r.measure_reference_video
             FROM upstreams u
             JOIN model_routes r ON r.upstream_id = u.id
             WHERE u.enabled = 1 AND u.deleted_at IS NULL AND r.enabled = 1 AND r.model = ?
@@ -637,6 +646,7 @@ def select_upstream(model: str) -> dict[str, Any] | None:
         item = dict(row)
         item["api_key"] = secret_box.decrypt(item.pop("api_key_encrypted"))
         item["resolutions"] = _decode_resolutions(item.pop("resolutions_json"))
+        item["measure_reference_video"] = bool(item["measure_reference_video"])
         return item
 
 
@@ -810,7 +820,8 @@ def bind_upstream_task(relay_request_id: str, upstream_task_id: str) -> None:
     with connection() as conn:
         row = conn.execute(
             """
-            SELECT upstream_id, upstream_task_id, model, protocol, status, create_state
+            SELECT upstream_id, upstream_task_id, model, protocol, status, create_state,
+                   request_payload_encrypted
             FROM audit_requests WHERE relay_request_id = ?
             """,
             (relay_request_id,),
@@ -826,7 +837,24 @@ def bind_upstream_task(relay_request_id: str, upstream_task_id: str) -> None:
         owner = conn.execute("SELECT relay_request_id FROM tasks WHERE task_id = ?", (upstream_task_id,)).fetchone()
         if owner is not None and owner["relay_request_id"] != relay_request_id:
             raise ValueError("upstream_task_in_use")
-    create_task(upstream_task_id, row["upstream_id"], relay_request_id, row["model"], row["protocol"], "queued")
+        route = conn.execute(
+            "SELECT measure_reference_video FROM model_routes WHERE upstream_id = ? AND model = ?",
+            (row["upstream_id"], row["model"]),
+        ).fetchone()
+    reference_videos = None
+    if route is not None and route["measure_reference_video"]:
+        # The bound task is billed by reference-video length like any other
+        # task on this route, so its videos are measured from the request.
+        urls = list(dict.fromkeys(
+            value.strip()
+            for value in iter_media_references(_decrypt_json(row["request_payload_encrypted"]) or {}, "video")
+            if value.strip()
+        ))
+        reference_videos = {"urls": urls} if urls else {"urls": [], "seconds": []}
+    create_task(
+        upstream_task_id, row["upstream_id"], relay_request_id, row["model"], row["protocol"], "queued",
+        reference_videos,
+    )
 
 
 def create_task(
@@ -836,23 +864,27 @@ def create_task(
     model: str,
     protocol: str,
     status: str,
+    reference_videos: dict[str, Any] | None = None,
 ) -> None:
     now = int(time.time())
+    reference_videos_encrypted = None if reference_videos is None else _encrypt_json(reference_videos)
     with connection() as conn:
         conn.execute(
             """
             INSERT INTO tasks(
-                task_id, upstream_id, relay_request_id, model, protocol, status, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                task_id, upstream_id, relay_request_id, model, protocol, status,
+                reference_videos_encrypted, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(task_id) DO UPDATE SET
                 upstream_id = excluded.upstream_id,
                 relay_request_id = excluded.relay_request_id,
                 model = excluded.model,
                 protocol = excluded.protocol,
                 status = excluded.status,
+                reference_videos_encrypted = excluded.reference_videos_encrypted,
                 updated_at = excluded.updated_at
             """,
-            (task_id, upstream_id, relay_request_id, model, protocol, status, now, now),
+            (task_id, upstream_id, relay_request_id, model, protocol, status, reference_videos_encrypted, now, now),
         )
         conn.execute(
             """
@@ -879,7 +911,25 @@ def get_task(task_id: str) -> dict[str, Any] | None:
             return None
         item = dict(row)
         item["api_key"] = secret_box.decrypt(item.pop("api_key_encrypted"))
+        encrypted_videos = item.pop("reference_videos_encrypted", None)
+        item["reference_videos"] = _decrypt_json(encrypted_videos) if encrypted_videos else None
         return item
+
+
+def set_reference_video_seconds(task_id: str, seconds: list[float | None]) -> None:
+    """Record measured reference-video lengths; None marks an unmeasurable video."""
+    with connection() as conn:
+        row = conn.execute(
+            "SELECT reference_videos_encrypted FROM tasks WHERE task_id = ?", (task_id,)
+        ).fetchone()
+        if row is None or not row["reference_videos_encrypted"]:
+            return
+        videos = _decrypt_json(row["reference_videos_encrypted"])
+        videos["seconds"] = seconds
+        conn.execute(
+            "UPDATE tasks SET reference_videos_encrypted = ? WHERE task_id = ?",
+            (_encrypt_json(videos), task_id),
+        )
 
 
 def list_pending_task_ids(stale_before: int, limit: int = 20) -> list[str]:

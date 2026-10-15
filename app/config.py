@@ -82,6 +82,8 @@ class Settings:
     image_storage_min_free_bytes: int
     image_max_upstream_response_bytes: int
     image_cleanup_interval_seconds: int
+    reference_video_index_max_bytes: int
+    reference_video_timeout_seconds: float
 
 
 def load_settings() -> Settings:
@@ -159,6 +161,11 @@ def load_settings() -> Settings:
         # refused rather than held in RAM.
         image_max_upstream_response_bytes=env_int("IMAGE_MAX_RESPONSE_MB", 128, 1, 2048) * 1024**2,
         image_cleanup_interval_seconds=env_int("IMAGE_CLEANUP_INTERVAL_SECONDS", 600, 30, 86400),
+        # Routes that bill reference videos by length read each file's index
+        # (moov box) with Range requests; a larger index is not read and the
+        # video keeps the reserved charge.
+        reference_video_index_max_bytes=env_int("REFERENCE_VIDEO_INDEX_MAX_MB", 8, 1, 64) * 1024**2,
+        reference_video_timeout_seconds=float(os.getenv("REFERENCE_VIDEO_TIMEOUT_SECONDS", "20")),
     )
 
 

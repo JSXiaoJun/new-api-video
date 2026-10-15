@@ -35,6 +35,9 @@ class RouteInput(BaseModel):
     supports_video: bool = True
     supports_audio: bool = True
     forward_resolution: bool = True
+    # Read each reference video's index after submission to measure its real
+    # length, so New API can bill it (usage.reference_video_seconds on poll).
+    measure_reference_video: bool = False
     duration_override: int | None = Field(default=None, ge=1, le=60)
 
     @field_validator("model", "upstream_model")

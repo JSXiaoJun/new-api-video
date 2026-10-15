@@ -625,6 +625,9 @@ function addRouteRow(route = {}, before = null) {
       <label class="route-param route-param-flag"><span>传分辨率</span>
         <input data-route-forward="resolution" type="checkbox"${route.forward_resolution !== false ? ' checked' : ''} aria-label="传分辨率">
       </label>
+      <label class="route-param route-param-flag" title="提交上游后在后台读取每个参考视频的索引，量出真实时长，供 New API 按参考视频秒数计费；量不出的视频按上限计费"><span>计量参考视频</span>
+        <input data-route-measure="reference_video" type="checkbox"${route.measure_reference_video ? ' checked' : ''} aria-label="计量参考视频时长">
+      </label>
     </div>`
   routeRows.insertBefore(row, before)
   updateRouteSummary(row)
@@ -664,6 +667,7 @@ function readRouteRow(row, preserveBlankModel = false) {
     video_count: readMediaCount(row, 'video_count'),
     audio_count: readMediaCount(row, 'audio_count'),
     forward_resolution: row.querySelector('[data-route-forward="resolution"]').checked,
+    measure_reference_video: row.querySelector('[data-route-measure="reference_video"]').checked,
     enabled: row.querySelector('[data-route-enabled]').checked,
   }
 }

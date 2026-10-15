@@ -13,7 +13,7 @@ import httpx
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-from . import ark_video, database
+from . import ark_video, database, media_probe
 from .channels import autodl_comfyui, funai, fuyao, mai_token, o10_grok, pro666, rolldek, sub2api_video
 from .config import settings
 from .model_profiles import (
@@ -25,6 +25,7 @@ from .model_profiles import (
     ResolutionMismatchError,
     apply_pinned_resolution,
     enforce_reference_media_limits,
+    iter_media_references,
     route_media_counts,
     transform_create_payload,
 )
@@ -115,6 +116,56 @@ def should_preserve_task_on_poll_error(response: httpx.Response) -> bool:
     return isinstance(payload, dict) and payload.get("retryable") is True
 
 
+# Background measurements in flight, by task id. Keeping a reference stops the
+# event loop from collecting a running task.
+_reference_video_measurements: dict[str, asyncio.Task] = {}
+
+
+def reference_video_usage(task: dict[str, Any]) -> dict[str, Any] | None:
+    """Usage New API bills reference videos from, once every video is measured.
+
+    ``reference_video_seconds`` holds one entry per video; ``null`` marks a
+    video whose length could not be read, which New API bills at its reserved
+    cap. Absent on routes that do not measure.
+    """
+    videos = task.get("reference_videos")
+    if not isinstance(videos, dict):
+        return None
+    seconds = videos.get("seconds")
+    if not isinstance(seconds, list):
+        return None
+    measured = [value for value in seconds if isinstance(value, (int, float))]
+    return {
+        "input_video_seconds": round(sum(measured), 3),
+        "reference_video_seconds": seconds,
+    }
+
+
+def reference_videos_pending(task: dict[str, Any]) -> bool:
+    videos = task.get("reference_videos")
+    return isinstance(videos, dict) and not isinstance(videos.get("seconds"), list)
+
+
+async def _measure_task_reference_videos(task_id: str, urls: list[str]) -> None:
+    try:
+        seconds = await media_probe.measure_reference_videos(urls)
+    except Exception:
+        logger.exception("Reference video measurement failed for %s", task_id)
+        seconds = [None] * len(urls)
+    database.set_reference_video_seconds(task_id, seconds)
+
+
+def start_reference_video_measurement(task_id: str, urls: list[str]) -> asyncio.Task | None:
+    """Measure in the background; a running measurement is not started twice."""
+    running = _reference_video_measurements.get(task_id)
+    if running is not None and not running.done():
+        return running
+    job = asyncio.get_running_loop().create_task(_measure_task_reference_videos(task_id, urls))
+    _reference_video_measurements[task_id] = job
+    job.add_done_callback(lambda _job: _reference_video_measurements.pop(task_id, None))
+    return job
+
+
 def pending_poll_response(task: dict[str, Any], response: httpx.Response) -> JSONResponse:
     """Return a successful, still-pending response for transport failures.
 
@@ -134,6 +185,9 @@ def pending_poll_response(task: dict[str, Any], response: httpx.Response) -> JSO
         "updated_at": int(time.time()),
         "error": None,
     }
+    usage = reference_video_usage(task)
+    if usage:
+        payload["usage"] = usage
     retry_after = response.headers.get("Retry-After")
     if not retry_after:
         try:
@@ -570,6 +624,13 @@ async def create_video(
     )
     if not prompt and not allows_promptless:
         raise HTTPException(status_code=400, detail="prompt is required")
+    reference_video_urls: list[str] | None = None
+    if upstream.get("measure_reference_video"):
+        # Measured after the upstream accepts the task, so submission never
+        # waits on the user's file host. New API reserves the cap meanwhile.
+        reference_video_urls = list(dict.fromkeys(
+            value.strip() for value in iter_media_references(payload, "video") if value.strip()
+        ))
     relay_request_id = database.start_audit_request(upstream["id"], model, protocol, payload)
     if not upstream.get("forward_resolution", True):
         routed_payload.pop("resolution", None)
@@ -665,6 +726,7 @@ async def create_video(
         "create_url": url,
         "idempotency_key": headers.get("Idempotency-Key"),
         "upstream_request_payload": upstream_payload,
+        "reference_video_urls": reference_video_urls,
     }
     job = _start_create_job(submission, upstream["api_key"])
     try:
@@ -732,7 +794,17 @@ def _finish_create(
             "message": upstream_error_message(upstream_payload, "Video generation failed"),
             "code": "video_generation_failed",
         }
-    database.create_task(task_id, submission["upstream_id"], relay_request_id, model, protocol, status)
+    reference_video_urls = submission.get("reference_video_urls")
+    reference_videos = None
+    if reference_video_urls is not None:
+        reference_videos = {"urls": reference_video_urls}
+        if not reference_video_urls:
+            reference_videos["seconds"] = []
+    database.create_task(
+        task_id, submission["upstream_id"], relay_request_id, model, protocol, status, reference_videos
+    )
+    if reference_video_urls:
+        start_reference_video_measurement(task_id, reference_video_urls)
     database.record_audit_event(relay_request_id, "create", response.status_code, response.text, result)
     return JSONResponse(result, headers=response_headers)
 
@@ -908,6 +980,17 @@ async def fetch_task(task_id: str, timeout_seconds: float | None = None) -> JSON
             database.record_audit_event(relay_request_id, "poll", response.status_code, response.text, sanitized)
         raise HTTPException(status_code=502, detail=sanitized["detail"], headers=response_headers) from exc
     result, video_url = normalize_task_payload(task, payload)
+    if result["status"] == "completed" and reference_videos_pending(task):
+        # New API settles once, on the first completed poll; report the task
+        # as still processing until the reference videos are measured. A
+        # restart lost the background job, so it is started again here.
+        start_reference_video_measurement(task_id, task["reference_videos"].get("urls") or [])
+        result["status"] = "processing"
+        result["progress"] = 99
+        video_url = None
+    usage = reference_video_usage(task)
+    if usage:
+        result["usage"] = usage
     error = result["error"]["message"] if result.get("error") else None
     database.update_task(task_id, result["status"], video_url, error)
     if result["status"] == "completed" and task.get("public_task_id"):
