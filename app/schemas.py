@@ -136,6 +136,15 @@ class PublicTaskInput(BaseModel):
         return normalized
 
 
+class UpstreamTaskInput(BaseModel):
+    upstream_task_id: str = Field(min_length=1, max_length=191, pattern=r"^\s*[A-Za-z0-9][A-Za-z0-9_.:-]*\s*$")
+
+    @field_validator("upstream_task_id")
+    @classmethod
+    def normalize_upstream_task_id(cls, value: str) -> str:
+        return value.strip()
+
+
 class PublicLinkSettingsInput(BaseModel):
     public_base_url: Literal[
         "https://media.yyapi.cloud",

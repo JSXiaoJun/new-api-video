@@ -68,6 +68,9 @@ class Settings:
     cookie_secure: bool
     session_ttl_seconds: int
     upstream_timeout_seconds: float
+    video_create_timeout_seconds: float
+    video_create_wait_seconds: float
+    video_create_unconfirmed_ttl_seconds: int
     image_upstream_timeout_seconds: float
     new_api_gateway_timeout_seconds: float
     data_dir: Path
@@ -135,6 +138,9 @@ def load_settings() -> Settings:
         cookie_secure=env_bool("COOKIE_SECURE"),
         session_ttl_seconds=session_ttl_days * 24 * 60 * 60,
         upstream_timeout_seconds=float(os.getenv("UPSTREAM_TIMEOUT_SECONDS", "60")),
+        video_create_timeout_seconds=float(env_int("VIDEO_CREATE_TIMEOUT_SECONDS", 1200, 30, 3600)),
+        video_create_wait_seconds=float(env_int("VIDEO_CREATE_WAIT_SECONDS", 50, 1, 3600)),
+        video_create_unconfirmed_ttl_seconds=env_int("VIDEO_CREATE_UNCONFIRMED_TTL_HOURS", 24, 1, 24 * 30) * 3600,
         image_upstream_timeout_seconds=float(os.getenv("IMAGE_UPSTREAM_TIMEOUT_SECONDS", "360")),
         new_api_gateway_timeout_seconds=float(os.getenv("NEW_API_GATEWAY_TIMEOUT_SECONDS", "930")),
         data_dir=data_dir,

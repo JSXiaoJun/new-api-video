@@ -184,6 +184,11 @@ def initialize() -> None:
                 error TEXT,
                 public_download_count INTEGER NOT NULL DEFAULT 0,
                 public_download_expires_at INTEGER,
+                create_url TEXT,
+                idempotency_key TEXT,
+                create_state TEXT,
+                create_started_at INTEGER,
+                create_attempts INTEGER NOT NULL DEFAULT 0,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL
             );
@@ -241,6 +246,15 @@ def initialize() -> None:
             conn.execute("ALTER TABLE audit_requests ADD COLUMN public_download_expires_at INTEGER")
         if "upstream_request_payload_encrypted" not in audit_columns:
             conn.execute("ALTER TABLE audit_requests ADD COLUMN upstream_request_payload_encrypted TEXT")
+        for column, definition in (
+            ("create_url", "TEXT"),
+            ("idempotency_key", "TEXT"),
+            ("create_state", "TEXT"),
+            ("create_started_at", "INTEGER"),
+            ("create_attempts", "INTEGER NOT NULL DEFAULT 0"),
+        ):
+            if column not in audit_columns:
+                conn.execute(f"ALTER TABLE audit_requests ADD COLUMN {column} {definition}")
         conn.execute(
             """
             UPDATE audit_requests
@@ -679,9 +693,140 @@ def record_audit_event(
 def fail_audit_request(relay_request_id: str, error: str) -> None:
     with connection() as conn:
         conn.execute(
-            "UPDATE audit_requests SET status = 'failed', error = ?, updated_at = ? WHERE relay_request_id = ?",
+            """
+            UPDATE audit_requests
+            SET status = 'failed', error = ?, create_state = NULL, updated_at = ?,
+                public_task_id = CASE WHEN upstream_task_id IS NULL THEN NULL ELSE public_task_id END
+            WHERE relay_request_id = ?
+            """,
             (error, int(time.time()), relay_request_id),
         )
+
+
+# A create the upstream has not confirmed is tracked in ``create_state``:
+# ``submitting`` while a POST is in flight, ``unknown`` once it ended without a
+# definite answer. The caller then holds the relay request ID as a provisional
+# task ID. ``create_started_at`` is refreshed on every attempt and doubles as a
+# lease, so a POST orphaned by a restart is noticed and recovered.
+def begin_create_submission(relay_request_id: str, create_url: str, idempotency_key: str | None) -> None:
+    now = int(time.time())
+    with connection() as conn:
+        conn.execute(
+            """
+            UPDATE audit_requests
+            SET create_url = ?, idempotency_key = ?, create_state = 'submitting',
+                create_started_at = ?, create_attempts = 0, updated_at = ?
+            WHERE relay_request_id = ?
+            """,
+            (create_url, idempotency_key, now, now, relay_request_id),
+        )
+
+
+def record_create_attempt(relay_request_id: str) -> None:
+    with connection() as conn:
+        conn.execute(
+            """
+            UPDATE audit_requests SET create_started_at = ?, create_attempts = create_attempts + 1
+            WHERE relay_request_id = ? AND create_state = 'submitting'
+            """,
+            (int(time.time()), relay_request_id),
+        )
+
+
+def mark_create_unknown(relay_request_id: str, error: str) -> None:
+    now = int(time.time())
+    with connection() as conn:
+        conn.execute(
+            """
+            UPDATE audit_requests
+            SET create_state = 'unknown', error = ?, create_started_at = ?, updated_at = ?
+            WHERE relay_request_id = ? AND create_state IS NOT NULL
+            """,
+            (error, now, now, relay_request_id),
+        )
+
+
+def fail_unconfirmed_create(relay_request_id: str, error: str) -> bool:
+    """Fail an unconfirmed create that is not being submitted right now."""
+    now = int(time.time())
+    with connection() as conn:
+        cursor = conn.execute(
+            """
+            UPDATE audit_requests
+            SET status = 'failed', error = ?, create_state = NULL, public_task_id = NULL, updated_at = ?
+            WHERE relay_request_id = ? AND create_state = 'unknown' AND upstream_task_id IS NULL
+            """,
+            (error, now, relay_request_id),
+        )
+    return cursor.rowcount > 0
+
+
+def get_create_submission(relay_request_id: str) -> dict[str, Any] | None:
+    with connection() as conn:
+        row = conn.execute(
+            """
+            SELECT relay_request_id, upstream_id, upstream_task_id, model, protocol, status, error,
+                   create_url, idempotency_key, create_state, create_started_at, create_attempts,
+                   upstream_request_payload_encrypted, created_at
+            FROM audit_requests WHERE relay_request_id = ?
+            """,
+            (relay_request_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    item = dict(row)
+    item["upstream_request_payload"] = _decrypt_json(item.pop("upstream_request_payload_encrypted"))
+    return item
+
+
+def list_pending_create_ids(lease_expired_before: int, created_before: int, limit: int = 20) -> list[str]:
+    """Unconfirmed creates that need action: an orphaned POST or an expired wait.
+
+    Rows that only wait for an operator are left out, so a backlog of them
+    can never crowd out the ones the sweep has to move.
+    """
+    with connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT relay_request_id FROM audit_requests
+            WHERE status = 'queued' AND upstream_task_id IS NULL
+              AND (
+                (create_state = 'submitting' AND create_started_at <= ?)
+                OR (create_state IS NOT NULL AND created_at <= ?)
+              )
+            ORDER BY created_at ASC LIMIT ?
+            """,
+            (lease_expired_before, created_before, max(1, min(limit, 50))),
+        ).fetchall()
+    return [str(row["relay_request_id"]) for row in rows]
+
+
+def bind_upstream_task(relay_request_id: str, upstream_task_id: str) -> None:
+    """Attach the upstream task an operator found for an unconfirmed create.
+
+    Raises ``KeyError`` for an unknown request and ``ValueError`` when the
+    request already has a task or the task belongs to another request.
+    """
+    with connection() as conn:
+        row = conn.execute(
+            """
+            SELECT upstream_id, upstream_task_id, model, protocol, status, create_state
+            FROM audit_requests WHERE relay_request_id = ?
+            """,
+            (relay_request_id,),
+        ).fetchone()
+        if row is None:
+            raise KeyError("task_not_found")
+        if row["upstream_task_id"]:
+            raise ValueError("task_already_bound")
+        # A failed request has already been reported (and refunded) as
+        # failed; reviving it would bill a job the caller no longer tracks.
+        if row["create_state"] != "unknown" or row["status"] != "queued":
+            raise ValueError("create_not_unconfirmed")
+        owner = conn.execute("SELECT relay_request_id FROM tasks WHERE task_id = ?", (upstream_task_id,)).fetchone()
+        if owner is not None and owner["relay_request_id"] != relay_request_id:
+            raise ValueError("upstream_task_in_use")
+    create_task(upstream_task_id, row["upstream_id"], relay_request_id, row["model"], row["protocol"], "queued")
 
 
 def create_task(
@@ -712,7 +857,7 @@ def create_task(
         conn.execute(
             """
             UPDATE audit_requests
-            SET upstream_task_id = ?, status = ?, updated_at = ?
+            SET upstream_task_id = ?, status = ?, create_state = NULL, error = NULL, updated_at = ?
             WHERE relay_request_id = ?
             """,
             (task_id, status, now, relay_request_id),
@@ -855,7 +1000,7 @@ def list_audit_requests(
         rows = conn.execute(
             f"""
             SELECT a.relay_request_id, a.upstream_task_id, a.public_task_id, a.model, a.protocol,
-                   a.status, a.error, a.created_at, a.updated_at, u.name AS upstream_name
+                   a.status, a.error, a.create_state, a.created_at, a.updated_at, u.name AS upstream_name
             FROM audit_requests a JOIN upstreams u ON u.id = a.upstream_id
             {where}
             ORDER BY a.created_at DESC, a.relay_request_id DESC LIMIT ? OFFSET ?

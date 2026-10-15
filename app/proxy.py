@@ -256,6 +256,275 @@ def upstream_error(
     return JSONResponse(payload, status_code=response.status_code, headers=headers or None)
 
 
+IDEMPOTENT_CREATE_PROTOCOLS = frozenset({"videos", "seedance", fuyao.PROTOCOL})
+# A gateway in front of the upstream lost the origin's reply after the request
+# reached it, so the job may exist.
+UNCONFIRMED_CREATE_STATUS_CODES = frozenset({502, 504, 520, 524})
+# Raised before a single byte of the request reached the upstream, so nothing
+# can have been created or billed and retrying is free.
+CREATE_NOT_SENT_ERRORS = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout, httpx.UnsupportedProtocol)
+CREATE_CONNECT_ATTEMPTS = 3
+CREATE_CONNECT_RETRY_DELAY_SECONDS = 2.0
+CREATE_CONNECT_TIMEOUT_SECONDS = 10.0
+CREATE_LEASE_GRACE_SECONDS = 60
+CREATE_CONNECT_FAILED_DETAIL = "Video upstream connection failed"
+CREATE_UNCONFIRMED_DETAIL = "上游未确认是否已创建任务，待人工核对，请勿重复提交"
+CREATE_EXPIRED_DETAIL = "上游始终未确认是否创建了任务，已按失败处理"
+CREATE_OPERATOR_FAILED_DETAIL = "管理员已确认上游未创建任务"
+
+# In-process create submissions, keyed by relay request ID. Holding the task
+# here keeps it alive after the caller stopped waiting for it.
+_create_jobs: dict[str, asyncio.Task] = {}
+
+
+def _create_headers(protocol: str, api_key: str) -> dict[str, str]:
+    if protocol == autodl_comfyui.PROTOCOL:
+        return autodl_comfyui.auth_headers(api_key)
+    return {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+
+
+def _create_timeout() -> httpx.Timeout:
+    # A slow create is normal (some upstreams validate every reference file
+    # before answering), so only connecting is held to a short limit.
+    return httpx.Timeout(
+        settings.video_create_timeout_seconds,
+        connect=min(CREATE_CONNECT_TIMEOUT_SECONDS, settings.video_create_timeout_seconds),
+    )
+
+
+def _extract_create_task_id(protocol: str, payload: dict[str, Any]) -> str:
+    if protocol == funai.PROTOCOL:
+        return funai.extract_create_task_id(payload)
+    if protocol == autodl_comfyui.PROTOCOL:
+        return autodl_comfyui.extract_create_task_id(payload)
+    if protocol == o10_grok.PROTOCOL:
+        return o10_grok.extract_create_task_id(payload)
+    if protocol == sub2api_video.PROTOCOL:
+        return sub2api_video.extract_create_task_id(payload)
+    if protocol == mai_token.PROTOCOL:
+        return mai_token.extract_create_task_id(payload)
+    if protocol == rolldek.PROTOCOL:
+        return rolldek.extract_create_task_id(payload)
+    if protocol == fuyao.PROTOCOL:
+        return fuyao.extract_create_task_id(payload)
+    return str(payload.get("task_id") or payload.get("id") or "").strip()
+
+
+def provisional_create_response(relay_request_id: str, model: str, created_at: int) -> JSONResponse:
+    """Answer a create the upstream has not confirmed yet.
+
+    The relay request ID stands in for the upstream task ID; polling it
+    resolves to the real task once it is known. Reporting a failure here
+    instead would refund the caller for a job the upstream may have accepted
+    and billed.
+    """
+    return JSONResponse(
+        {
+            "id": relay_request_id,
+            "object": "video",
+            "model": model,
+            "status": "queued",
+            "progress": 0,
+            "created_at": created_at,
+        },
+        headers={REQUEST_ID_HEADER: relay_request_id},
+    )
+
+
+def _start_create_job(submission: dict[str, Any], api_key: str) -> asyncio.Task:
+    relay_request_id = submission["relay_request_id"]
+    job = asyncio.create_task(_submit_create(submission, api_key))
+    _create_jobs[relay_request_id] = job
+    job.add_done_callback(lambda done: _forget_create_job(relay_request_id, done))
+    return job
+
+
+def _forget_create_job(relay_request_id: str, job: asyncio.Task) -> None:
+    if _create_jobs.get(relay_request_id) is job:
+        del _create_jobs[relay_request_id]
+    if job.cancelled():
+        return
+    error = job.exception()
+    if error is not None and not isinstance(error, HTTPException):
+        logger.error("Video create submission %s crashed", relay_request_id, exc_info=error)
+
+
+async def _post_create(
+    url: str, headers: dict[str, str], payload: Any
+) -> tuple[str, httpx.Response | None, httpx.RequestError | None]:
+    """POST once and say what is known: ``not_sent``, ``unconfirmed`` or ``answered``."""
+    try:
+        async with httpx.AsyncClient(timeout=_create_timeout()) as client:
+            response = await client.post(url, headers=headers, json=payload)
+    except CREATE_NOT_SENT_ERRORS as exc:
+        return "not_sent", None, exc
+    except httpx.RequestError as exc:
+        # Timeouts and dropped connections after the body went out: the
+        # upstream may well have created (and billed) the job.
+        return "unconfirmed", None, exc
+    if response.status_code in UNCONFIRMED_CREATE_STATUS_CODES:
+        return "unconfirmed", response, None
+    if 200 <= response.status_code < 300:
+        try:
+            body = response.json()
+        except ValueError:
+            body = None
+        if not isinstance(body, dict):
+            # Accepted, but the task ID cannot be read from the answer.
+            return "unconfirmed", response, None
+    return "answered", response, None
+
+
+def _error_text(error: httpx.RequestError) -> str:
+    message = str(error).strip()
+    return f"{type(error).__name__}: {message}" if message else type(error).__name__
+
+
+def _record_unconfirmed_attempt(
+    relay_request_id: str, response: httpx.Response | None, error: httpx.RequestError | None
+) -> None:
+    if error is not None:
+        logger.warning("Video upstream create %s unconfirmed: %r", relay_request_id, error)
+        upstream_body = _error_text(error)
+    else:
+        logger.warning(
+            "Video upstream create %s unconfirmed: HTTP %s", relay_request_id, response.status_code
+        )
+        upstream_body = response.text
+    database.record_audit_event(
+        relay_request_id,
+        "create",
+        response.status_code if response is not None else None,
+        upstream_body,
+        {"detail": CREATE_UNCONFIRMED_DETAIL, "unconfirmed": True},
+    )
+
+
+async def _submit_create(submission: dict[str, Any], api_key: str) -> JSONResponse:
+    """Send a create, retrying only while nothing has reached the upstream.
+
+    Once the request body may have arrived, it is never sent again: resending
+    can start a second billed job. An unknown outcome is parked as
+    ``unknown`` for an operator to bind the upstream task or fail it.
+    """
+    relay_request_id = submission["relay_request_id"]
+    response_headers = {REQUEST_ID_HEADER: relay_request_id}
+    headers = _create_headers(submission["protocol"], api_key)
+    if submission["idempotency_key"]:
+        headers["Idempotency-Key"] = submission["idempotency_key"]
+    for attempt in range(1, CREATE_CONNECT_ATTEMPTS + 1):
+        database.record_create_attempt(relay_request_id)
+        outcome, response, error = await _post_create(
+            submission["create_url"], headers, submission["upstream_request_payload"]
+        )
+        if outcome == "answered":
+            return _finish_create(submission, response, response_headers)
+        if outcome == "unconfirmed":
+            _record_unconfirmed_attempt(relay_request_id, response, error)
+            database.mark_create_unknown(relay_request_id, CREATE_UNCONFIRMED_DETAIL)
+            return provisional_create_response(relay_request_id, submission["model"], int(time.time()))
+        if attempt < CREATE_CONNECT_ATTEMPTS:
+            await asyncio.sleep(CREATE_CONNECT_RETRY_DELAY_SECONDS)
+    logger.warning("Video upstream create request failed: %s", error)
+    sanitized = {"detail": CREATE_CONNECT_FAILED_DETAIL}
+    database.record_audit_event(relay_request_id, "create", None, _error_text(error), sanitized)
+    database.fail_audit_request(relay_request_id, sanitized["detail"])
+    raise HTTPException(status_code=502, detail=sanitized["detail"], headers=response_headers) from error
+
+
+def recover_create(relay_request_id: str) -> None:
+    """Park or expire an unconfirmed create. Never sends anything upstream."""
+    if relay_request_id in _create_jobs:
+        return
+    submission = database.get_create_submission(relay_request_id)
+    if (
+        submission is None
+        or not submission["create_state"]
+        or submission["upstream_task_id"]
+        or submission["status"] != "queued"
+    ):
+        return
+    now = int(time.time())
+    state = submission["create_state"]
+    started_at = int(submission["create_started_at"] or 0)
+    if state == "submitting":
+        if now - started_at < settings.video_create_timeout_seconds + CREATE_LEASE_GRACE_SECONDS:
+            # The POST may still be in flight in this or another worker.
+            return
+        # Its worker vanished (restart) after the request may have gone out.
+        database.mark_create_unknown(relay_request_id, CREATE_UNCONFIRMED_DETAIL)
+        database.record_audit_event(
+            relay_request_id, "create", None, "submission interrupted",
+            {"detail": CREATE_UNCONFIRMED_DETAIL, "unconfirmed": True},
+        )
+    if now - int(submission["created_at"]) >= settings.video_create_unconfirmed_ttl_seconds:
+        if database.fail_unconfirmed_create(relay_request_id, CREATE_EXPIRED_DETAIL):
+            database.record_audit_event(relay_request_id, "create", None, None, {"detail": CREATE_EXPIRED_DETAIL})
+
+
+def recover_pending_creates(limit: int = 20) -> None:
+    now = int(time.time())
+    lease_expired_before = now - int(settings.video_create_timeout_seconds) - CREATE_LEASE_GRACE_SECONDS
+    created_before = now - settings.video_create_unconfirmed_ttl_seconds
+    for relay_request_id in database.list_pending_create_ids(lease_expired_before, created_before, limit):
+        try:
+            recover_create(relay_request_id)
+        except Exception:
+            logger.exception("Video create recovery failed for %s", relay_request_id)
+
+
+def bind_upstream_task(relay_request_id: str, upstream_task_id: str) -> None:
+    if relay_request_id in _create_jobs:
+        raise ValueError("create_in_flight")
+    database.bind_upstream_task(relay_request_id, upstream_task_id)
+
+
+def fail_unconfirmed_create(relay_request_id: str) -> None:
+    if relay_request_id in _create_jobs:
+        raise ValueError("create_in_flight")
+    if not database.fail_unconfirmed_create(relay_request_id, CREATE_OPERATOR_FAILED_DETAIL):
+        raise ValueError("create_not_unconfirmed")
+    database.record_audit_event(
+        relay_request_id, "create", None, None, {"detail": CREATE_OPERATOR_FAILED_DETAIL}
+    )
+
+
+def resolve_task_id(task_id: str) -> str:
+    """Map a provisional (relay request) ID onto the upstream task it became."""
+    if task_id.startswith("vrq_") and database.get_task(task_id) is None:
+        submission = database.get_create_submission(task_id)
+        if submission is not None and submission["upstream_task_id"]:
+            return str(submission["upstream_task_id"])
+    return task_id
+
+
+def _pending_create_status(submission: dict[str, Any]) -> JSONResponse:
+    relay_request_id = submission["relay_request_id"]
+    result: dict[str, Any] = {
+        "object": "video",
+        "model": submission["model"],
+        "status": "queued",
+        "progress": 0,
+        "created_at": int(submission["created_at"]),
+        "updated_at": int(time.time()),
+        "error": None,
+    }
+    if submission["status"] == "failed":
+        result.update(
+            status="failed",
+            progress=100,
+            error={
+                "message": submission["error"] or "Video generation failed",
+                "code": "video_generation_failed",
+            },
+        )
+    return JSONResponse(result, headers={REQUEST_ID_HEADER: relay_request_id})
+
+
 async def create_video(
     payload: dict[str, Any],
     incoming_idempotency_key: str | None,
@@ -364,24 +633,11 @@ async def create_video(
         if protocol == fuyao.PROTOCOL
         else "/v1/video/generations" if protocol == "seedance" else "/v1/videos"
     )
-    headers = (
-        autodl_comfyui.auth_headers(upstream["api_key"])
-        if protocol == autodl_comfyui.PROTOCOL
-        else {
-            "Authorization": f"Bearer {upstream['api_key']}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        }
-    )
-    # A connection failure after POST leaves the create result ambiguous: the
-    # provider may have accepted the job even though its response was lost.
-    # Pro666/OpenAI-compatible video endpoints support idempotency keys, so use
-    # one for every generic ``videos`` request and safely retry the POST once.
-    # The same key lets the provider return the original task instead of
-    # creating a duplicate generation.
-    # Fuyao asks for a fresh key per generation so a resubmitted body is not
-    # billed twice.
-    if protocol in {"videos", "seedance", fuyao.PROTOCOL}:
+    headers = _create_headers(protocol, upstream["api_key"])
+    # One key per generation, so a retry by the caller with the same key can
+    # be matched to the original task by the upstream. Fuyao asks for a fresh
+    # key per generation.
+    if protocol in IDEMPOTENT_CREATE_PROTOCOLS:
         explicit_key = str(payload.get("idempotency_key", "")).strip()
         headers["Idempotency-Key"] = incoming_idempotency_key or explicit_key or str(
             uuid.uuid5(uuid.NAMESPACE_URL, relay_request_id)
@@ -392,56 +648,46 @@ async def create_video(
         if protocol == funai.PROTOCOL
         else upstream["base_url"] + endpoint
     )
-    response: httpx.Response | None = None
-    last_error: httpx.RequestError | None = None
-    max_attempts = 2 if protocol == "videos" else 1
-    for attempt in range(max_attempts):
+    if public_task_id:
         try:
-            async with httpx.AsyncClient(timeout=settings.upstream_timeout_seconds) as client:
-                response = await client.post(url, headers=headers, json=upstream_payload)
-            if response.status_code < 500 or attempt + 1 >= max_attempts:
-                break
-        except httpx.RequestError as exc:
-            last_error = exc
-            if attempt + 1 >= max_attempts:
-                break
-        await asyncio.sleep(1)
-    if response is None:
-        exc = last_error or httpx.RequestError("upstream create request failed")
-        logger.warning("Video upstream create request failed: %s", exc)
-        sanitized = {"detail": "Video upstream connection failed"}
-        database.record_audit_event(relay_request_id, "create", None, None, sanitized)
-        database.fail_audit_request(relay_request_id, sanitized["detail"])
-        raise HTTPException(status_code=502, detail=sanitized["detail"], headers=response_headers) from exc
+            database.set_public_task_id(relay_request_id, public_task_id)
+        except ValueError as exc:
+            database.fail_audit_request(relay_request_id, "Public task ID is already in use")
+            raise HTTPException(
+                status_code=409, detail="Public task ID is already in use", headers=response_headers
+            ) from exc
+    database.begin_create_submission(relay_request_id, url, headers.get("Idempotency-Key"))
+    submission = {
+        "relay_request_id": relay_request_id,
+        "upstream_id": upstream["id"],
+        "model": model,
+        "protocol": protocol,
+        "create_url": url,
+        "idempotency_key": headers.get("Idempotency-Key"),
+        "upstream_request_payload": upstream_payload,
+    }
+    job = _start_create_job(submission, upstream["api_key"])
+    try:
+        # The submission is a separate task, so a caller that disconnects or a
+        # slow upstream never cancels it; past the wait budget the caller gets
+        # a provisional task ID and the submission finishes in the background.
+        return await asyncio.wait_for(asyncio.shield(job), timeout=settings.video_create_wait_seconds)
+    except asyncio.TimeoutError:
+        return provisional_create_response(relay_request_id, model, int(time.time()))
+
+
+def _finish_create(
+    submission: dict[str, Any], response: httpx.Response, response_headers: dict[str, str]
+) -> JSONResponse:
+    """Store a definite create answer: an upstream error or the new task."""
+    relay_request_id = submission["relay_request_id"]
+    protocol = submission["protocol"]
+    model = submission["model"]
     if not 200 <= response.status_code < 300:
         return upstream_error(response, relay_request_id, "create", mark_failed=True)
 
-    try:
-        upstream_payload = response.json()
-        if not isinstance(upstream_payload, dict):
-            raise ValueError("upstream create payload is not a JSON object")
-    except ValueError as exc:
-        sanitized = {"detail": "Upstream returned invalid JSON"}
-        database.record_audit_event(relay_request_id, "create", response.status_code, response.text, sanitized)
-        database.fail_audit_request(relay_request_id, sanitized["detail"])
-        raise HTTPException(status_code=502, detail=sanitized["detail"], headers=response_headers) from exc
-    task_id = (
-        funai.extract_create_task_id(upstream_payload)
-        if protocol == funai.PROTOCOL
-        else autodl_comfyui.extract_create_task_id(upstream_payload)
-        if protocol == autodl_comfyui.PROTOCOL
-        else o10_grok.extract_create_task_id(upstream_payload)
-        if protocol == o10_grok.PROTOCOL
-        else sub2api_video.extract_create_task_id(upstream_payload)
-        if protocol == sub2api_video.PROTOCOL
-        else mai_token.extract_create_task_id(upstream_payload)
-        if protocol == mai_token.PROTOCOL
-        else rolldek.extract_create_task_id(upstream_payload)
-        if protocol == rolldek.PROTOCOL
-        else fuyao.extract_create_task_id(upstream_payload)
-        if protocol == fuyao.PROTOCOL
-        else str(upstream_payload.get("task_id") or upstream_payload.get("id") or "").strip()
-    )
+    upstream_payload = response.json()
+    task_id = _extract_create_task_id(protocol, upstream_payload)
     if not task_id:
         sanitized = {
             "detail": upstream_error_message(
@@ -486,12 +732,7 @@ async def create_video(
             "message": upstream_error_message(upstream_payload, "Video generation failed"),
             "code": "video_generation_failed",
         }
-    database.create_task(task_id, upstream["id"], relay_request_id, model, protocol, status)
-    if public_task_id:
-        try:
-            database.set_public_task_id(relay_request_id, public_task_id)
-        except ValueError as exc:
-            raise HTTPException(status_code=409, detail="Public task ID is already in use") from exc
+    database.create_task(task_id, submission["upstream_id"], relay_request_id, model, protocol, status)
     database.record_audit_event(relay_request_id, "create", response.status_code, response.text, result)
     return JSONResponse(result, headers=response_headers)
 
@@ -595,8 +836,13 @@ def normalize_task_payload(task: dict[str, Any], payload: dict[str, Any]) -> tup
 
 
 async def fetch_task(task_id: str, timeout_seconds: float | None = None) -> JSONResponse:
+    task_id = resolve_task_id(task_id)
     task = database.get_task(task_id)
     if task is None:
+        submission = database.get_create_submission(task_id) if task_id.startswith("vrq_") else None
+        if submission is not None and not submission["upstream_task_id"]:
+            recover_create(task_id)
+            return _pending_create_status(database.get_create_submission(task_id) or submission)
         raise HTTPException(status_code=404, detail="Task not found")
     database.touch_task(task_id)
     headers = (
@@ -672,6 +918,7 @@ async def fetch_task(task_id: str, timeout_seconds: float | None = None) -> JSON
 
 
 async def reconcile_pending_tasks(limit: int = 8, stale_seconds: int = 3) -> None:
+    recover_pending_creates()
     task_ids = database.list_pending_task_ids(int(time.time()) - max(0, stale_seconds), limit)
     if not task_ids:
         return
@@ -880,8 +1127,11 @@ def parse_byte_range(header: str, size: int) -> tuple[int, int] | None:
 async def stream_content(
     task_id: str, request: Request, filename_stem: str | None = None
 ) -> StreamingResponse:
+    task_id = resolve_task_id(task_id)
     task = database.get_task(task_id)
     if task is None:
+        if task_id.startswith("vrq_") and database.get_create_submission(task_id) is not None:
+            raise HTTPException(status_code=409, detail="Video is not completed")
         raise HTTPException(status_code=404, detail="Task not found")
 
     source_url = task.get("source_video_url")

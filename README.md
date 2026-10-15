@@ -340,6 +340,17 @@ creation and returns `/public/videos/{public_task_id}/content` on the selected p
 valid for 24 hours and defaults to 50 download starts per video; the limit can be changed from the admin page
 (1-10,000). Video bytes are served directly by the adapter and do not pass through New API.
 
+### 创建结果不确定时
+
+视频创建请求一旦发出，只有上游明确答复才会把任务判为失败。超时、连接中途断开、网关 502/504/520/524 这类情况，上游可能已经建好任务并扣费，适配器不会再回 502 让 New API 退款，而是：
+
+- 对调用方返回 `200`，`id` 为本次的 `vrq_...` 关联 ID，状态 `queued`；用这个 ID 轮询会在上游任务找到后自动接到真实任务上。
+- 所有渠道都不会自动重发：请求一旦可能到达上游，重发就可能多建一个计费任务。
+- 任务列表和详情里显示「待核对」：到上游后台查到任务 ID 后点「绑定上游任务」，或确认上游没有这个任务后再「标记失败」。
+- 超过 `VIDEO_CREATE_UNCONFIRMED_TTL_HOURS`（默认 24 小时）仍无法确认的，按失败处理。
+
+连接根本没建立（拒绝连接、DNS 失败、连接超时）时请求没有到达上游，会重试 3 次，仍失败才返回 502。单次创建请求最长等待 `VIDEO_CREATE_TIMEOUT_SECONDS`（默认 1200 秒，即 20 分钟）；调用方最多等 `VIDEO_CREATE_WAIT_SECONDS`（默认 50 秒），之后先拿到临时 ID，提交在后台继续。
+
 ## Task Audit
 
 Set the initial public New API address in `.env`:

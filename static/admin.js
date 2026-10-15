@@ -131,6 +131,15 @@ function statusLabel(status) {
   return labels[status] || status
 }
 
+// A create the upstream has not confirmed is still queued for the caller, but
+// the operator needs to see that it is waiting on verification.
+function taskStatusBadge(task) {
+  if (task.create_state && task.status === 'queued') {
+    return '<span class="task-status unconfirmed">待核对</span>'
+  }
+  return `<span class="task-status ${escapeHtml(task.status)}">${escapeHtml(statusLabel(task.status))}</span>`
+}
+
 function formatTime(timestamp) {
   if (!timestamp) return '—'
   return new Intl.DateTimeFormat('zh-CN', { dateStyle: 'short', timeStyle: 'medium' }).format(new Date(timestamp * 1000))
@@ -200,14 +209,14 @@ function render() {
       <td><code>${escapeHtml(task.relay_request_id)}</code></td>
       <td>${escapeHtml(task.model)}</td>
       <td>${escapeHtml(task.upstream_name)}</td>
-      <td><span class="task-status ${escapeHtml(task.status)}">${escapeHtml(statusLabel(task.status))}</span></td>
+      <td>${taskStatusBadge(task)}</td>
       <td>${formatTime(task.created_at)}</td>
       <td class="align-right"><button class="table-action" data-audit="${escapeHtml(task.relay_request_id)}" type="button">详情</button></td>
     </tr>`).join('')
   document.querySelector('#task-empty').hidden = dashboard.tasks.length > 0
   document.querySelector('#task-cards').innerHTML = dashboard.tasks.map((task) => `
     <article class="mobile-item task-item">
-      <div class="mobile-item-heading"><code>${escapeHtml(task.relay_request_id)}</code><span class="task-status ${escapeHtml(task.status)}">${escapeHtml(statusLabel(task.status))}</span></div>
+      <div class="mobile-item-heading"><code>${escapeHtml(task.relay_request_id)}</code>${taskStatusBadge(task)}</div>
       <div class="task-summary"><strong>${escapeHtml(task.model)}</strong><span>${escapeHtml(task.upstream_name)}</span></div>
       <div class="mobile-item-footer"><time>${formatTime(task.created_at)}</time><button class="table-action" data-audit="${escapeHtml(task.relay_request_id)}" type="button">详情</button></div>
     </article>`).join('')
@@ -300,7 +309,19 @@ function renderAuditDetail(task) {
   document.querySelector('#audit-model').textContent = task.model
   document.querySelector('#audit-upstream').textContent = task.upstream_name
   document.querySelector('#audit-created').textContent = formatTime(task.created_at)
-  document.querySelector('#audit-status').innerHTML = `<span class="task-status ${escapeHtml(task.status)}">${escapeHtml(statusLabel(task.status))}</span>`
+  document.querySelector('#audit-status').innerHTML = taskStatusBadge(task)
+
+  const unconfirmed = Boolean(task.create_state) && task.status === 'queued' && !task.upstream_task_id
+  document.querySelector('#create-check-section').hidden = !unconfirmed
+  if (unconfirmed) {
+    const submitting = task.create_state === 'submitting'
+    document.querySelector('#create-check-note').textContent = submitting
+      ? '创建请求正在提交，上游尚未答复。调用方已拿到临时任务 ID，结果确认后会自动接上。'
+      : '上游没有明确答复是否创建了任务，为避免重复扣费不会自动重发。请到上游后台查到任务 ID 后在这里绑定；确认上游没有这个任务时，再标记失败（调用方会据此退款）。'
+    document.querySelector('#upstream-task-id').value = ''
+    document.querySelector('#upstream-task-form button').disabled = submitting
+    document.querySelector('#fail-create-button').disabled = submitting
+  }
 
   const sourceUrl = task.source_video_url || ''
   document.querySelector('#audit-source-url').textContent = sourceUrl || '尚未返回'
@@ -1047,6 +1068,36 @@ document.querySelector('#public-task-form').addEventListener('submit', async (ev
     })
     renderAuditDetail(task)
     showToast('公开任务 ID 已保存')
+  } catch (error) {
+    showToast(error.message, 'error')
+  }
+})
+document.querySelector('#upstream-task-form').addEventListener('submit', async (event) => {
+  event.preventDefault()
+  if (!activeAudit) return
+  const upstreamTaskId = document.querySelector('#upstream-task-id').value.trim()
+  if (!upstreamTaskId) return
+  try {
+    const task = await api(`/admin/api/tasks/${encodeURIComponent(activeAudit.relay_request_id)}/upstream-task`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ upstream_task_id: upstreamTaskId }),
+    })
+    renderAuditDetail(task)
+    showToast('已绑定上游任务')
+  } catch (error) {
+    showToast(error.message, 'error')
+  }
+})
+document.querySelector('#fail-create-button').addEventListener('click', async () => {
+  if (!activeAudit) return
+  if (!window.confirm('确认上游没有创建这个任务？标记失败后调用方会按失败处理并退款。')) return
+  try {
+    const task = await api(`/admin/api/tasks/${encodeURIComponent(activeAudit.relay_request_id)}/fail-create`, {
+      method: 'POST',
+    })
+    renderAuditDetail(task)
+    showToast('已标记为失败')
   } catch (error) {
     showToast(error.message, 'error')
   }

@@ -191,6 +191,18 @@
             <div><span>创建时间</span><time id="audit-created"></time></div>
           </section>
 
+          <section id="create-check-section" class="audit-section create-check-section" hidden>
+            <div class="audit-section-heading"><h3>创建结果核对</h3></div>
+            <p id="create-check-note" class="create-check-note"></p>
+            <form id="upstream-task-form" class="public-task-form">
+              <input id="upstream-task-id" maxlength="191" placeholder="在上游后台找到的任务 ID" aria-label="上游任务 ID">
+              <button class="quiet-button compact" type="submit">绑定上游任务</button>
+            </form>
+            <div class="create-check-actions">
+              <button id="fail-create-button" class="quiet-button compact danger" type="button">确认上游未创建，标记失败</button>
+            </div>
+          </section>
+
           <section class="audit-section media-section">
             <div class="audit-section-heading"><h3>视频访问</h3><a id="audit-source-open" class="table-action" target="_blank" rel="noreferrer" hidden>打开源链接</a></div>
             <video id="audit-video" controls preload="metadata" playsinline></video>

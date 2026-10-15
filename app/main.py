@@ -28,6 +28,7 @@ from .schemas import (
     PublicVideoDownloadSettingsInput,
     PublicTaskInput,
     UpstreamInput,
+    UpstreamTaskInput,
 )
 from .security import (
     SESSION_COOKIE,
@@ -71,6 +72,17 @@ async def startup() -> None:
     database.initialize()
     image_database.initialize()
     asyncio.create_task(retention_cleanup_loop())
+    asyncio.create_task(create_recovery_loop())
+
+
+async def create_recovery_loop() -> None:
+    """Keep unconfirmed video creates moving even when nobody polls them."""
+    while True:
+        try:
+            proxy.recover_pending_creates()
+        except Exception as exc:
+            logger.warning("video create recovery failed: %s", exc)
+        await asyncio.sleep(15)
 
 
 async def retention_cleanup_loop() -> None:
@@ -413,6 +425,40 @@ def update_public_task(
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
     return task
+
+
+CREATE_ACTION_ERRORS = {
+    "create_in_flight": "创建请求仍在提交中，请稍后再试",
+    "task_already_bound": "该任务已经有上游任务 ID",
+    "upstream_task_in_use": "该上游任务 ID 已绑定到其他请求",
+    "create_not_unconfirmed": "只有待核对的任务可以标记为失败",
+}
+
+
+@app.put("/admin/api/tasks/{relay_request_id}/upstream-task")
+def bind_upstream_task(
+    relay_request_id: str,
+    payload: UpstreamTaskInput,
+    _: dict = Depends(admin_mutation),
+):
+    try:
+        proxy.bind_upstream_task(relay_request_id, payload.upstream_task_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Task not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=CREATE_ACTION_ERRORS.get(str(exc), str(exc))) from exc
+    return database.get_audit_request(relay_request_id)
+
+
+@app.post("/admin/api/tasks/{relay_request_id}/fail-create")
+def fail_unconfirmed_create(relay_request_id: str, _: dict = Depends(admin_mutation)):
+    if database.get_audit_request(relay_request_id) is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    try:
+        proxy.fail_unconfirmed_create(relay_request_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=CREATE_ACTION_ERRORS.get(str(exc), str(exc))) from exc
+    return database.get_audit_request(relay_request_id)
 
 
 @app.get("/admin/api/tasks/{relay_request_id}/content")

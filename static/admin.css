@@ -254,6 +254,10 @@ dialog::backdrop { background: rgba(17, 26, 21, .62); backdrop-filter: blur(2px)
 .url-line code { min-width: 0; overflow-wrap: anywhere; }
 .public-task-form { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; }
 .public-task-form input { height: 38px; }
+.create-check-note { margin: 0 0 12px; color: var(--muted); font-size: 13px; line-height: 1.6; }
+.create-check-actions { margin-top: 10px; }
+.quiet-button.danger { color: #9e2c22; }
+.task-status.unconfirmed { color: #8a3b00; background: #ffe4cc; }
 .response-heading select { width: min(420px, 55%); height: 36px; padding-block: 6px; font-size: 12px; }
 .audit-tabs { display: flex; gap: 0; border-bottom: 1px solid var(--line); }
 .audit-tab { min-height: 38px; padding: 0 14px; border: 0; border-bottom: 2px solid transparent; color: var(--muted); background: transparent; font-size: 12px; font-weight: 700; }
