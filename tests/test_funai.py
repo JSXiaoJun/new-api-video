@@ -605,9 +605,8 @@ class FunAIChannelTests(unittest.TestCase):
             asyncio.run(reconcile_pending_tasks(limit=2, stale_seconds=5))
 
         self.assertEqual({call.args[0] for call in fetch.await_args_list}, {"task_one", "task_two"})
-        self.assertTrue(all(call.kwargs["timeout_seconds"] <= 5 for call in fetch.await_args_list))
 
-    def test_poll_of_non_object_json_body_is_reported_as_an_upstream_error(self):
+    def test_poll_of_non_object_json_body_keeps_the_task_pending(self):
         task_id = "video_funai_non_object"
         task = {
             "task_id": task_id,
@@ -650,10 +649,10 @@ class FunAIChannelTests(unittest.TestCase):
                     patch("app.proxy.database.record_audit_event") as record_audit_event,
                     patch("app.proxy.httpx.AsyncClient", build_client()),
                 ):
-                    with self.assertRaises(HTTPException) as raised:
-                        asyncio.run(fetch_task(task_id))
+                    result = asyncio.run(fetch_task(task_id))
 
-                self.assertEqual(raised.exception.status_code, 502)
+                self.assertEqual(result.status_code, 200)
+                self.assertEqual(json.loads(result.body)["status"], "processing")
                 update_task.assert_not_called()
                 record_audit_event.assert_called_once()
 

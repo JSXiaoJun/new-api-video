@@ -76,12 +76,12 @@ async def startup() -> None:
 
 
 async def create_recovery_loop() -> None:
-    """Keep unconfirmed video creates moving even when nobody polls them."""
+    """Keep unconfirmed creates and pending tasks moving when nobody polls them."""
     while True:
         try:
-            proxy.recover_pending_creates()
+            proxy.schedule_reconcile()
         except Exception as exc:
-            logger.warning("video create recovery failed: %s", exc)
+            logger.warning("video task refresh failed: %s", exc)
         await asyncio.sleep(15)
 
 
@@ -301,7 +301,7 @@ def image_dashboard(request: Request, session: str | None = Cookie(default=None,
 
 @app.get("/admin/api/dashboard")
 async def dashboard_api(_: tuple[str, dict] = Depends(admin_session)):
-    await proxy.reconcile_pending_tasks()
+    proxy.schedule_reconcile()
     return {
         **database.dashboard_data(),
         "profiles": profile_options(),
@@ -397,7 +397,7 @@ async def audit_tasks(
     page_size: int = Query(default=database.DEFAULT_LOG_PAGE_SIZE, ge=1, le=database.MAX_LOG_PAGE_SIZE),
     _: tuple[str, dict] = Depends(admin_session),
 ):
-    await proxy.reconcile_pending_tasks()
+    proxy.schedule_reconcile()
     return database.audit_task_page(q.strip(), status, page, page_size)
 
 

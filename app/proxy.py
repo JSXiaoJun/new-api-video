@@ -166,7 +166,61 @@ def start_reference_video_measurement(task_id: str, urls: list[str]) -> asyncio.
     return job
 
 
-def pending_poll_response(task: dict[str, Any], response: httpx.Response) -> JSONResponse:
+# A status read is a GET and changes nothing upstream, so it can be retried
+# freely. Fuyao's task endpoint answers most reads within a few seconds but
+# leaves some hanging indefinitely; a short limit per attempt plus a retry
+# reaches a good answer sooner than one long wait.
+POLL_ATTEMPTS = 3
+POLL_ATTEMPT_TIMEOUT_SECONDS = 15.0
+POLL_RETRY_DELAY_SECONDS = 1.0
+POLL_UNREACHABLE_DETAIL = "上游查询无响应，任务保持原状态，稍后自动重试"
+CONTENT_CONNECT_TIMEOUT_SECONDS = 15.0
+CONTENT_FIRST_BYTE_TIMEOUT_SECONDS = 30.0
+
+
+async def _get_with_retries(
+    url: str, headers: dict[str, str], attempt_timeout: float, attempts: int
+) -> tuple[httpx.Response | None, httpx.RequestError | None]:
+    error: httpx.RequestError | None = None
+    for attempt in range(attempts):
+        try:
+            async with httpx.AsyncClient(timeout=attempt_timeout) as client:
+                return await client.get(url, headers=headers), None
+        except httpx.RequestError as exc:
+            error = exc
+        if attempt + 1 < attempts:
+            await asyncio.sleep(POLL_RETRY_DELAY_SECONDS)
+    return None, error
+
+
+def pending_task_response(task: dict[str, Any], response: httpx.Response | None = None) -> JSONResponse:
+    """Report a task as unchanged when its upstream status could not be read."""
+    if task.get("status") in {"completed", "failed"} and response is None:
+        # A settled task keeps its settled answer.
+        result: dict[str, Any] = {
+            "object": "video",
+            "model": task["model"],
+            "status": task["status"],
+            "progress": 100,
+            "created_at": int(task["created_at"]),
+            "updated_at": int(time.time()),
+            "error": (
+                {"message": task.get("error") or "Video generation failed", "code": "video_generation_failed"}
+                if task["status"] == "failed"
+                else None
+            ),
+        }
+        if task["status"] == "completed" and task.get("public_task_id"):
+            result["video_url"] = database.public_video_url(task["public_task_id"])
+        usage = reference_video_usage(task)
+        if usage:
+            result["usage"] = usage
+        relay_request_id = task.get("relay_request_id")
+        return JSONResponse(result, headers={REQUEST_ID_HEADER: relay_request_id} if relay_request_id else None)
+    return pending_poll_response(task, response)
+
+
+def pending_poll_response(task: dict[str, Any], response: httpx.Response | None) -> JSONResponse:
     """Return a successful, still-pending response for transport failures.
 
     Polling is part of one long-running generation request from New API's
@@ -188,8 +242,8 @@ def pending_poll_response(task: dict[str, Any], response: httpx.Response) -> JSO
     usage = reference_video_usage(task)
     if usage:
         payload["usage"] = usage
-    retry_after = response.headers.get("Retry-After")
-    if not retry_after:
+    retry_after = response.headers.get("Retry-After") if response is not None else None
+    if not retry_after and response is not None:
         try:
             upstream_payload = response.json()
         except ValueError:
@@ -943,25 +997,28 @@ async def fetch_task(task_id: str, timeout_seconds: float | None = None) -> JSON
         if task["protocol"] == fuyao.PROTOCOL
         else f"/v1/videos/{task_id}"
     )
-    try:
-        request_timeout = settings.upstream_timeout_seconds if timeout_seconds is None else timeout_seconds
-        async with httpx.AsyncClient(timeout=request_timeout) as client:
-            url = (
-                funai.api_url(task["base_url"], endpoint)
-                if task["protocol"] == funai.PROTOCOL
-                else f"{task['base_url']}{endpoint}"
-            )
-            response = await client.get(url, headers=headers)
-    except httpx.RequestError as exc:
-        logger.warning("Video upstream task request failed: %s", exc)
-        sanitized = {"detail": "Video upstream connection failed"}
+    url = (
+        funai.api_url(task["base_url"], endpoint)
+        if task["protocol"] == funai.PROTOCOL
+        else f"{task['base_url']}{endpoint}"
+    )
+    attempt_timeout = min(POLL_ATTEMPT_TIMEOUT_SECONDS, settings.upstream_timeout_seconds)
+    if timeout_seconds is not None:
+        attempt_timeout = min(attempt_timeout, timeout_seconds)
+    response, error = await _get_with_retries(url, headers, attempt_timeout, POLL_ATTEMPTS)
+    if response is None:
+        # The task is unaffected by our failure to reach the upstream. A 502
+        # here makes New API treat the generation as failed and refund it.
+        logger.warning("Video upstream task request failed for %s: %r", task_id, error)
         if relay_request_id:
-            database.record_audit_event(relay_request_id, "poll", None, None, sanitized)
-        raise HTTPException(status_code=502, detail=sanitized["detail"], headers=response_headers) from exc
+            database.record_audit_event(
+                relay_request_id, "poll", None, _error_text(error), {"detail": POLL_UNREACHABLE_DETAIL}
+            )
+        return pending_task_response(task)
     if not 200 <= response.status_code < 300:
         error_response = upstream_error(response, relay_request_id, "poll")
         if should_preserve_task_on_poll_error(response):
-            return pending_poll_response(task, response)
+            return pending_task_response(task, response)
         else:
             try:
                 error_payload = response.json()
@@ -974,11 +1031,13 @@ async def fetch_task(task_id: str, timeout_seconds: float | None = None) -> JSON
         payload = response.json()
         if not isinstance(payload, dict):
             raise ValueError("upstream task payload is not a JSON object")
-    except ValueError as exc:
+    except ValueError:
+        # Usually a gateway error page with a 2xx status; it says nothing
+        # about the task, so the task stays pending.
         sanitized = {"detail": "Upstream returned invalid JSON"}
         if relay_request_id:
             database.record_audit_event(relay_request_id, "poll", response.status_code, response.text, sanitized)
-        raise HTTPException(status_code=502, detail=sanitized["detail"], headers=response_headers) from exc
+        return pending_task_response(task)
     result, video_url = normalize_task_payload(task, payload)
     if result["status"] == "completed" and reference_videos_pending(task):
         # New API settles once, on the first completed poll; report the task
@@ -1000,7 +1059,22 @@ async def fetch_task(task_id: str, timeout_seconds: float | None = None) -> JSON
     return JSONResponse(result, headers=response_headers)
 
 
-async def reconcile_pending_tasks(limit: int = 8, stale_seconds: int = 3) -> None:
+_reconcile_job: asyncio.Task | None = None
+
+
+def schedule_reconcile() -> None:
+    """Refresh pending tasks in the background; at most one sweep at a time.
+
+    A slow upstream status endpoint must not hold up the console page that
+    asked for the refresh.
+    """
+    global _reconcile_job
+    if _reconcile_job is not None and not _reconcile_job.done():
+        return
+    _reconcile_job = asyncio.create_task(reconcile_pending_tasks())
+
+
+async def reconcile_pending_tasks(limit: int = 8, stale_seconds: int = 10) -> None:
     recover_pending_creates()
     task_ids = database.list_pending_task_ids(int(time.time()) - max(0, stale_seconds), limit)
     if not task_ids:
@@ -1011,7 +1085,7 @@ async def reconcile_pending_tasks(limit: int = 8, stale_seconds: int = 3) -> Non
     async def refresh(task_id: str) -> None:
         async with semaphore:
             try:
-                await fetch_task(task_id, timeout_seconds=min(5.0, settings.upstream_timeout_seconds))
+                await fetch_task(task_id)
             except HTTPException:
                 # Connection and malformed-response errors are recorded by fetch_task and retried later.
                 pass
@@ -1040,20 +1114,33 @@ async def stream_upstream_content(
         request_headers["Range"] = request.headers["range"]
     if source_url_validator is not None and not source_url_validator(source_url):
         raise HTTPException(status_code=502, detail=error_message)
+    # No read limit by default: a large file legitimately streams for a long
+    # time. Connecting and the first answer must still come within bounds.
     client = httpx.AsyncClient(
-        timeout=timeout,
+        timeout=httpx.Timeout(timeout, connect=CONTENT_CONNECT_TIMEOUT_SECONDS),
         follow_redirects=source_url_validator is None,
     )
     current_url = source_url
     for _ in range(6):
-        try:
-            upstream_response = await client.send(
-                client.build_request("GET", current_url, headers=request_headers), stream=True
-            )
-        except httpx.RequestError as exc:
+        upstream_response = None
+        error: httpx.RequestError | None = None
+        for attempt in range(POLL_ATTEMPTS):
+            try:
+                upstream_response = await asyncio.wait_for(
+                    client.send(client.build_request("GET", current_url, headers=request_headers), stream=True),
+                    timeout=CONTENT_FIRST_BYTE_TIMEOUT_SECONDS,
+                )
+                break
+            except asyncio.TimeoutError:
+                error = httpx.ReadTimeout("no response headers")
+            except httpx.RequestError as exc:
+                error = exc
+            if attempt + 1 < POLL_ATTEMPTS:
+                await asyncio.sleep(POLL_RETRY_DELAY_SECONDS)
+        if upstream_response is None:
             await client.aclose()
-            logger.warning("%s: %s", error_message, exc)
-            raise HTTPException(status_code=502, detail=error_message) from exc
+            logger.warning("%s: %r", error_message, error)
+            raise HTTPException(status_code=502, detail=error_message) from error
         if source_url_validator is None or not upstream_response.is_redirect:
             break
         redirect_url = urljoin(current_url, upstream_response.headers.get("location", ""))
@@ -1281,21 +1368,28 @@ async def _resolve_fuyao_video_link(content_url: str, task: dict[str, Any]) -> s
     JSON and the file is streamed from it. A real video response is kept.
     """
     payload: Any = None
-    try:
-        async with httpx.AsyncClient(timeout=30, follow_redirects=False) as client:
-            # Streamed so a real MP4 answer is not read into memory just to
-            # learn its content type; only a JSON body is read.
-            async with client.stream(
-                "GET", content_url, headers={"Authorization": f"Bearer {task['api_key']}"}
-            ) as response:
-                if response.is_redirect and response.headers.get("location"):
-                    return urljoin(content_url, response.headers["location"])
-                if response.status_code != 200 or not _is_json_response(response.headers):
-                    return content_url
-                body = await response.aread()
-    except httpx.RequestError as exc:
-        logger.warning("Fuyao content lookup failed: %s", exc)
-        raise HTTPException(status_code=502, detail="Video upstream download failed") from exc
+    error: httpx.RequestError | None = None
+    for attempt in range(POLL_ATTEMPTS):
+        try:
+            async with httpx.AsyncClient(timeout=POLL_ATTEMPT_TIMEOUT_SECONDS, follow_redirects=False) as client:
+                # Streamed so a real MP4 answer is not read into memory just to
+                # learn its content type; only a JSON body is read.
+                async with client.stream(
+                    "GET", content_url, headers={"Authorization": f"Bearer {task['api_key']}"}
+                ) as response:
+                    if response.is_redirect and response.headers.get("location"):
+                        return urljoin(content_url, response.headers["location"])
+                    if response.status_code != 200 or not _is_json_response(response.headers):
+                        return content_url
+                    body = await response.aread()
+            break
+        except httpx.RequestError as exc:
+            error = exc
+            if attempt + 1 < POLL_ATTEMPTS:
+                await asyncio.sleep(POLL_RETRY_DELAY_SECONDS)
+    else:
+        logger.warning("Fuyao content lookup failed: %r", error)
+        raise HTTPException(status_code=502, detail="Video upstream download failed") from error
     try:
         payload = json.loads(body)
     except ValueError:
