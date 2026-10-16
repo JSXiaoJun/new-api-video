@@ -171,7 +171,7 @@ def start_reference_video_measurement(task_id: str, urls: list[str]) -> asyncio.
 # leaves some hanging indefinitely; a short limit per attempt plus a retry
 # reaches a good answer sooner than one long wait.
 POLL_ATTEMPTS = 3
-POLL_ATTEMPT_TIMEOUT_SECONDS = 15.0
+POLL_ATTEMPT_TIMEOUT_SECONDS = 25.0
 POLL_RETRY_DELAY_SECONDS = 1.0
 POLL_UNREACHABLE_DETAIL = "上游查询无响应，任务保持原状态，稍后自动重试"
 CONTENT_CONNECT_TIMEOUT_SECONDS = 15.0
