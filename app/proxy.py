@@ -21,9 +21,12 @@ from .model_profiles import (
     MEDIA_FIELD_NAMES,
     MEDIA_FIELD_PREFIXES,
     URL_VALUE_KEYS,
+    DurationNotAllowedError,
     MediaLimitError,
     ResolutionMismatchError,
+    allowed_durations,
     apply_pinned_resolution,
+    enforce_duration,
     enforce_reference_media_limits,
     iter_media_references,
     route_media_counts,
@@ -657,6 +660,20 @@ async def create_video(
     try:
         enforce_reference_media_limits(payload, media_counts)
     except MediaLimitError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    # 时长同理：只放行 ``/v1/model-capabilities`` 公布的时长，不支持的时长直接
+    # 拒绝，不交给上游去报错或悄悄换成默认时长。
+    try:
+        enforce_duration(
+            payload,
+            allowed_durations(upstream["profile"], upstream.get("durations")),
+            fuyao.special_durations(upstream["upstream_model"], upstream["profile"])
+            if protocol == fuyao.PROTOCOL
+            else (ark_video.AUTO_DURATION,)
+            if protocol == ark_video.PROTOCOL
+            else (),
+        )
+    except DurationNotAllowedError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     video_limit = media_counts["video"]
     routed_payload = {**payload, "model": upstream["upstream_model"]}

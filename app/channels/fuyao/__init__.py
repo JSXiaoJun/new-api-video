@@ -31,7 +31,7 @@ from .catalog import (
     is_video_model,
     suggest_route,
 )
-from .payload import FuyaoRequestError, transform_create_payload
+from .payload import FuyaoRequestError, special_durations, transform_create_payload
 from .tasks import (
     CREATE_PATH,
     content_path,
@@ -57,6 +57,7 @@ __all__ = [
     "is_fuyao_base_url",
     "is_video_model",
     "normalize_status",
+    "special_durations",
     "suggest_route",
     "task_path",
     "transform_create_payload",

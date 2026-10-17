@@ -1953,7 +1953,7 @@ class CoreTests(unittest.TestCase):
                 "upstream_model": "grok-imagine-video-1.5",
                 "protocol": o10_grok.PROTOCOL,
                 "profile": "grok-auto",
-                "durations": [1, 15],
+                "durations": list(range(1, 16)),
                 "resolutions": ["480p", "720p"],
                 "image_count": 1,
                 "supports_video": False,

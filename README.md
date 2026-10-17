@@ -94,7 +94,10 @@ through the existing public content proxy. `/new-api/v1/upload/presign` forwards
 the returned `public_url` is suitable as an Ark reference only when the object is publicly readable.
 
 The admin page's model route editor keeps the discovered upstream name in `映射上游模型名`; leaving `对外模型名`
-empty uses that upstream name as the public name when saving. Supported durations can be selected per route. `请求协议`
+empty uses that upstream name as the public name when saving. Supported durations can be selected per route; a route
+without a selection uses its profile's default list. These are the durations `/v1/model-capabilities` publishes, and a
+create whose `duration`/`seconds` is not one of them is rejected with HTTP 400 instead of being forwarded. Omitting the
+duration still leaves it to the upstream, and `-1` (automatic length) is still accepted for Ark and Fuyao Wan3. `请求协议`
 controls the upstream endpoint, while `请求格式` independently selects the saved payload transformation profile. Model
 discovery suggests a format only for new rows; editing and later synchronization preserve the saved selection.
 Synchronization is non-destructive: models missing from a later discovery response remain in the editor. If an upstream

@@ -127,6 +127,14 @@ def _grok_body(
 
 
 WAN3_AUTO_DURATION = -1
+
+
+def special_durations(model: str, profile: str | None = None) -> list[int]:
+    """Duration values the family accepts beyond the published route list."""
+    family = catalog.family_for_profile(profile) or catalog.family_for_model(model)
+    return [WAN3_AUTO_DURATION] if family == catalog.WAN3 else []
+
+
 _WAN3_RESOLUTIONS = ("480P", "720P", "1080P")
 _WAN3_AUTO_RATIOS = frozenset({"adaptive", "auto"})
 _WAN3_EXTRA_PARAMETERS = ("prompt_extend", "watermark", "seed")

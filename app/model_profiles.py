@@ -194,6 +194,91 @@ def apply_pinned_resolution(
     return {**payload, 'resolution': pinned}
 
 
+class DurationNotAllowedError(Exception):
+    """请求的时长不在该路由公布的时长列表里。"""
+
+
+def allowed_durations(profile: str, duration_overrides: list[int] | int | None = None) -> list[int]:
+    """这条路由对外公布的时长，也是代理执行时用来校验的列表；空列表表示不限制。
+
+    路由上配置了时长就用配置的，否则沿用渠道默认值，与 ``capabilities_for``
+    公布的 ``durations`` 同源。
+    """
+    if isinstance(duration_overrides, int):
+        duration_overrides = [duration_overrides]
+    if duration_overrides:
+        return list(duration_overrides)
+    capabilities = PROFILE_DEFINITIONS.get(profile, {}).get('capabilities', {})
+    return list(capabilities.get('durations') or [])
+
+
+def _requested_duration_values(payload: dict[str, Any]) -> list[tuple[str, Any]]:
+    """列出请求里所有会被渠道适配器当成时长读取的字段。"""
+    metadata = payload.get('metadata') if isinstance(payload.get('metadata'), dict) else {}
+    parameters = metadata.get('parameters') if isinstance(metadata.get('parameters'), dict) else {}
+    candidates = (
+        ('duration', payload.get('duration')),
+        ('seconds', payload.get('seconds')),
+        ('metadata.duration', metadata.get('duration')),
+        ('metadata.seconds', metadata.get('seconds')),
+        ('metadata.parameters.duration', parameters.get('duration')),
+        ('metadata.parameters.seconds', parameters.get('seconds')),
+    )
+    return [(field, value) for field, value in candidates if value is not None and value != '']
+
+
+def _parse_duration(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, str):
+        value = value.strip()
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return int(number) if number.is_integer() else None
+
+
+def enforce_duration(
+    payload: dict[str, Any],
+    allowed: list[int],
+    extra_allowed: list[int] | tuple[int, ...] = (),
+) -> None:
+    """请求的时长不在这条路由支持的列表里就拒绝，而不是透传给上游。
+
+    透传的后果要么是上游报错，要么是上游按别的时长出片（不少渠道会把不支持的
+    时长悄悄改成默认值），用户付了一个任务的钱拿到另一个任务的结果。没传时长时
+    不做处理，由上游使用默认时长。``extra_allowed`` 放渠道认可但不对外公布的
+    特殊值，例如 Wan3 的 ``-1``（自动时长）。
+    """
+    if not allowed:
+        return
+    permitted = set(allowed) | set(extra_allowed)
+    for field, value in _requested_duration_values(payload):
+        duration = _parse_duration(value)
+        if duration is None:
+            raise DurationNotAllowedError(f'{field} 必须是整数秒，收到 {value!r}')
+        if duration not in permitted:
+            raise DurationNotAllowedError(
+                f'当前模型不支持 {duration} 秒，可选时长：{_format_durations(allowed)}'
+            )
+
+
+def _format_durations(durations: list[int]) -> str:
+    """把 ``[4, 5, 6, 8]`` 写成 ``4–6、8 秒``，长区间不至于刷屏。"""
+    values = sorted(set(durations))
+    ranges: list[str] = []
+    start = previous = values[0]
+    for value in values[1:] + [None]:
+        if value is not None and value == previous + 1:
+            previous = value
+            continue
+        ranges.append(str(start) if start == previous else f'{start}–{previous}')
+        if value is not None:
+            start = previous = value
+    return '、'.join(ranges) + ' 秒'
+
+
 PROFILE_DEFINITIONS: dict[str, dict[str, Any]] = {
     'default': {
         'label': '通用视频',
@@ -513,10 +598,7 @@ def capabilities_for(
     """
     capabilities = deepcopy(PROFILE_DEFINITIONS[profile]['capabilities'])
     defaults = profile_default_counts(profile)
-    if isinstance(duration_overrides, int):
-        duration_overrides = [duration_overrides]
-    if duration_overrides:
-        capabilities['durations'] = duration_overrides
+    capabilities['durations'] = allowed_durations(profile, duration_overrides)
     if resolution_overrides:
         capabilities['resolutions'] = resolution_overrides
     capabilities['maxImages'] = max(

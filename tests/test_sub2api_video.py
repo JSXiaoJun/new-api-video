@@ -136,7 +136,7 @@ class Sub2ApiVideoTests(unittest.TestCase):
                 "upstream_model": "grok-imagine-video-1.5",
                 "protocol": sub2api_video.PROTOCOL,
                 "profile": sub2api_video.PROFILE,
-                "durations": [1, 15],
+                "durations": list(range(1, 16)),
                 "resolutions": ["480p", "720p", "1080p"],
                 "image_count": 7,
                 "supports_image": True,

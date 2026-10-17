@@ -631,7 +631,7 @@ def select_upstream(model: str) -> dict[str, Any] | None:
             """
             SELECT u.*, r.protocol, r.profile, r.duration_override, r.upstream_model,
                    r.enabled, r.forward_resolution, r.image_count, r.video_count, r.audio_count,
-                   r.resolutions_json, r.measure_reference_video
+                   r.durations_json, r.resolutions_json, r.measure_reference_video
             FROM upstreams u
             JOIN model_routes r ON r.upstream_id = u.id
             WHERE u.enabled = 1 AND u.deleted_at IS NULL AND r.enabled = 1 AND r.model = ?
@@ -645,6 +645,7 @@ def select_upstream(model: str) -> dict[str, Any] | None:
         conn.execute("UPDATE upstreams SET last_used_at = ? WHERE id = ?", (int(time.time()), row["id"]))
         item = dict(row)
         item["api_key"] = secret_box.decrypt(item.pop("api_key_encrypted"))
+        item["durations"] = _decode_durations(item.pop("durations_json"), item["duration_override"])
         item["resolutions"] = _decode_resolutions(item.pop("resolutions_json"))
         item["measure_reference_video"] = bool(item["measure_reference_video"])
         return item

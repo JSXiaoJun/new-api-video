@@ -6,6 +6,8 @@ from urllib.parse import quote
 
 PROTOCOL = "ark-v3"
 CREATE_PATH = "/api/v3/contents/generations/tasks"
+# Seedance lets the model pick the length when ``duration`` is -1.
+AUTO_DURATION = -1
 
 
 def task_path(task_id: str) -> str:
