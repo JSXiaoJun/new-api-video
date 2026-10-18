@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 from urllib.parse import quote, urlsplit
 
@@ -306,22 +307,32 @@ def _native_fields(payload: dict[str, Any], workflow_id: str) -> dict[str, Any]:
 
 
 def _provider_resolution(payload: dict[str, Any], metadata: dict[str, Any]) -> str | None:
+    # The workflows have no ratio field: orientation travels only as the
+    # resolution suffix, and an omitted resolution renders 768p竖. A request
+    # that states a ratio without a resolution therefore gets 768p with it.
     value = payload.get("resolution") or metadata.get("resolution")
-    if not isinstance(value, str) or not value.strip():
-        return None
-    value = value.strip()
+    value = value.strip() if isinstance(value, str) else ""
     if value.endswith(("竖", "横", "(1:1)")):
         return value
-    ratio = str(
+    ratio = (
         payload.get("aspect_ratio")
         or payload.get("aspectRatio")
         or payload.get("ratio")
         or metadata.get("aspect_ratio")
         or metadata.get("ratio")
-        or "9:16"
-    ).strip()
-    suffix = _resolution_suffix(ratio)
-    return f"{value}{suffix}"
+        or _size_ratio(payload.get("size") or metadata.get("size"))
+    )
+    if not value and not ratio:
+        return None
+    return f"{value or '768p'}{_resolution_suffix(str(ratio or '9:16'))}"
+
+
+def _size_ratio(size: Any) -> str | None:
+    """Pixel dimensions such as ``1280x720``, which OpenAI-style clients send instead of a ratio."""
+    if not isinstance(size, str):
+        return None
+    match = re.fullmatch(r"\s*(\d+)\s*[x×*]\s*(\d+)\s*", size.lower())
+    return f"{match[1]}:{match[2]}" if match else None
 
 
 def _resolution_suffix(ratio: str) -> str:

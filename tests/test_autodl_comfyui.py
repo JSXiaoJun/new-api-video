@@ -186,6 +186,23 @@ class AutoDLComfyUIAdapterTests(unittest.TestCase):
                 })
                 self.assertEqual(payload["resolution"], expected)
 
+    def test_ratio_without_resolution_defaults_to_768p(self):
+        cases = [
+            ({"aspect_ratio": "16:9"}, "768p横"),
+            ({"metadata": {"ratio": "1:1"}}, "768p(1:1)"),
+            ({"size": "1280x720"}, "768p横"),
+            ({"size": "720x1280", "resolution": "480p"}, "480p竖"),
+            ({"size": "1280x720", "aspect_ratio": "9:16"}, "768p竖"),
+            ({"size": "720p"}, None),
+            ({}, None),
+        ]
+        for extra, expected in cases:
+            with self.subTest(extra=extra):
+                payload = autodl_comfyui.transform_create_payload({
+                    "model": "minimax_h3_lightx2v_no_pic", "prompt": "测试", "duration": 5, **extra,
+                })
+                self.assertEqual(payload.get("resolution"), expected)
+
     def test_first_last_frame_and_promptless_workflows(self):
         first_last = autodl_comfyui.transform_create_payload({
             "model": "minimax_h3_lightx2v",
