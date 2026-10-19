@@ -35,6 +35,7 @@ H3_10S = "Minimax-H3-768p-933-10s"
 H3_10_15S = "Minimax-H3-768p-933-10s-15s"
 SD_MINI = "【官方稳定版】sd2.0-480p-mini"
 SD_FULL = "【官方稳定版】sd2.0-720p-满血"
+SD_FAST = "seedance-2.0-fast（官转）"
 
 
 def _mock_client(captured: dict, *, post_json=None, get_json=None, get_status=200):
@@ -79,6 +80,10 @@ class FuyaoCatalogTests(unittest.TestCase):
             "seedance2.0-903": "fuyao-video",
             "Seedance2.5xg": "fuyao-video",
             "video-editor-fixed-0.5": "fuyao-video",
+            SD_FAST: "fuyao-seedance-fast",
+            # Mini and the token group have no published contract yet.
+            "seedance-2.0-mini（官转）": "fuyao-video",
+            "seedance-2.0-fast（token）": "fuyao-video",
         }
         for model, profile in expected.items():
             self.assertEqual(fuyao.suggest_route(model)["profile"], profile, model)
@@ -345,6 +350,79 @@ class FuyaoPayloadTests(unittest.TestCase):
         })
 
 
+class SeedanceFastPayloadTests(unittest.TestCase):
+    def _body(self, **extra):
+        return fuyao.transform_create_payload({"model": SD_FAST, "prompt": "p", "seconds": 5, **extra})
+
+    def test_route_hint_follows_the_documented_limits(self):
+        route = fuyao.suggest_route(SD_FAST)
+        self.assertEqual(route["durations"], list(range(1, 16)))
+        self.assertEqual(route["resolutions"], ["480p", "720p"])
+        self.assertEqual((route["image_count"], route["video_count"], route["audio_count"]), (9, 3, 3))
+
+    def test_text_to_video_sends_only_documented_fields(self):
+        body = self._body(
+            size="1280x720", seed=3, quality="high", metadata={"foo": 1}, generate_audio="false"
+        )
+        self.assertEqual(body, {
+            "model": SD_FAST,
+            "prompt": "p",
+            "mode": "text2video",
+            "duration": 5,
+            "resolution": "720p",
+            "aspect_ratio": "16:9",
+            "generate_audio": False,
+        })
+
+    def test_single_image_alias_is_a_first_frame_without_ratio(self):
+        for key in ("input_reference", "image", "first_frame_url"):
+            body = self._body(**{key: "https://cdn.example/first.png", "aspect_ratio": "9:16"})
+            self.assertEqual(body["mode"], "image2video", key)
+            self.assertEqual(body["images"], ["https://cdn.example/first.png"], key)
+            self.assertNotIn("aspect_ratio", body, key)
+        # An explicit mode turns a lone reference image into the first frame.
+        body = self._body(mode="first-frame", images=["https://cdn.example/a.png"])
+        self.assertEqual(body["mode"], "image2video")
+
+    def test_reference_mode_carries_every_media_kind(self):
+        body = self._body(
+            image_urls=["https://cdn.example/a.png", "https://cdn.example/b.png"],
+            reference_video="https://cdn.example/v.mp4",
+            reference_audios=["https://cdn.example/a.mp3"],
+            aspect_ratio="1:1",
+        )
+        self.assertEqual(body["mode"], "reference")
+        self.assertEqual(body["images"], ["https://cdn.example/a.png", "https://cdn.example/b.png"])
+        self.assertEqual(body["videos"], ["https://cdn.example/v.mp4"])
+        self.assertEqual(body["audios"], ["https://cdn.example/a.mp3"])
+        self.assertEqual(body["aspect_ratio"], "1:1")
+
+    def test_rejects_what_the_gateway_documents_as_invalid(self):
+        cases = [
+            {"seconds": None},
+            {"seconds": 16},
+            {"seconds": -1},
+            {"resolution": "1080p"},
+            {"aspect_ratio": "3:2"},
+            {"last_frame_url": "https://cdn.example/last.png"},
+            {"input_reference": "https://cdn.example/f.png", "images": ["https://cdn.example/r.png"]},
+            {"input_reference": "https://cdn.example/f.png", "video_urls": ["https://cdn.example/v.mp4"]},
+            {"reference_audios": ["https://cdn.example/a.mp3"]},
+            {"mode": "text2video", "images": ["https://cdn.example/r.png"]},
+            {"mode": "video_edit"},
+            {"prompt": "长" * 5001},
+        ]
+        for extra in cases:
+            with self.assertRaises(fuyao.FuyaoRequestError, msg=extra):
+                self._body(**extra)
+
+    def test_mini_keeps_the_generic_request(self):
+        body = fuyao.transform_create_payload(
+            {"model": "seedance-2.0-mini（官转）", "prompt": "p", "seconds": 5}
+        )
+        self.assertEqual(body, {"model": "seedance-2.0-mini（官转）", "prompt": "p", "seconds": "5"})
+
+
 class FuyaoTaskTests(unittest.TestCase):
     def test_documented_statuses_normalize(self):
         expected = {
@@ -581,6 +659,40 @@ class FuyaoIntegrationTests(unittest.TestCase):
             fuyao.extract_video_link({"output": {"video_url": "https://oss.example/v.mp4"}}),
             "https://oss.example/v.mp4",
         )
+
+    def test_noted_public_name_pins_its_resolution(self):
+        public_model = f"seedance-2.0-fast-{time.time_ns()}-720p（经理独立优惠）"
+        database.save_upstream({
+            "name": public_model,
+            "base_url": "https://fuyao47.xyz",
+            "api_key": "fuyao-secret",
+            "enabled": True,
+            "priority": 1,
+            "routes": [{
+                "model": public_model,
+                "upstream_model": SD_FAST,
+                "protocol": fuyao.PROTOCOL,
+                "profile": "fuyao-seedance-fast",
+                "durations": list(range(1, 16)),
+                "resolutions": ["720p"],
+                "image_count": 9,
+                "video_count": 3,
+                "audio_count": 3,
+            }],
+        })
+        captured: dict = {}
+        mock = _mock_client(captured, post_json={"id": "task_compat_1", "status": "queued"})
+        with patch("app.proxy.httpx.AsyncClient", mock):
+            asyncio.run(create_video({"model": public_model, "prompt": "p", "seconds": 6}, None))
+            with self.assertRaises(HTTPException) as raised:
+                asyncio.run(create_video(
+                    {"model": public_model, "prompt": "p", "seconds": 6, "resolution": "480p"}, None
+                ))
+        self.assertEqual(captured["post"][1]["json"], {
+            "model": SD_FAST, "prompt": "p", "mode": "text2video", "duration": 6, "resolution": "720p",
+        })
+        self.assertEqual(raised.exception.status_code, 400)
+        self.assertIn("720p", raised.exception.detail)
 
     def test_unserviceable_request_is_a_400_before_any_upstream_call(self):
         public_model = self._save_route(SD_MINI, "fuyao-sd2", image_count=9)

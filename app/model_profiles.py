@@ -133,6 +133,9 @@ class ResolutionMismatchError(Exception):
 
 
 _RESOLUTION_VALUE = re.compile(r'^\d{3,4}p$', re.IGNORECASE)
+# A trailing note such as ``（经理独立优惠）`` or ``（官转）`` is not part of the
+# resolution suffix: ``seedance-2.0-fast-720p（经理独立优惠）`` still promises 720p.
+_TRAILING_NOTE = re.compile(r'\s*(?:[（(][^（()）]*[)）]\s*)+$')
 
 
 def pinned_resolution(
@@ -153,8 +156,8 @@ def pinned_resolution(
         return None
     resolution = values[0]
     suffix = f'-{resolution}'.lower()
-    public_name = (model or '').strip().lower()
-    upstream_name = (upstream_model or model or '').strip().lower()
+    public_name = _TRAILING_NOTE.sub('', (model or '').strip().lower())
+    upstream_name = _TRAILING_NOTE.sub('', (upstream_model or model or '').strip().lower())
     if not public_name.endswith(suffix) or upstream_name.endswith(suffix):
         return None
     return resolution

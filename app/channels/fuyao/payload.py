@@ -66,6 +66,8 @@ def transform_create_payload(payload: dict[str, Any], profile: str | None = None
         return _grok_body(body, images, videos, audios, seconds, ratio, resolution)
     if family == catalog.WAN3:
         return _wan3_body(body, payload, images, videos, audios, seconds, ratio, resolution)
+    if family == catalog.SEEDANCE_FAST:
+        return _seedance_fast_body(body, payload, images, videos, audios, seconds, ratio, resolution)
 
     if family == catalog.MINIMAX_H3:
         allowed = catalog.fixed_durations(model)
@@ -214,6 +216,117 @@ def _wan3_body(
     if wan_metadata:
         body["metadata"] = wan_metadata
     return body
+
+
+SEEDANCE_FAST_PROMPT_LIMIT = 5000
+_TEXT2VIDEO = "text2video"
+_IMAGE2VIDEO = "image2video"
+_REFERENCE = "reference"
+_SEEDANCE_FAST_MODES = {
+    "text2video": _TEXT2VIDEO,
+    "text-to-video": _TEXT2VIDEO,
+    "image2video": _IMAGE2VIDEO,
+    "first-frame": _IMAGE2VIDEO,
+    "reference": _REFERENCE,
+}
+# Fuyao documents these single-image fields as first-frame aliases for fast.
+_SEEDANCE_FAST_FIRST_FRAME_ALIASES = ("image", "input_reference", "image_url")
+
+
+def _seedance_fast_body(
+    body: dict[str, Any],
+    payload: dict[str, Any],
+    images: list[tuple[str, str]],
+    videos: list[str],
+    audios: list[str],
+    seconds: int | None,
+    ratio: str | None,
+    resolution: str | None,
+) -> dict[str, Any]:
+    """``seedance-2.0-fast（官转）``: top-level fields, an explicit ``mode``.
+
+    The gateway rejects every undocumented field (``metadata``, ``seed``,
+    ``quality``, pixel ``size`` ...), so only the documented ones are emitted,
+    and the mode is always sent because a bare ``images`` array does not
+    select first-frame mode on its own.
+    """
+    if len(str(body.get("prompt") or "")) > SEEDANCE_FAST_PROMPT_LIMIT:
+        raise FuyaoRequestError(f"seedance-2.0-fast 的提示词最多 {SEEDANCE_FAST_PROMPT_LIMIT} 字符")
+    roles = [role for role, _ in images]
+    if LAST_FRAME in roles:
+        raise FuyaoRequestError("seedance-2.0-fast 不支持尾帧（首尾帧模式）")
+
+    alias_urls = {url for key in _SEEDANCE_FAST_FIRST_FRAME_ALIASES if (url := _as_url(payload.get(key)))}
+    images = [(FIRST_FRAME if url in alias_urls else role, url) for role, url in images]
+    requested = _seedance_fast_requested_mode(payload)
+    has_first_frame = any(role == FIRST_FRAME for role, _ in images)
+    if requested == _IMAGE2VIDEO and len(images) == 1 and not (videos or audios):
+        has_first_frame = True
+
+    if has_first_frame:
+        if len(images) != 1 or videos or audios:
+            raise FuyaoRequestError(
+                "seedance-2.0-fast 的首帧模式只接受 1 张图片，不能与参考图、参考视频或参考音频混用"
+            )
+        mode = _IMAGE2VIDEO
+    elif images or videos:
+        mode = _REFERENCE
+    elif audios:
+        raise FuyaoRequestError("seedance-2.0-fast 的参考音频必须搭配参考图片或参考视频")
+    else:
+        mode = _TEXT2VIDEO
+    if requested and requested != mode:
+        raise FuyaoRequestError(f"mode={requested} 与提供的素材不符，按素材应为 {mode}")
+    body["mode"] = mode
+
+    # Billing follows the duration, and the gateway's default (5 s) differs
+    # from what New API assumes when none is sent.
+    if seconds is None:
+        raise FuyaoRequestError("seedance-2.0-fast 按秒计费，必须提供时长（1–15 秒）")
+    if not 1 <= seconds <= 15:
+        raise FuyaoRequestError("seedance-2.0-fast 的时长必须是 1–15 秒")
+    body["duration"] = seconds
+
+    # ``quality`` only names a resolution when written like ``720p``.
+    if resolution and resolution == str(payload.get("quality") or "").strip() and not _resolution_from_size(resolution):
+        resolution = None
+    resolution = resolution or _resolution_from_size(payload.get("size"))
+    if resolution:
+        normalized = resolution.strip().lower()
+        if normalized not in catalog.SEEDANCE_FAST_RESOLUTIONS:
+            raise FuyaoRequestError("seedance-2.0-fast 的分辨率只能是 480p 或 720p")
+        body["resolution"] = normalized
+    # In first-frame mode the output follows the image's aspect ratio.
+    if ratio and mode != _IMAGE2VIDEO:
+        if ratio not in catalog.SEEDANCE_FAST_RATIOS:
+            raise FuyaoRequestError(
+                "seedance-2.0-fast 的画幅只能是 " + "、".join(catalog.SEEDANCE_FAST_RATIOS)
+            )
+        body["aspect_ratio"] = ratio
+
+    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    audio = _first_bool(payload, metadata, ("generate_audio", "generateAudio"))
+    if audio is not None:
+        body["generate_audio"] = audio
+
+    if images:
+        body["images"] = [url for _, url in images]
+    if videos:
+        body["videos"] = videos
+    if audios:
+        body["audios"] = audios
+    return body
+
+
+def _seedance_fast_requested_mode(payload: dict[str, Any]) -> str | None:
+    for key in ("mode", "mode_type"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            mode = _SEEDANCE_FAST_MODES.get(value.strip().lower())
+            if mode is None:
+                raise FuyaoRequestError("seedance-2.0-fast 的 mode 只能是 text2video、image2video 或 reference")
+            return mode
+    return None
 
 
 def _wan3_resolution(value: str) -> str:

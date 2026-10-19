@@ -10,8 +10,11 @@ that each family gets its own profile:
 * ``sd2``        -- ``【官方稳定版】sd2.0-{480p,720p}-{fast,mini,满血}``; the
   resolution is fixed by the model ID and ``mini`` cannot do text-to-video
 * ``wan3``       -- ``wan3.0-video`` / ``wan3.0-video-prime``
+* ``seedance-fast`` -- ``seedance-2.0-fast（官转）``: text, single first frame
+  or reference mode, 1-15 s, 480p/720p, no last frame
 * ``generic``    -- every other video model (``seedance2.0-903``,
-  ``Seedance2.5xg``, ``video-editor-fixed-0.5`` ...), whose limits the upstream
+  ``Seedance2.5xg``, ``seedance-2.0-mini（官转）``, ``video-editor-fixed-0.5``
+  ...), whose limits the upstream
   does not publish; it starts with conservative defaults that the operator can
   widen per route
 
@@ -38,6 +41,7 @@ GROK = "grok"
 MINIMAX_H3 = "minimax-h3"
 SD2 = "sd2"
 WAN3 = "wan3"
+SEEDANCE_FAST = "seedance-fast"
 GENERIC = "generic"
 
 PROFILE_BY_FAMILY = {
@@ -45,6 +49,7 @@ PROFILE_BY_FAMILY = {
     MINIMAX_H3: "fuyao-minimax-h3",
     SD2: "fuyao-sd2",
     WAN3: "fuyao-wan3",
+    SEEDANCE_FAST: "fuyao-seedance-fast",
     GENERIC: DEFAULT_PROFILE,
 }
 FAMILY_BY_PROFILE = {profile: family for family, profile in PROFILE_BY_FAMILY.items()}
@@ -55,6 +60,7 @@ MEDIA_LIMITS = {
     MINIMAX_H3: (9, 3, 3),
     SD2: (9, 3, 3),
     WAN3: (10, 5, 5),
+    SEEDANCE_FAST: (9, 3, 3),
     GENERIC: (1, 0, 0),
 }
 
@@ -62,6 +68,9 @@ GROK_DURATIONS = list(range(4, 16))
 H3_DEFAULT_DURATIONS = [10, 15]
 SD2_DURATIONS = list(range(4, 16))
 WAN3_DURATIONS = list(range(2, 31))
+SEEDANCE_FAST_DURATIONS = list(range(1, 16))
+SEEDANCE_FAST_RATIOS = ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"]
+SEEDANCE_FAST_RESOLUTIONS = ["480p", "720p"]
 GENERIC_DURATIONS = list(range(4, 16))
 
 # Keywords that mark a ``/v1/models`` entry as a video model when the gateway
@@ -137,6 +146,17 @@ PROFILE_DEFINITIONS: dict[str, dict[str, Any]] = {
             maxReferenceVideoDuration=15,
         ),
     },
+    "fuyao-seedance-fast": {
+        "label": "扶摇 · Seedance 2.0 Fast 官转",
+        "request_format": PROFILE,
+        "capabilities": _capabilities(
+            SEEDANCE_FAST,
+            list(SEEDANCE_FAST_RATIOS),
+            SEEDANCE_FAST_DURATIONS,
+            list(SEEDANCE_FAST_RESOLUTIONS),
+            maxReferenceVideoDuration=15,
+        ),
+    },
     DEFAULT_PROFILE: {
         "label": "扶摇 · 通用视频",
         "request_format": PROFILE,
@@ -170,6 +190,10 @@ def family_for_model(model: str) -> str:
         return SD2
     if normalized.startswith("wan3"):
         return WAN3
+    # Only the 官转 group has a published contract; the （token） group with
+    # the same base name is still unconfirmed and stays generic.
+    if normalized.startswith("seedance-2.0-fast") and "官转" in normalized:
+        return SEEDANCE_FAST
     return GENERIC
 
 
@@ -234,6 +258,8 @@ def suggest_route(model: str) -> dict[str, Any]:
         resolutions = [name_resolution(model) or "720p"]
     elif family == WAN3:
         durations, resolutions = list(WAN3_DURATIONS), ["480p", "720p", "1080p"]
+    elif family == SEEDANCE_FAST:
+        durations, resolutions = list(SEEDANCE_FAST_DURATIONS), list(SEEDANCE_FAST_RESOLUTIONS)
     else:
         # Limits are unpublished: leave duration/resolution to the workbench
         # default and start with a single reference image.
