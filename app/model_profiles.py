@@ -4,7 +4,7 @@ from copy import deepcopy
 import re
 from typing import Any, Iterator, Mapping
 
-from .channels import autodl_comfyui, funai, fuyao, mai_token, o10_grok, pro666, rolldek, sub2api_video
+from .channels import autodl_comfyui, funai, fuyao, mai_token, o10_grok, pro666, rolldek, sub2api_video, wangyue
 
 
 MAX_DURATION_SECONDS = 60
@@ -416,6 +416,7 @@ PROFILE_DEFINITIONS: dict[str, dict[str, Any]] = {
     **mai_token.PROFILE_DEFINITIONS,
     **rolldek.PROFILE_DEFINITIONS,
     **fuyao.PROFILE_DEFINITIONS,
+    **wangyue.PROFILE_DEFINITIONS,
 }
 
 
@@ -439,6 +440,8 @@ def suggest_profile(model: str, protocol: str) -> str:
         return route['profile'] if route else 'rolldek-sd2-ch4'
     if protocol == fuyao.PROTOCOL:
         return fuyao.suggest_route(model)['profile']
+    if protocol == wangyue.PROTOCOL:
+        return wangyue.suggest_route(model)['profile']
     if protocol == 'seedance':
         return 'default'
     pro666_route = pro666.suggest_route(model)
@@ -575,6 +578,8 @@ def _suggest_route(model: str, protocol: str) -> dict[str, Any]:
         }
     if protocol == fuyao.PROTOCOL:
         return fuyao.suggest_route(model)
+    if protocol == wangyue.PROTOCOL:
+        return wangyue.suggest_route(model)
     channel_route = pro666.suggest_route(model) if protocol == 'videos' else None
     if channel_route:
         return channel_route

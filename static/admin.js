@@ -570,7 +570,7 @@ function addRouteRow(route = {}, before = null) {
   const mappedUpstreamModel = route.upstream_model || route.mapped_upstream_model || ''
   const selectedDurations = routeDurations(route)
   const protocol = route.protocol || 'videos'
-  const selectedProfile = protocol === 'ark-v3' ? (route.profile || 'ark-seedance-2') : protocol === 'o10-grok' ? (route.profile || 'grok-auto') : protocol === 'sub2api-video' ? (route.profile || 'sub2api-video') : protocol === 'mai-token' ? (route.profile || 'mai-token-720p') : protocol === 'funai' ? (route.profile || 'funai-veo') : protocol === 'autodl-comfyui' ? (route.profile || 'autodl-comfyui') : protocol === 'rolldek' ? (route.profile || 'rolldek-sd2-ch4') : protocol === 'fuyao' ? (route.profile || 'fuyao-video') : (route.profile || 'default')
+  const selectedProfile = protocol === 'ark-v3' ? (route.profile || 'ark-seedance-2') : protocol === 'o10-grok' ? (route.profile || 'grok-auto') : protocol === 'sub2api-video' ? (route.profile || 'sub2api-video') : protocol === 'mai-token' ? (route.profile || 'mai-token-720p') : protocol === 'funai' ? (route.profile || 'funai-veo') : protocol === 'autodl-comfyui' ? (route.profile || 'autodl-comfyui') : protocol === 'rolldek' ? (route.profile || 'rolldek-sd2-ch4') : protocol === 'fuyao' ? (route.profile || 'fuyao-video') : protocol === 'wangyue' ? (route.profile || 'wangyue-seedance-mini') : (route.profile || 'default')
   row.dataset.durations = JSON.stringify(selectedDurations)
   row.innerHTML = `
     <div class="route-row-main">
@@ -589,6 +589,7 @@ function addRouteRow(route = {}, before = null) {
       <option value="autodl-comfyui"${protocol === 'autodl-comfyui' ? ' selected' : ''}>autodl-comfyui（AutoDL）</option>
       <option value="rolldek"${protocol === 'rolldek' ? ' selected' : ''}>rolldek（RollDek）</option>
       <option value="fuyao"${protocol === 'fuyao' ? ' selected' : ''}>fuyao（扶摇 API）</option>
+      <option value="wangyue"${protocol === 'wangyue' ? ' selected' : ''}>wangyue（望月号池）</option>
     </select>
     </label>
     <label class="route-cell" data-route-cell="profile"><span class="route-cell-label">请求格式</span>
@@ -969,7 +970,9 @@ routeRows.addEventListener('change', (event) => {
     // Keep a Fuyao family the operator already picked; only fall back to the
     // generic profile when the row carried another channel's format.
     if (!profile.value.startsWith('fuyao-')) profile.value = 'fuyao-video'
-  } else if (profile.value === 'ark-seedance-2' || profile.value === 'autodl-comfyui' || profile.value === 'sub2api-video' || profile.value.startsWith('mai-token-') || profile.value.startsWith('funai-') || profile.value.startsWith('rolldek-') || profile.value.startsWith('fuyao-')) {
+  } else if (target.value === 'wangyue') {
+    if (!profile.value.startsWith('wangyue-')) profile.value = 'wangyue-seedance-mini'
+  } else if (profile.value === 'ark-seedance-2' || profile.value === 'autodl-comfyui' || profile.value === 'sub2api-video' || profile.value.startsWith('mai-token-') || profile.value.startsWith('funai-') || profile.value.startsWith('rolldek-') || profile.value.startsWith('fuyao-') || profile.value.startsWith('wangyue-')) {
     profile.value = 'default'
   }
 })

@@ -14,7 +14,7 @@ from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from . import ark_video, database, media_probe
-from .channels import autodl_comfyui, funai, fuyao, mai_token, o10_grok, pro666, rolldek, sub2api_video
+from .channels import autodl_comfyui, funai, fuyao, mai_token, o10_grok, pro666, rolldek, sub2api_video, wangyue
 from .config import settings
 from .model_profiles import (
     INLINE_VALUE_KEYS,
@@ -182,13 +182,17 @@ CONTENT_FIRST_BYTE_TIMEOUT_SECONDS = 30.0
 
 
 async def _get_with_retries(
-    url: str, headers: dict[str, str], attempt_timeout: float, attempts: int
+    url: str,
+    headers: dict[str, str] | Callable[[], dict[str, str]],
+    attempt_timeout: float,
+    attempts: int,
 ) -> tuple[httpx.Response | None, httpx.RequestError | None]:
+    """GET with retries; a callable ``headers`` is called per attempt (signed requests)."""
     error: httpx.RequestError | None = None
     for attempt in range(attempts):
         try:
             async with httpx.AsyncClient(timeout=attempt_timeout) as client:
-                return await client.get(url, headers=headers), None
+                return await client.get(url, headers=headers() if callable(headers) else headers), None
         except httpx.RequestError as exc:
             error = exc
         if attempt + 1 < attempts:
@@ -391,6 +395,9 @@ _create_jobs: dict[str, asyncio.Task] = {}
 def _create_headers(protocol: str, api_key: str) -> dict[str, str]:
     if protocol == autodl_comfyui.PROTOCOL:
         return autodl_comfyui.auth_headers(api_key)
+    if protocol == wangyue.PROTOCOL:
+        # Signed per attempt in ``_submit_create``; the secret is never sent.
+        return {"Content-Type": "application/json", "Accept": "application/json"}
     return {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
@@ -422,6 +429,8 @@ def _extract_create_task_id(protocol: str, payload: dict[str, Any]) -> str:
         return rolldek.extract_create_task_id(payload)
     if protocol == fuyao.PROTOCOL:
         return fuyao.extract_create_task_id(payload)
+    if protocol == wangyue.PROTOCOL:
+        return wangyue.extract_create_task_id(payload)
     return str(payload.get("task_id") or payload.get("id") or "").strip()
 
 
@@ -465,12 +474,19 @@ def _forget_create_job(relay_request_id: str, job: asyncio.Task) -> None:
 
 
 async def _post_create(
-    url: str, headers: dict[str, str], payload: Any
+    url: str, headers: dict[str, str], payload: Any, content: bytes | None = None
 ) -> tuple[str, httpx.Response | None, httpx.RequestError | None]:
-    """POST once and say what is known: ``not_sent``, ``unconfirmed`` or ``answered``."""
+    """POST once and say what is known: ``not_sent``, ``unconfirmed`` or ``answered``.
+
+    ``content`` sends exact bytes instead of ``payload`` as JSON, for signed
+    bodies whose hash must match what goes over the wire.
+    """
     try:
         async with httpx.AsyncClient(timeout=_create_timeout()) as client:
-            response = await client.post(url, headers=headers, json=payload)
+            if content is not None:
+                response = await client.post(url, headers=headers, content=content)
+            else:
+                response = await client.post(url, headers=headers, json=payload)
     except CREATE_NOT_SENT_ERRORS as exc:
         return "not_sent", None, exc
     except httpx.RequestError as exc:
@@ -524,13 +540,24 @@ async def _submit_create(submission: dict[str, Any], api_key: str) -> JSONRespon
     """
     relay_request_id = submission["relay_request_id"]
     response_headers = {REQUEST_ID_HEADER: relay_request_id}
-    headers = _create_headers(submission["protocol"], api_key)
-    if submission["idempotency_key"]:
+    protocol = submission["protocol"]
+    headers = _create_headers(protocol, api_key)
+    if submission["idempotency_key"] and protocol != wangyue.PROTOCOL:
         headers["Idempotency-Key"] = submission["idempotency_key"]
+    if protocol == wangyue.PROTOCOL and submission.get("reference_image_urls"):
+        await _upload_wangyue_images(submission, api_key, response_headers)
     for attempt in range(1, CREATE_CONNECT_ATTEMPTS + 1):
         database.record_create_attempt(relay_request_id)
+        content = None
+        if protocol == wangyue.PROTOCOL:
+            # The signature covers a timestamp and a single-use nonce, so
+            # every attempt is signed afresh; the idempotency key stays fixed.
+            content = wangyue.encode_body(submission["upstream_request_payload"])
+            headers = wangyue.signed_headers(
+                api_key, "POST", submission["create_url"], content, submission["idempotency_key"] or ""
+            )
         outcome, response, error = await _post_create(
-            submission["create_url"], headers, submission["upstream_request_payload"]
+            submission["create_url"], headers, submission["upstream_request_payload"], content
         )
         if outcome == "answered":
             return _finish_create(submission, response, response_headers)
@@ -545,6 +572,31 @@ async def _submit_create(submission: dict[str, Any], api_key: str) -> JSONRespon
     database.record_audit_event(relay_request_id, "create", None, _error_text(error), sanitized)
     database.fail_audit_request(relay_request_id, sanitized["detail"])
     raise HTTPException(status_code=502, detail=sanitized["detail"], headers=response_headers) from error
+
+
+async def _upload_wangyue_images(
+    submission: dict[str, Any], api_key: str, response_headers: dict[str, str]
+) -> None:
+    """Turn the reference image URLs into pool assets before the task is created.
+
+    Nothing is billed yet, so a failure here simply fails the request.
+    """
+    relay_request_id = submission["relay_request_id"]
+    body = submission["upstream_request_payload"]
+    try:
+        asset_ids = await wangyue.upload_images(
+            submission["base_url"], api_key, body["taskId"], submission["reference_image_urls"]
+        )
+    except wangyue.WangyueAssetError as error:
+        sanitized = {"detail": str(error)}
+        database.record_audit_event(relay_request_id, "create", None, f"asset upload: {error}", sanitized)
+        database.fail_audit_request(relay_request_id, str(error))
+        raise HTTPException(
+            status_code=error.status_code, detail=str(error), headers=response_headers
+        ) from error
+    body = wangyue.attach_assets(body, asset_ids)
+    submission["upstream_request_payload"] = body
+    database.record_upstream_request_payload(relay_request_id, body)
 
 
 def recover_create(relay_request_id: str) -> None:
@@ -602,6 +654,56 @@ def fail_unconfirmed_create(relay_request_id: str) -> None:
     database.record_audit_event(
         relay_request_id, "create", None, None, {"detail": CREATE_OPERATOR_FAILED_DETAIL}
     )
+
+
+async def _reconcile_wangyue_create(relay_request_id: str) -> str | None:
+    """Look up an unconfirmed Wangyue create by the task ID we assigned it.
+
+    Only a read is sent, never the create. A task the pool reports is bound,
+    so neither the caller nor an operator has to resolve it by hand; any other
+    answer leaves the request waiting (and, eventually, expiring) as before.
+    """
+    if relay_request_id in _create_jobs:
+        return None
+    submission = database.get_create_submission(relay_request_id)
+    if (
+        submission is None
+        or submission["protocol"] != wangyue.PROTOCOL
+        or submission["create_state"] != "unknown"
+        or submission["upstream_task_id"]
+        or submission["status"] != "queued"
+    ):
+        return None
+    upstream = database.get_upstream(submission["upstream_id"], include_key=True)
+    body = submission.get("upstream_request_payload") or {}
+    task_id = str(body.get("taskId") or "") if isinstance(body, dict) else ""
+    if upstream is None or not task_id:
+        return None
+    try:
+        wangyue.parse_credentials(upstream["api_key"])
+    except wangyue.WangyueCredentialError:
+        return None
+    url = upstream["base_url"] + wangyue.task_path(task_id)
+    response, _error = await _get_with_retries(
+        url, lambda: wangyue.signed_headers(upstream["api_key"], "GET", url), POLL_ATTEMPT_TIMEOUT_SECONDS, 1
+    )
+    if response is None or response.status_code != 200:
+        return None
+    try:
+        found = wangyue.extract_create_task_id(response.json())
+    except ValueError:
+        return None
+    if found != task_id:
+        return None
+    try:
+        bind_upstream_task(relay_request_id, task_id)
+    except (KeyError, ValueError):
+        return None
+    database.record_audit_event(
+        relay_request_id, "create", response.status_code, response.text,
+        {"detail": "号池已查到该任务，已自动绑定", "upstream_task_id": task_id},
+    )
+    return task_id
 
 
 def resolve_task_id(task_id: str) -> str:
@@ -703,6 +805,14 @@ async def create_video(
             value.strip() for value in iter_media_references(payload, "video") if value.strip()
         ))
     relay_request_id = database.start_audit_request(upstream["id"], model, protocol, payload)
+    if protocol == wangyue.PROTOCOL:
+        try:
+            wangyue.parse_credentials(upstream["api_key"])
+        except wangyue.WangyueCredentialError as error:
+            database.fail_audit_request(relay_request_id, str(error))
+            raise HTTPException(
+                status_code=502, detail=str(error), headers={REQUEST_ID_HEADER: relay_request_id}
+            ) from error
     if not upstream.get("forward_resolution", True):
         routed_payload.pop("resolution", None)
         if isinstance(routed_payload.get("metadata"), dict):
@@ -740,6 +850,29 @@ async def create_video(
                 detail=str(error),
                 headers={REQUEST_ID_HEADER: relay_request_id},
             ) from error
+    elif protocol == wangyue.PROTOCOL:
+        # The key travels in the signed headers and in the body, so it is
+        # fixed before the body is built.
+        wangyue_idempotency_key = wangyue.normalize_idempotency_key(
+            incoming_idempotency_key
+            or str(payload.get("idempotency_key", "")).strip()
+            or str(uuid.uuid5(uuid.NAMESPACE_URL, relay_request_id))
+        )
+        try:
+            upstream_payload, reference_image_urls = wangyue.transform_create_payload(
+                routed_payload,
+                upstream["profile"],
+                relay_request_id,
+                wangyue_idempotency_key,
+                allowed_durations(upstream["profile"], upstream.get("durations")),
+            )
+        except wangyue.WangyueRequestError as error:
+            database.fail_audit_request(relay_request_id, str(error))
+            raise HTTPException(
+                status_code=400,
+                detail=str(error),
+                headers={REQUEST_ID_HEADER: relay_request_id},
+            ) from error
     else:
         upstream_payload = transform_create_payload(
             routed_payload, upstream["profile"], video_limit
@@ -763,6 +896,8 @@ async def create_video(
         if protocol == rolldek.PROTOCOL
         else fuyao.CREATE_PATH
         if protocol == fuyao.PROTOCOL
+        else wangyue.CREATE_PATH
+        if protocol == wangyue.PROTOCOL
         else "/v1/video/generations" if protocol == "seedance" else "/v1/videos"
     )
     headers = _create_headers(protocol, upstream["api_key"])
@@ -774,6 +909,7 @@ async def create_video(
         headers["Idempotency-Key"] = incoming_idempotency_key or explicit_key or str(
             uuid.uuid5(uuid.NAMESPACE_URL, relay_request_id)
         )
+    idempotency_key = wangyue_idempotency_key if protocol == wangyue.PROTOCOL else headers.get("Idempotency-Key")
 
     url = (
         funai.api_url(upstream["base_url"], endpoint)
@@ -788,17 +924,20 @@ async def create_video(
             raise HTTPException(
                 status_code=409, detail="Public task ID is already in use", headers=response_headers
             ) from exc
-    database.begin_create_submission(relay_request_id, url, headers.get("Idempotency-Key"))
+    database.begin_create_submission(relay_request_id, url, idempotency_key)
     submission = {
         "relay_request_id": relay_request_id,
         "upstream_id": upstream["id"],
         "model": model,
         "protocol": protocol,
+        "base_url": upstream["base_url"],
         "create_url": url,
-        "idempotency_key": headers.get("Idempotency-Key"),
+        "idempotency_key": idempotency_key,
         "upstream_request_payload": upstream_payload,
         "reference_video_urls": reference_video_urls,
     }
+    if protocol == wangyue.PROTOCOL:
+        submission["reference_image_urls"] = reference_image_urls
     job = _start_create_job(submission, upstream["api_key"])
     try:
         # The submission is a separate task, so a caller that disconnects or a
@@ -837,6 +976,8 @@ def _finish_create(
         if protocol == autodl_comfyui.PROTOCOL
         else fuyao.normalize_status(upstream_payload.get("status"))
         if protocol == fuyao.PROTOCOL
+        else wangyue.extract_create_status(upstream_payload)
+        if protocol == wangyue.PROTOCOL
         else upstream_payload.get("status")
     )
     if create_status is None and upstream_payload.get("error"):
@@ -947,6 +1088,12 @@ def normalize_task_payload(task: dict[str, Any], payload: dict[str, Any]) -> tup
         video_url = fields["video_url"]
         error_value = fields["error"]
         progress = fields["progress"]
+    elif task["protocol"] == wangyue.PROTOCOL:
+        fields = wangyue.extract_task_fields(payload, task["task_id"])
+        status_value = fields["status"]
+        video_url = fields["video_url"]
+        error_value = fields["error"]
+        progress = fields["progress"]
 
     if status_value is None and error_value:
         status_value = "failed"
@@ -985,14 +1132,12 @@ async def fetch_task(task_id: str, timeout_seconds: float | None = None) -> JSON
         submission = database.get_create_submission(task_id) if task_id.startswith("vrq_") else None
         if submission is not None and not submission["upstream_task_id"]:
             recover_create(task_id)
+            bound_task_id = await _reconcile_wangyue_create(task_id)
+            if bound_task_id:
+                return await fetch_task(bound_task_id, timeout_seconds)
             return _pending_create_status(database.get_create_submission(task_id) or submission)
         raise HTTPException(status_code=404, detail="Task not found")
     database.touch_task(task_id)
-    headers = (
-        autodl_comfyui.auth_headers(task["api_key"])
-        if task["protocol"] == autodl_comfyui.PROTOCOL
-        else {"Authorization": f"Bearer {task['api_key']}", "Accept": "application/json"}
-    )
     relay_request_id = task.get("relay_request_id")
     response_headers = {REQUEST_ID_HEADER: relay_request_id} if relay_request_id else None
     endpoint = (
@@ -1012,6 +1157,8 @@ async def fetch_task(task_id: str, timeout_seconds: float | None = None) -> JSON
         if task["protocol"] == rolldek.PROTOCOL
         else fuyao.task_path(task_id)
         if task["protocol"] == fuyao.PROTOCOL
+        else wangyue.task_path(task_id)
+        if task["protocol"] == wangyue.PROTOCOL
         else f"/v1/videos/{task_id}"
     )
     url = (
@@ -1019,6 +1166,19 @@ async def fetch_task(task_id: str, timeout_seconds: float | None = None) -> JSON
         if task["protocol"] == funai.PROTOCOL
         else f"{task['base_url']}{endpoint}"
     )
+    headers: dict[str, str] | Callable[[], dict[str, str]] = (
+        autodl_comfyui.auth_headers(task["api_key"])
+        if task["protocol"] == autodl_comfyui.PROTOCOL
+        else (lambda: wangyue.signed_headers(task["api_key"], "GET", url))
+        if task["protocol"] == wangyue.PROTOCOL
+        else {"Authorization": f"Bearer {task['api_key']}", "Accept": "application/json"}
+    )
+    if task["protocol"] == wangyue.PROTOCOL:
+        try:
+            wangyue.parse_credentials(task["api_key"])
+        except wangyue.WangyueCredentialError:
+            logger.warning("Wangyue upstream key is not keyId:secret; task %s kept pending", task_id)
+            return pending_task_response(task)
     attempt_timeout = min(POLL_ATTEMPT_TIMEOUT_SECONDS, settings.upstream_timeout_seconds)
     if timeout_seconds is not None:
         attempt_timeout = min(attempt_timeout, timeout_seconds)
@@ -1034,7 +1194,12 @@ async def fetch_task(task_id: str, timeout_seconds: float | None = None) -> JSON
         return pending_task_response(task)
     if not 200 <= response.status_code < 300:
         error_response = upstream_error(response, relay_request_id, "poll")
-        if should_preserve_task_on_poll_error(response):
+        if should_preserve_task_on_poll_error(response) or (
+            # A rejected key or signature (rotated key, clock skew, replayed
+            # nonce) says nothing about the task, which keeps running.
+            task["protocol"] == wangyue.PROTOCOL
+            and wangyue.is_credential_rejection(response.status_code, _json_or_none(response))
+        ):
             return pending_task_response(task, response)
         else:
             try:
@@ -1321,6 +1486,23 @@ async def stream_content(
             raise HTTPException(status_code=409, detail="Video is not completed")
         raise HTTPException(status_code=404, detail="Task not found")
 
+    if task["protocol"] == wangyue.PROTOCOL:
+        if task.get("status") != "completed":
+            await fetch_task(task_id)
+            task = database.get_task(task_id) or task
+            if task.get("status") != "completed":
+                raise HTTPException(status_code=409, detail="Video is not completed")
+        download_url, download_headers = await _resolve_wangyue_download(task)
+        return await stream_upstream_content(
+            download_url,
+            request,
+            headers=download_headers,
+            default_media_type="video/mp4",
+            error_message="Video upstream download failed",
+            reject_json=True,
+            filename_stem=filename_stem or task_id,
+        )
+
     source_url = task.get("source_video_url")
     if not source_url:
         task_response = await fetch_task(task_id)
@@ -1418,6 +1600,45 @@ async def _resolve_fuyao_video_link(content_url: str, task: dict[str, Any]) -> s
     # Not cached: the link is signed and expires (``Expires=...``), so every
     # download asks ``/content`` for a fresh one.
     return link
+
+
+async def _resolve_wangyue_download(task: dict[str, Any]) -> tuple[str, dict[str, str]]:
+    """Ask ``/result`` for the signed download link and the headers it needs.
+
+    Not cached: the link expires within minutes, so every download asks again.
+    """
+    try:
+        wangyue.parse_credentials(task["api_key"])
+    except wangyue.WangyueCredentialError as error:
+        raise HTTPException(status_code=502, detail="Video upstream download failed") from error
+    url = task["base_url"] + wangyue.result_path(task["task_id"])
+    response, error = await _get_with_retries(
+        url,
+        lambda: wangyue.signed_headers(task["api_key"], "GET", url),
+        POLL_ATTEMPT_TIMEOUT_SECONDS,
+        POLL_ATTEMPTS,
+    )
+    if response is None:
+        logger.warning("Wangyue result lookup failed: %r", error)
+        raise HTTPException(status_code=502, detail="Video upstream download failed") from error
+    if response.status_code == 409:
+        raise HTTPException(status_code=409, detail="Video is not completed")
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = None
+    download = wangyue.extract_download(payload) if response.status_code == 200 else None
+    if download is None:
+        logger.warning("Wangyue result lookup returned HTTP %s without a link", response.status_code)
+        raise HTTPException(status_code=502, detail="Video upstream download failed")
+    return download
+
+
+def _json_or_none(response: httpx.Response) -> Any:
+    try:
+        return response.json()
+    except ValueError:
+        return None
 
 
 def _is_json_response(headers: httpx.Headers) -> bool:

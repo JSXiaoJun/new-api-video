@@ -128,6 +128,25 @@ is stored.
 使用 720p。CH1 模型转发 `image_urls`、`video_urls`、`audio_urls`，CH2 模型转发
 `images`、`videos`、`audios`；旧的 CH3、CH4 和 `sd-2.5-ch1-15s` 兼容路径保持不变。
 
+### 望月号池 Channel (`wangyue`)
+
+新建视频上游，Base URL 填 `https://1456719883-78ndn27wdv.ap-guangzhou.tencentscf.com`，API Key 填
+`keyId:secret`（冒号分隔），然后点击 `同步上游模型`。模型目录是公开接口，同步时不会发送密钥。
+上线前可用 `python tools/wangyue_check.py` 验证密钥：它只发一个签名的 GET，不会创建任务。
+
+适配器在 `app/channels/wangyue/`：每个请求单独做 HMAC-SHA256 签名（`X-Wangyue-*` 请求头，每次新的
+nonce），`secret` 不会离开本进程。参考图片不能直接传 URL：适配器先下载图片、申请素材租约、上传、确认，
+再用素材 ID 创建任务。`taskId` 由适配器生成，因此创建结果未确认时，查询会用这个 ID 去号池核对，查到就
+自动绑定（只读，从不重发创建请求）。`review_required` 按处理中对待；鉴权类错误不会把任务判失败。
+
+| 模型 | 时长 | 分辨率 | 参考图 |
+| --- | --- | --- | --- |
+| `seedance2.0fast` | 10 或 15 秒，必须显式传入 | 720p | 最多 9 张；首帧 / 首尾帧 / 自动参考 |
+| `seedance2.0mini` | 15 秒 | 720p | 同上 |
+| `vidu-q3` | 3–16 秒 | 720p / 1080p | 最多 9 张参考图，无首尾帧 |
+
+三个模型都是按条计费，New API 插件里要把对外模型名加进按次计费列表，不能按秒计费。
+
 ### Pro666 Channel
 
 Add Pro666 as a regular video upstream with `https://api.pro666.top` as its Base URL and the channel API key, then use

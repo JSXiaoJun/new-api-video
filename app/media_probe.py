@@ -47,7 +47,8 @@ async def _resolve(host: str, port: int, **kwargs):
     return await asyncio.get_running_loop().getaddrinfo(host, port, **kwargs)
 
 
-async def _check_public_url(url: str) -> None:
+async def check_public_url(url: str) -> None:
+    """Raise :class:`MediaProbeError` unless ``url`` reaches only public addresses."""
     parts = urlsplit(url)
     host = parts.hostname
     if parts.scheme not in {"http", "https"} or not host or parts.username or parts.password:
@@ -81,7 +82,7 @@ class RangeReader:
         wanted = end - start + 1
         url = self.url
         for _ in range(MAX_REDIRECTS + 1):
-            await _check_public_url(url)
+            await check_public_url(url)
             async with self.client.stream("GET", url, headers={"Range": f"bytes={start}-{end}"}) as response:
                 if response.is_redirect:
                     location = response.headers.get("Location")

@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.templating import Jinja2Templates
 
 from . import database, image_database, image_proxy, new_api_gateway, proxy
-from .channels import autodl_comfyui, funai, fuyao, mai_token, o10_grok, rolldek, sub2api_video
+from .channels import autodl_comfyui, funai, fuyao, mai_token, o10_grok, rolldek, sub2api_video, wangyue
 from .config import PUBLIC_LINK_BASE_URLS, ROOT_DIR, settings
 from .integration_doc import build_integration_document
 from .image_integration_doc import build_image_integration_document
@@ -504,6 +504,10 @@ async def discover_upstream_models(payload: ModelDiscoveryInput, _: dict = Depen
                 list(sub2api_video.KNOWN_MODELS), sub2api_video.PROTOCOL
             )
         }
+    if wangyue.is_wangyue_base_url(payload.base_url):
+        # The pool catalog is public; the keyId:secret pair is never sent as
+        # a bearer token.
+        return await _discover_wangyue_models(payload.base_url)
     headers = {"Accept": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
@@ -553,6 +557,24 @@ async def discover_upstream_models(payload: ModelDiscoveryInput, _: dict = Depen
     except ValueError as exc:
         raise HTTPException(status_code=502, detail="上游模型接口返回的不是有效 JSON") from exc
     models = normalize_discovered_models(upstream_payload, discovery_protocol)
+    if not models:
+        raise HTTPException(status_code=422, detail="上游没有返回可用模型")
+    return {"models": models}
+
+
+async def _discover_wangyue_models(base_url: str) -> dict[str, Any]:
+    try:
+        async with httpx.AsyncClient(timeout=min(settings.upstream_timeout_seconds, 30)) as client:
+            response = await client.get(base_url + wangyue.MODELS_PATH, headers={"Accept": "application/json"})
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=502, detail=f"上游模型请求失败: {exc}") from exc
+    if not 200 <= response.status_code < 300:
+        raise HTTPException(status_code=502, detail=f"上游模型接口返回 HTTP {response.status_code}")
+    try:
+        upstream_payload = response.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail="上游模型接口返回的不是有效 JSON") from exc
+    models = normalize_discovered_models(wangyue.discovered_models(upstream_payload), wangyue.PROTOCOL)
     if not models:
         raise HTTPException(status_code=422, detail="上游没有返回可用模型")
     return {"models": models}
