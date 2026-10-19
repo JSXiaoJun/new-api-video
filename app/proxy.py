@@ -583,11 +583,13 @@ async def _upload_wangyue_images(
     """
     relay_request_id = submission["relay_request_id"]
     body = submission["upstream_request_payload"]
+    image_urls = submission["reference_image_urls"]
     try:
-        asset_ids = await wangyue.upload_images(
-            submission["base_url"], api_key, body["taskId"], submission["reference_image_urls"]
-        )
+        asset_ids = await wangyue.upload_images(submission["base_url"], api_key, body["taskId"], image_urls)
     except wangyue.WangyueAssetError as error:
+        database.record_upstream_request_payload(
+            relay_request_id, wangyue.audit_view(body, image_urls, error=str(error))
+        )
         sanitized = {"detail": str(error)}
         database.record_audit_event(relay_request_id, "create", None, f"asset upload: {error}", sanitized)
         database.fail_audit_request(relay_request_id, str(error))
@@ -596,7 +598,7 @@ async def _upload_wangyue_images(
         ) from error
     body = wangyue.attach_assets(body, asset_ids)
     submission["upstream_request_payload"] = body
-    database.record_upstream_request_payload(relay_request_id, body)
+    database.record_upstream_request_payload(relay_request_id, wangyue.audit_view(body, image_urls, asset_ids))
 
 
 def recover_create(relay_request_id: str) -> None:
@@ -877,7 +879,12 @@ async def create_video(
         upstream_payload = transform_create_payload(
             routed_payload, upstream["profile"], video_limit
         )
-    database.record_upstream_request_payload(relay_request_id, upstream_payload)
+    database.record_upstream_request_payload(
+        relay_request_id,
+        wangyue.audit_view(upstream_payload, reference_image_urls)
+        if protocol == wangyue.PROTOCOL
+        else upstream_payload,
+    )
     response_headers = {REQUEST_ID_HEADER: relay_request_id}
     endpoint = (
         ark_video.CREATE_PATH

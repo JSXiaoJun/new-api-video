@@ -31,6 +31,7 @@ from .catalog import (
 from .payload import (
     WangyueRequestError,
     attach_assets,
+    audit_view,
     normalize_idempotency_key,
     task_id_for,
     transform_create_payload,
@@ -58,6 +59,7 @@ __all__ = [
     "WangyueCredentialError",
     "WangyueRequestError",
     "attach_assets",
+    "audit_view",
     "discovered_models",
     "encode_body",
     "extract_create_status",

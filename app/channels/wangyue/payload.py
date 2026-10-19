@@ -128,6 +128,33 @@ def attach_assets(body: dict[str, Any], asset_ids: list[str]) -> dict[str, Any]:
     return {**body, "payload": {**body["payload"], "referenceImageAssetIds": list(asset_ids)}}
 
 
+def audit_view(
+    body: dict[str, Any],
+    image_urls: list[str],
+    asset_ids: list[str] | None = None,
+    error: str | None = None,
+) -> dict[str, Any]:
+    """The body as recorded for the admin page, never sent upstream.
+
+    Reference images leave the body as URLs and return as asset IDs only after
+    the upload, so ``_referenceImages`` keeps every image visible meanwhile:
+    its URL, the asset it became (``None`` until uploaded) and any upload error.
+    """
+    if not image_urls:
+        return body
+    ids = list(asset_ids or [])
+    view: dict[str, Any] = {
+        **body,
+        "_referenceImages": [
+            {"url": url, "assetId": ids[index] if index < len(ids) else None}
+            for index, url in enumerate(image_urls)
+        ],
+    }
+    if error:
+        view["_referenceImageUploadError"] = error
+    return view
+
+
 def _seedance_reference_mode(
     payload: dict[str, Any], images: list[tuple[str, str]]
 ) -> tuple[str | None, list[str]]:

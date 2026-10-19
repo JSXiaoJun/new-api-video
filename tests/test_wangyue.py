@@ -458,6 +458,13 @@ class WangyueFlowTests(unittest.TestCase):
         body = json.loads(create_kwargs["content"])
         self.assertEqual(body["payload"]["referenceImageAssetIds"], ["asset-1", "asset-2"])
         self.assertEqual(body["payload"]["settings"]["referenceMode"], "start_end")
+        self.assertNotIn("_referenceImages", body)
+        recorded = database.get_audit_request(created.headers[proxy.REQUEST_ID_HEADER])["upstream_request_payload"]
+        self.assertEqual(recorded["payload"], body["payload"])
+        self.assertEqual(recorded["_referenceImages"], [
+            {"url": "https://cdn.example/f.png", "assetId": "asset-1"},
+            {"url": "https://cdn.example/l.png", "assetId": "asset-2"},
+        ])
         self.assertEqual({item["taskId"] for item in lease_bodies}, {body["taskId"]})
         self.assertEqual(lease_bodies[0]["sha256"], hashlib.sha256(PNG).hexdigest())
         self.assertEqual(lease_bodies[0]["sizeBytes"], len(PNG))
@@ -490,6 +497,11 @@ class WangyueFlowTests(unittest.TestCase):
             self._create({"model": model, "prompt": "p", "image_urls": ["https://cdn.example/a"]}, routes, calls)
         self.assertEqual(raised.exception.status_code, 502)
         self.assertFalse([call for call in calls if urlsplit(call[1]).path == "/v1/pool/api/tasks"])
+        recorded = database.get_audit_request(raised.exception.headers[proxy.REQUEST_ID_HEADER])
+        self.assertEqual(recorded["status"], "failed")
+        self.assertEqual(recorded["upstream_request_payload"]["_referenceImages"],
+                         [{"url": "https://cdn.example/a", "assetId": None}])
+        self.assertIn("号池素材接口返回错误", recorded["upstream_request_payload"]["_referenceImageUploadError"])
 
     def test_private_image_links_are_refused(self):
         model = self._route("seedance2.0mini")
