@@ -314,17 +314,26 @@ class WangyuePayloadTests(unittest.TestCase):
         self.assertEqual(body["type"], "pool_video")
         self.assertEqual(settings["channel"], "vidu")
         self.assertEqual(settings["resolution"], "720P")
-        self.assertEqual(settings["referenceMode"], "image_reference")
+        self.assertEqual(settings["referenceMode"], "auto")
         self.assertEqual(settings["quantity"], 1)
-        with self.assertRaises(wangyue.WangyueRequestError):
-            build({"model": "vidu-q3", "prompt": "p", "duration": 8, "first_frame_url": "https://a/f.png"},
-                  "wangyue-vidu-q3")
+        body, images = build(
+            {"model": "vidu-q3", "prompt": "p", "duration": 8,
+             "first_frame_url": "https://a/f.png", "last_frame_url": "https://a/l.png"},
+            "wangyue-vidu-q3",
+        )
+        self.assertEqual(body["payload"]["settings"]["referenceMode"], "start_end")
+        self.assertEqual(images, ["https://a/f.png", "https://a/l.png"])
+        body, _ = build({"model": "vidu-q3", "prompt": "p", "duration": 8}, "wangyue-vidu-q3")
+        self.assertNotIn("referenceMode", body["payload"]["settings"])
 
     def test_idempotency_keys_fit_the_gateway_rules(self):
-        self.assertEqual(wangyue.normalize_idempotency_key("partner-task-0001"), "partner-task-0001")
-        hashed = wangyue.normalize_idempotency_key("短")
-        self.assertRegex(hashed, r"^nav-[0-9a-f]{32}$")
-        self.assertEqual(hashed, wangyue.normalize_idempotency_key("短"))
+        for kept in ("partner-task-0001", "order:2026.10@shop_1"):
+            self.assertEqual(wangyue.normalize_idempotency_key(kept), kept)
+        for value in ("短", "-starts-with-dash", "_starts_with_underscore", "a" * 101, "has space 123"):
+            with self.subTest(value=value):
+                hashed = wangyue.normalize_idempotency_key(value)
+                self.assertRegex(hashed, r"^nav-[0-9a-f]{32}$")
+                self.assertEqual(hashed, wangyue.normalize_idempotency_key(value))
 
 
 class WangyueTaskParsingTests(unittest.TestCase):
@@ -474,6 +483,44 @@ class WangyueFlowTests(unittest.TestCase):
         self.assertNotIn("Authorization", put_kwargs["headers"])
         assert_signed(self, "POST", calls[1][1], calls[1][2])
         assert_signed(self, "POST", calls[3][1], calls[3][2])
+
+    def test_an_already_uploaded_asset_is_reused_without_a_put(self):
+        model = self._route("seedance2.0mini")
+        calls: list = []
+        routes = {
+            ("GET", "cdn.example"): lambda url, _kwargs: _response("GET", url, 200, content=PNG),
+            ("POST", "/v1/pool/api/assets/input/lease"): lambda url, _kwargs: _response("POST", url, 200, {
+                "ok": True, "alreadyUploaded": True, "upload": None,
+                "asset": {"id": "asset-ready", "state": "ready"},
+            }),
+            ("POST", "/v1/pool/api/tasks"): self._created,
+        }
+        created = self._create(
+            {"model": model, "prompt": "p", "image_urls": ["https://cdn.example/a.png"]}, routes, calls
+        )
+        self.assertEqual(json.loads(created.body)["status"], "queued")
+        self.assertFalse([call for call in calls if call[0] == "PUT"])
+        body = json.loads(calls[-1][2]["content"])
+        self.assertEqual(body["payload"]["referenceImageAssetIds"], ["asset-ready"])
+
+    def test_upload_put_is_retried_on_timeouts_and_throttling(self):
+        calls: list = []
+        answers = [
+            _response("PUT", "https://cos.example/up", 408, content=b""),
+            _response("PUT", "https://cos.example/up", 429, content=b""),
+            _response("PUT", "https://cos.example/up", 200, content=b""),
+        ]
+        with patch("app.channels.wangyue.assets.httpx.AsyncClient",
+                   fake_client(calls, {("PUT", "cos.example"): answers})):
+            asyncio.run(assets._put("PUT", "https://cos.example/up", {}, PNG))
+        self.assertEqual(len(calls), 3)
+
+        calls.clear()
+        with patch("app.channels.wangyue.assets.httpx.AsyncClient", fake_client(calls, {
+            ("PUT", "cos.example"): [_response("PUT", "https://cos.example/up", 403, content=b"")],
+        })), self.assertRaises(assets.WangyueAssetError):
+            asyncio.run(assets._put("PUT", "https://cos.example/up", {}, PNG))
+        self.assertEqual(len(calls), 1)
 
     def test_failed_image_upload_fails_without_creating_a_task(self):
         model = self._route("seedance2.0mini")

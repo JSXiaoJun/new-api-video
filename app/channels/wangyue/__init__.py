@@ -1,6 +1,6 @@
 """Adapter for the Wangyue pool (望月号池) third-party video API.
 
-Contract (partner guide ``DOUBAO_POOL_THIRD_PARTY_API_GUIDE``, API v1):
+Contract (partner guide ``API.md``, API v1, 2026-10-20 revision):
 
 * every ``/v1/pool/api/...`` call is HMAC-SHA256 signed per request
   (:mod:`.signing`); the upstream key is stored as ``keyId:secret``

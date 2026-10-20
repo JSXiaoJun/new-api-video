@@ -1,11 +1,12 @@
 """Wangyue task paths and create/poll response parsing.
 
 Statuses: ``queued`` (waiting for a pool node), ``leased`` (a node is
-running it), ``review_required`` (paused for a safe-recovery check, then
-continues), ``completed``, ``failed`` and ``cancelled``.
+running it), ``review_required`` (the pool is unsure whether its node
+submitted the job; it never resubmits on its own and Wangyue resolves it),
+``completed``, ``failed`` and ``cancelled``.
 
 ``review_required`` is not a failure: reporting it as one would make New API
-refund a task the pool still finishes. It is held as ``processing``.
+refund a task the pool may still finish. It is held as ``processing``.
 """
 
 from __future__ import annotations

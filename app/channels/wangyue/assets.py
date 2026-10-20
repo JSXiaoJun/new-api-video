@@ -114,6 +114,10 @@ async def _upload(base_url: str, api_key: str, task_id: str, data: bytes, index:
     asset = lease.get("asset") if isinstance(lease.get("asset"), dict) else {}
     upload = lease.get("upload") if isinstance(lease.get("upload"), dict) else {}
     asset_id = str(asset.get("id") or "").strip()
+    if asset_id and lease.get("alreadyUploaded") is True and asset.get("state") == "ready":
+        # Same task, same bytes: the pool hands back the confirmed asset
+        # with ``upload: null`` instead of a new upload.
+        return asset_id
     upload_url = upload.get("url")
     if not asset_id or not isinstance(upload_url, str) or not upload_url.startswith("https://"):
         raise WangyueAssetError("号池素材租约缺少上传地址")
@@ -142,7 +146,7 @@ async def _put(method: str, url: str, headers: dict[str, str], data: bytes) -> N
             if 200 <= response.status_code < 300:
                 return
             error = WangyueAssetError(f"号池素材上传失败：HTTP {response.status_code}")
-            if response.status_code < 500:
+            if response.status_code < 500 and response.status_code not in (408, 429):
                 break
         except httpx.RequestError as exc:
             error = exc

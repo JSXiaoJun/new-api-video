@@ -40,14 +40,13 @@ _REFERENCE_MODES = {
     "start_end": START_END,
     "first_last_frame": START_END,
 }
-VIDU_REFERENCE_MODE = "image_reference"
 
 _FIRST_FRAME_KEYS = ("first_frame", "first_frame_url", "first_frame_image", "first_image", "start_image_url")
 _LAST_FRAME_KEYS = ("last_frame", "last_frame_url", "last_frame_image", "last_image", "end_image_url")
 _IMAGE_SINGLE_KEYS = ("image", "image_url", "input_reference")
 _IMAGE_LIST_KEYS = ("image_urls", "images", "reference_images", "reference_image_urls", "image_refs")
 
-_IDEMPOTENCY_KEY = re.compile(r"^[A-Za-z0-9_-]{8,100}$")
+_IDEMPOTENCY_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@-]{7,99}$")
 
 
 def task_id_for(relay_request_id: str) -> str:
@@ -56,7 +55,7 @@ def task_id_for(relay_request_id: str) -> str:
 
 
 def normalize_idempotency_key(value: str) -> str:
-    """Keep a caller key the gateway accepts (8-100 chars); hash anything else."""
+    """Keep a caller key the gateway accepts; hash anything else."""
     value = value.strip()
     if _IDEMPOTENCY_KEY.match(value):
         return value
@@ -91,21 +90,15 @@ def transform_create_payload(
         settings["aspectRatio"] = ratio
     settings["resolution"] = _resolution(payload, family)
 
+    mode, ordered = _reference_mode(payload, images)
+    if mode is not None:
+        settings["referenceMode"] = mode
     if family == catalog.VIDU_Q3:
-        if any(role != REFERENCE_IMAGE for role, _ in images):
-            raise WangyueRequestError("Vidu Q3 不支持首帧/尾帧，只支持参考图")
-        if images:
-            settings["referenceMode"] = VIDU_REFERENCE_MODE
         # One relay task is one video.
         settings["quantity"] = 1
         for key in ("codec", "generationMode"):
             if isinstance(payload.get(key), str) and payload[key].strip():
                 settings[key] = payload[key].strip()
-        ordered = [url for _, url in images]
-    else:
-        mode, ordered = _seedance_reference_mode(payload, images)
-        if mode is not None:
-            settings["referenceMode"] = mode
 
     task_payload: dict[str, Any] = {
         "projectId": PROJECT_ID,
@@ -155,7 +148,7 @@ def audit_view(
     return view
 
 
-def _seedance_reference_mode(
+def _reference_mode(
     payload: dict[str, Any], images: list[tuple[str, str]]
 ) -> tuple[str | None, list[str]]:
     """Choose ``auto`` / ``start_frame`` / ``start_end`` and order the images."""

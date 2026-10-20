@@ -1,12 +1,15 @@
 """Wangyue pool host detection, model families, profiles and route hints.
 
-Published catalog (``GET /v1/pool/api/models``, 2026-10-19), all billed per
+Published catalog (``GET /v1/pool/api/models``, 2026-10-20), all billed per
 task (``billingType: fixed``), never per second:
 
 * ``seedance2.0fast`` -- 10 s (video-space flow) or 15 s (chat-confirm flow),
   720P, up to 9 reference images
 * ``seedance2.0mini`` -- 15 s only, 720P, up to 9 reference images
 * ``vidu-q3``         -- 3-16 s, 720P/1080P, up to 9 reference images
+
+Every family takes the reference modes ``auto``, ``start_frame`` and
+``start_end`` (Vidu's former ``image_reference`` is gone).
 
 No family accepts reference videos or audios.
 """

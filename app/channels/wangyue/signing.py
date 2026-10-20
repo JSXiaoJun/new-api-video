@@ -95,8 +95,8 @@ def sign(
 def signed_path(url: str) -> str:
     parts = urlsplit(url)
     if parts.query:
-        # The guide does not pin down the query encoding, and the relay sends
-        # no signed request with a query, so refuse instead of guessing.
+        # The relay sends no signed request with a query, so the guide's
+        # sorted URLSearchParams canonical form is not implemented.
         raise ValueError("signed Wangyue requests must not carry a query string")
     return parts.path or "/"
 
