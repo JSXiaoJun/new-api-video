@@ -196,7 +196,10 @@ class MaiTokenAdapterTests(unittest.TestCase):
         self.assertEqual(caps["maxReferences"], 15)
         self.assertTrue(caps["referenceVideo"])
 
-    def test_text_request_duplicates_prompt_and_omits_conflicting_resolution(self):
+    def test_text_request_duplicates_prompt_and_sends_the_resolution(self):
+        # The upstream requires an explicit ``resolution``; the model suffix is
+        # only a fallback for callers that omit it. ``size`` and undeclared
+        # client fields are still dropped: the tier travels as ``resolution``.
         payload = mai_token.transform_create_payload({
             "model": "sd-2.0-720p",
             "prompt": "夜晚天台的动作打斗",
@@ -213,38 +216,68 @@ class MaiTokenAdapterTests(unittest.TestCase):
             "prompt": "夜晚天台的动作打斗",
             "content": [{"type": "text", "text": "夜晚天台的动作打斗"}],
             "seconds": "5",
+            "resolution": "1080p",
             "ratio": "16:9",
             "generate_audio": True,
             "seed": -1,
         })
-        self.assertNotIn("resolution", payload)
         self.assertNotIn("size", payload)
         self.assertNotIn("extra_field", payload)
 
-    def test_media_is_split_into_typed_content_items_with_documented_caps(self):
+    def test_the_resolution_is_normalized_and_falls_back_to_the_model_suffix(self):
+        from app.channels import mai_token as channel
+
+        def sent(extra: dict) -> dict:
+            return channel.transform_create_payload({
+                "model": "sdg-2.5-1080p", "prompt": "p", **extra,
+            })
+
+        self.assertEqual(sent({})["resolution"], "1080p")
+        self.assertEqual(sent({"resolution": "720P"})["resolution"], "720p")
+        self.assertEqual(sent({"resolution": "1280x720"})["resolution"], "720p")
+        self.assertEqual(sent({"metadata": {"resolution": "480P"}})["resolution"], "480p")
+        # A name without a tier cannot invent one; the gateway rejects those
+        # routes before this adapter runs.
+        self.assertNotIn("resolution", channel.transform_create_payload(
+            {"model": "video-900", "prompt": "p"}
+        ))
+
+    def test_media_is_split_into_typed_content_items(self):
         payload = mai_token.transform_create_payload({
             "model": "sd-2.0-720p",
             "prompt": "@image1 参考 @video1 与 @audio1",
             "duration": 15,
-            "image_urls": [
-                {"url": f"https://cdn.example/img-{index}.png"} for index in range(12)
-            ],
+            "image_urls": [{"url": f"https://cdn.example/img-{index}.png"} for index in range(8)],
             "reference_image_urls": ["https://cdn.example/extra.png"],
-            "audio_urls": [f"https://cdn.example/audio-{index}.mp3" for index in range(5)],
-            "reference_videos": [f"https://cdn.example/video-{index}.mp4" for index in range(5)],
+            "audio_urls": [f"https://cdn.example/audio-{index}.mp3" for index in range(3)],
+            "reference_videos": [f"https://cdn.example/video-{index}.mp4" for index in range(3)],
         })
         content = payload["content"]
         self.assertEqual(content[0], {"type": "text", "text": "@image1 参考 @video1 与 @audio1"})
         images = [item for item in content if item["type"] == "image_url"]
         audios = [item for item in content if item["type"] == "audio_url"]
         videos = [item for item in content if item["type"] == "video_url"]
-        self.assertEqual(len(images), mai_token.MAX_IMAGES)
-        self.assertEqual(len(audios), mai_token.MAX_AUDIOS)
-        self.assertEqual(len(videos), mai_token.MAX_VIDEOS)
+        # Every supplied item reaches the upstream: nothing is trimmed.
+        self.assertEqual(len(images), 9)
+        self.assertEqual(len(audios), 3)
+        self.assertEqual(len(videos), 3)
         self.assertTrue(all(item["role"] == "reference_image" for item in images))
         self.assertTrue(all(item["role"] == "reference_audio" for item in audios))
         self.assertTrue(all(item["role"] == "reference_video" for item in videos))
         self.assertEqual(payload["seconds"], "15")
+
+    def test_over_the_documented_caps_is_refused_instead_of_trimmed(self):
+        # Dropping the extras would bill the caller for reference media that
+        # never reaches the upstream, so the create is refused and says why.
+        cases = {
+            "9 张图片": {"image_urls": [f"https://c/{i}.png" for i in range(10)]},
+            "3 段音频": {"audio_urls": [f"https://c/{i}.mp3" for i in range(4)]},
+            "3 段视频": {"reference_videos": [f"https://c/{i}.mp4" for i in range(4)]},
+        }
+        for expected, extra in cases.items():
+            with self.subTest(expected=expected):
+                with self.assertRaisesRegex(mai_token.MaiTokenRequestError, expected):
+                    mai_token.transform_create_payload({"model": "sd-2.0-720p", "prompt": "p", **extra})
 
     def test_first_and_last_frames_use_roles_and_share_the_image_budget(self):
         payload = mai_token.transform_create_payload({
@@ -252,14 +285,54 @@ class MaiTokenAdapterTests(unittest.TestCase):
             "prompt": "从首帧过渡到尾帧",
             "first_frame_url": "https://cdn.example/first.png",
             "last_frame": {"url": "https://cdn.example/last.png"},
-            "image_urls": [f"https://cdn.example/ref-{index}.png" for index in range(9)],
+            "image_urls": [f"https://cdn.example/ref-{index}.png" for index in range(7)],
         })
         images = [item for item in payload["content"] if item["type"] == "image_url"]
         self.assertEqual(images[0]["role"], "first_frame")
         self.assertEqual(images[0]["image_url"]["url"], "https://cdn.example/first.png")
         self.assertEqual(images[1]["role"], "last_frame")
         self.assertEqual(images[1]["image_url"]["url"], "https://cdn.example/last.png")
+        # 2 frames + 7 references = the documented 9-image budget, all kept.
         self.assertEqual(len(images), mai_token.MAX_IMAGES)
+        # A tenth image would exceed it: refused, because the frames count too.
+        with self.assertRaisesRegex(mai_token.MaiTokenRequestError, "9 张图片"):
+            mai_token.transform_create_payload({
+                "model": "sd-2.0-720p",
+                "prompt": "p",
+                "first_frame_url": "https://cdn.example/first.png",
+                "last_frame": "https://cdn.example/last.png",
+                "image_urls": [f"https://cdn.example/ref-{index}.png" for index in range(8)],
+            })
+
+    def test_a_length_outside_the_documented_range_is_refused(self):
+        for value in (3, 16, "0", 0):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(mai_token.MaiTokenRequestError, "4–15 秒"):
+                    mai_token.transform_create_payload(
+                        {"model": "sd-2.0-720p", "prompt": "p", "duration": value}
+                    )
+        with self.assertRaisesRegex(mai_token.MaiTokenRequestError, "必须是整数秒"):
+            mai_token.transform_create_payload(
+                {"model": "sd-2.0-720p", "prompt": "p", "seconds": "5s"}
+            )
+        for value in (4, 15, "4", "15", 8.0):
+            with self.subTest(value=value):
+                self.assertEqual(
+                    mai_token.transform_create_payload(
+                        {"model": "sd-2.0-720p", "prompt": "p", "seconds": value}
+                    )["seconds"],
+                    str(int(float(value))),
+                )
+
+    def test_an_unsupported_ratio_or_resolution_is_refused(self):
+        with self.assertRaisesRegex(mai_token.MaiTokenRequestError, "画面比例"):
+            mai_token.transform_create_payload(
+                {"model": "sd-2.0-720p", "prompt": "p", "aspect_ratio": "2:1"}
+            )
+        with self.assertRaisesRegex(mai_token.MaiTokenRequestError, "只支持"):
+            mai_token.transform_create_payload(
+                {"model": "sd-2.0-720p", "prompt": "p", "resolution": "2160p"}
+            )
 
     def test_ratio_is_derived_from_size_and_task_paths_are_encoded(self):
         payload = mai_token.transform_create_payload({
@@ -350,7 +423,7 @@ class MaiTokenAdapterTests(unittest.TestCase):
                 "prompt": "让 @image1 的人物做出武术动作",
                 "seconds": "5",
                 "ratio": "16:9",
-                "resolution": "1080p",
+                "resolution": "720p",
                 "generate_audio": True,
                 "image_urls": ["https://cdn.example/person.jpg"],
             }, None))
@@ -372,6 +445,7 @@ class MaiTokenAdapterTests(unittest.TestCase):
                 },
             ],
             "seconds": "5",
+            "resolution": "720p",
             "ratio": "16:9",
             "generate_audio": True,
         })

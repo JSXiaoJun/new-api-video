@@ -23,11 +23,13 @@ from .model_profiles import (
     URL_VALUE_KEYS,
     DurationNotAllowedError,
     MediaLimitError,
-    ResolutionMismatchError,
+    ResolutionNotAllowedError,
     allowed_durations,
+    allowed_resolutions,
     apply_pinned_resolution,
     enforce_duration,
     enforce_reference_media_limits,
+    enforce_resolution,
     iter_media_references,
     route_media_counts,
     transform_create_payload,
@@ -45,6 +47,8 @@ PENDING_POLL_STATUS_CODES = {409, 429}
 _IMAGE_FIELD_NAMES = MEDIA_FIELD_NAMES["image"]
 _IMAGE_URL_KEYS = URL_VALUE_KEYS
 _INLINE_IMAGE_KEYS = INLINE_VALUE_KEYS
+_RESOLUTION_PATTERN = re.compile(r"^(\d{3,4})p$", re.IGNORECASE)
+_SIZE_PATTERN = re.compile(r"^(\d{2,5})\s*[x*×]\s*(\d{2,5})$", re.IGNORECASE)
 
 
 def validate_online_image_inputs(payload: dict[str, Any]) -> None:
@@ -385,6 +389,85 @@ CREATE_LEASE_GRACE_SECONDS = 60
 CREATE_CONNECT_FAILED_DETAIL = "Video upstream connection failed"
 CREATE_UNCONFIRMED_DETAIL = "上游未确认是否已创建任务，待人工核对，请勿重复提交"
 CREATE_EXPIRED_DETAIL = "上游始终未确认是否创建了任务，已按失败处理"
+
+
+def _normalize_requested_resolution(
+    payload: dict[str, Any], resolutions: list[str]
+) -> dict[str, Any]:
+    """把调用方写的分辨率换成路由配置里的写法，避免同一件事被拒。
+
+    路由配的是 ``1080p``，调用方写 ``1080P``、``1280x720`` 也应当只出一个分辨率
+    的成片。这里只在大小写与尺寸写法上做归一，不改调用方的意思：``quality``
+    之类其它字段原样保留。
+    """
+    if not resolutions:
+        return payload
+    by_key = {
+        _resolution_key(value): value.strip()
+        for value in resolutions
+        if _resolution_key(value) is not None
+    }
+    result = dict(payload)
+    if isinstance(result.get("resolution"), str):
+        canonical = by_key.get(_resolution_key(result["resolution"]))
+        if canonical is not None:
+            result["resolution"] = canonical
+    metadata = result.get("metadata")
+    if not isinstance(metadata, dict):
+        return result
+    metadata = dict(metadata)
+    if isinstance(metadata.get("resolution"), str):
+        canonical = by_key.get(_resolution_key(metadata["resolution"]))
+        if canonical is not None:
+            metadata["resolution"] = canonical
+    parameters = metadata.get("parameters")
+    if isinstance(parameters, dict) and isinstance(parameters.get("resolution"), str):
+        parameters = dict(parameters)
+        canonical = by_key.get(_resolution_key(parameters["resolution"]))
+        if canonical is not None:
+            parameters["resolution"] = canonical
+        metadata["parameters"] = parameters
+    result["metadata"] = metadata
+    return result
+
+
+def _resolution_key(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().lower()
+    match = _RESOLUTION_PATTERN.match(normalized)
+    if match is not None:
+        return f"{int(match.group(1))}p"
+    size = _SIZE_PATTERN.match(normalized)
+    if size is not None:
+        short = min(int(size.group(1)), int(size.group(2)))
+        return f"{short}p"
+    return None
+
+
+def _drop_resolution(payload: dict[str, Any]) -> dict[str, Any]:
+    """去掉请求里表达分辨率的那几个字段，保留 ``size`` 等其它信息。
+
+    ``size`` 不删：它同时携带画幅比例（``1920x1080`` 也就是 ``16:9``），一并删掉
+    会让渠道丢掉比例，用户拿到的成片和请求的形状都不一样。``quality`` 只有写成
+    ``720p`` 这种分辨率形式时才删，``high`` 是画质词，与分辨率无关。
+    """
+    result = {key: value for key, value in payload.items() if key != "resolution"}
+    if payload.get("quality") is not None and _resolution_key(payload["quality"]) is not None:
+        result.pop("quality", None)
+    metadata = result.get("metadata")
+    if not isinstance(metadata, dict):
+        return result
+    metadata = {key: value for key, value in metadata.items() if key != "resolution"}
+    parameters = metadata.get("parameters")
+    if isinstance(parameters, dict):
+        metadata["parameters"] = {
+            key: value for key, value in parameters.items() if key != "resolution"
+        }
+    result["metadata"] = metadata
+    return result
+
+
 CREATE_OPERATOR_FAILED_DETAIL = "管理员已确认上游未创建任务"
 
 # In-process create submissions, keyed by relay request ID. Holding the task
@@ -781,16 +864,19 @@ async def create_video(
         raise HTTPException(status_code=400, detail=str(error)) from error
     video_limit = media_counts["video"]
     routed_payload = {**payload, "model": upstream["upstream_model"]}
-    # A route whose public name promises a resolution (``wan3.0-video-720p``
-    # split off ``wan3.0-video``) must produce it. Routes that do not forward
-    # resolution leave it to the model, so nothing is pinned there.
+    # 分辨率与时长同一套规则：只放行这条路由配置（对 ``/v1/model-capabilities``
+    # 公布）的分辨率，传了别的分辨率就拒绝并列出可选值——不能让用户以为要的是
+    # 1080p，上游却按默认档位悄悄出片。没传分辨率时：名字里承诺了分辨率的拆分
+    # 路由补上它自己的分辨率，其余交给上游默认值；不转发分辨率的渠道则把请求里
+    # 的分辨率去掉，免得上游按一个我们并不支持的值去猜。
+    resolutions = allowed_resolutions(upstream["profile"], upstream.get("resolutions"))
+    try:
+        enforce_resolution(routed_payload, resolutions)
+    except ResolutionNotAllowedError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    routed_payload = _normalize_requested_resolution(routed_payload, resolutions)
     if upstream.get("forward_resolution", True):
-        try:
-            routed_payload = apply_pinned_resolution(
-                routed_payload, upstream.get("resolutions"), model, upstream["upstream_model"]
-            )
-        except ResolutionMismatchError as error:
-            raise HTTPException(status_code=400, detail=str(error)) from error
+        routed_payload = apply_pinned_resolution(routed_payload, upstream.get("resolutions"))
     allows_promptless = (
         protocol == ark_video.PROTOCOL and ark_video.has_reference_content(routed_payload)
     ) or (
@@ -816,16 +902,10 @@ async def create_video(
                 status_code=502, detail=str(error), headers={REQUEST_ID_HEADER: relay_request_id}
             ) from error
     if not upstream.get("forward_resolution", True):
-        routed_payload.pop("resolution", None)
-        if isinstance(routed_payload.get("metadata"), dict):
-            metadata = {
-                key: value for key, value in routed_payload["metadata"].items() if key != "resolution"
-            }
-            if isinstance(metadata.get("parameters"), dict):
-                metadata["parameters"] = {
-                    key: value for key, value in metadata["parameters"].items() if key != "resolution"
-                }
-            routed_payload["metadata"] = metadata
+        # 不转发分辨率的渠道（例如 MAI Token：分辨率由模型名决定）必须把调用方
+        # 传的分辨率整条去掉，而不是原地改值：留着它只会让上游的写法去猜，或者
+        # 按 ``1280x720`` 这类尺寸自行出片，与路由公布的分辨率对不上。
+        routed_payload = _drop_resolution(routed_payload)
     if protocol == ark_video.PROTOCOL:
         upstream_payload = ark_video.transform_create_payload(routed_payload)
     elif protocol == funai.PROTOCOL:
@@ -837,7 +917,17 @@ async def create_video(
     elif protocol == sub2api_video.PROTOCOL:
         upstream_payload = sub2api_video.transform_create_payload(routed_payload)
     elif protocol == mai_token.PROTOCOL:
-        upstream_payload = mai_token.transform_create_payload(routed_payload)
+        try:
+            upstream_payload = mai_token.transform_create_payload(routed_payload)
+        except mai_token.MaiTokenRequestError as error:
+            # The channel cannot serve this request as asked; say so instead of
+            # trimming the media or the length to make it fit.
+            database.fail_audit_request(relay_request_id, str(error))
+            raise HTTPException(
+                status_code=400,
+                detail=str(error),
+                headers={REQUEST_ID_HEADER: relay_request_id},
+            ) from error
     elif protocol == rolldek.PROTOCOL:
         upstream_payload = rolldek.transform_create_payload(routed_payload)
     elif protocol == fuyao.PROTOCOL:

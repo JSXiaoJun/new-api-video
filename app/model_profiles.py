@@ -128,72 +128,178 @@ def enforce_reference_media_limits(payload: dict[str, Any], counts: Mapping[str,
         )
 
 
-class ResolutionMismatchError(Exception):
-    """请求的分辨率与该路由固定的分辨率不一致。"""
+class ResolutionNotAllowedError(Exception):
+    """请求的分辨率不在该模型支持的分辨率列表里。"""
 
 
-_RESOLUTION_VALUE = re.compile(r'^\d{3,4}p$', re.IGNORECASE)
-# A trailing note such as ``（经理独立优惠）`` or ``（官转）`` is not part of the
-# resolution suffix: ``seedance-2.0-fast-720p（经理独立优惠）`` still promises 720p.
-_TRAILING_NOTE = re.compile(r'\s*(?:[（(][^（()）]*[)）]\s*)+$')
+# A tier, optionally followed by an orientation suffix. AutoDL's workflows carry
+# the orientation in the same string (``768p横`` / ``768p(1:1)``), so the match
+# must read the tier and ignore what trails it rather than reject the request.
+_RESOLUTION_VALUE = re.compile(r'^(\d{3,4})\s*p(?![0-9])', re.IGNORECASE)
 
 
-def pinned_resolution(
-    resolutions: list[str] | None,
-    model: str | None = None,
-    upstream_model: str | None = None,
-) -> str | None:
-    """返回这条路由在对外模型名里承诺的分辨率，没有承诺就返回 ``None``。
+def pinned_resolution(resolutions: list[str] | None) -> str | None:
+    """返回这条路由唯一的分辨率，没有唯一值就返回 ``None``。
 
-    只有同时满足三点才固定：只配置了一个分辨率；对外模型名以 ``-<分辨率>`` 结尾；
-    上游模型名本身不带这个后缀。这正是拆分按钮生成的形状
-    （``wan3.0-video-720p`` → ``wan3.0-video``）。只配了一个分辨率的老路由不受
-    影响：它们的名字没有承诺分辨率，一些渠道（如 MAI Token）还会直接忽略
-    ``resolution``，在这里拒绝会让原本能用的请求开始报错。
+    路由只配了一个分辨率时，它既是公布给调用方的唯一选项，也是这条路由必须
+    出片的档位：调用方没传就补上它。这覆盖了拆分按钮生成的
+    ``wan3.0-video-720p`` → ``wan3.0-video``，也覆盖了 MAI Token 这类上游——
+    它要求请求体里必须带 ``resolution``，只靠模型名不够。
+
+    ``自动`` 和空值表示“不指定档位”，不能补，否则等于替调用方选了分辨率。
     """
-    values = [value.strip() for value in resolutions or [] if value and value.strip() and value.strip() != '自动']
-    if len(values) != 1:
+    values = allowed_resolutions(None, resolutions)
+    return values[0] if len(values) == 1 else None
+
+
+def allowed_resolutions(
+    profile: str | None,
+    resolution_overrides: list[str] | None = None,
+) -> list[str]:
+    """这条路由对外公布的分辨率，也是代理执行时用来校验的列表；空列表表示不限。
+
+    路由上配置了分辨率就用配置的，否则沿用渠道默认值，与 ``capabilities_for``
+    公布的 ``resolutions`` 同源——调用方在 ``/v1/model-capabilities`` 看到的
+    选项就是这里放行的选项。
+    """
+    if resolution_overrides:
+        return [
+            value.strip()
+            for value in resolution_overrides
+            if value and value.strip() and value.strip() != '自动'
+        ]
+    capabilities = PROFILE_DEFINITIONS.get(profile or '', {}).get('capabilities', {})
+    return list(capabilities.get('resolutions') or [])
+
+
+# 常见视频分辨率档位。``size`` 只有在两个边长都属于这些档位、又确实是一个视频
+# 尺寸时才当分辨率读：``1280x720`` / ``1920*1080`` 是分辨率，图片里的
+# ``1280x32``、``2x2`` 不是，不能因为尺寸里碰巧有个数字就拒掉请求。
+_RESOLUTION_TIERS = frozenset({'480p', '540p', '720p', '768p', '1080p', '1440p', '2160p'})
+
+
+def _size_resolution(value: Any) -> str | None:
+    """把 ``1280x720`` 读成 ``720p``；尺寸不像视频分辨率时返回 ``None``。"""
+    if not isinstance(value, str):
         return None
-    resolution = values[0]
-    suffix = f'-{resolution}'.lower()
-    public_name = _TRAILING_NOTE.sub('', (model or '').strip().lower())
-    upstream_name = _TRAILING_NOTE.sub('', (upstream_model or model or '').strip().lower())
-    if not public_name.endswith(suffix) or upstream_name.endswith(suffix):
+    size = re.fullmatch(r'(\d{2,5})\s*[x*×]\s*(\d{2,5})', value.strip().lower())
+    if size is None:
         return None
-    return resolution
+    width, height = int(size.group(1)), int(size.group(2))
+    if width <= 0 or height <= 0:
+        return None
+    long_side, short_side = max(width, height), min(width, height)
+    # 只有一边必须落在档位上，另一边是按比例算出来的（1280x720 → 720p）。
+    if f'{short_side}p' not in _RESOLUTION_TIERS or long_side < short_side:
+        return None
+    return f'{short_side}p'
+
+
+def _resolution_requested(value: Any) -> str | None:
+    """把一个分辨率的写法规范成 ``720p`` 这种形式；不是分辨率就返回 ``None``。
+
+    调用方常用大写（``720P``），也常把方向或尺寸写在一起（``768p横``、
+    ``1280x720``、``1920*1080``），这些写法都按同一个档位比较，避免同一件事
+    因为写法不同被拒。
+    """
+    if not isinstance(value, str):
+        return None
+    match = _RESOLUTION_VALUE.match(value.strip().lower())
+    if match is None:
+        return None
+    return f'{match.group(1)}p'
+
+
+def _resolution_fields(payload: Mapping[str, Any]) -> list[tuple[str, str]]:
+    """只列 ``resolution`` 那三个专门的分辨率字段（不看 ``quality`` / ``size``）。"""
+    metadata = payload.get('metadata') if isinstance(payload.get('metadata'), dict) else {}
+    parameters = metadata.get('parameters') if isinstance(metadata.get('parameters'), dict) else {}
+    fields = (
+        ('resolution', payload.get('resolution')),
+        ('metadata.resolution', metadata.get('resolution')),
+        ('metadata.parameters.resolution', parameters.get('resolution')),
+    )
+    return [(field, str(value)) for field, value in fields if value is not None and value != '']
+
+
+def resolution_candidates(payload: Mapping[str, Any]) -> list[tuple[str, str]]:
+    """列出请求里所有会被渠道适配器当成分辨率读取的字段。
+
+    ``quality`` 只在写成 ``720p`` 这种形式时才当分辨率（``high`` 是画质词，放行），
+    ``size`` 只在整体像视频尺寸时才当分辨率（图片的 ``1280x32`` 放行，不拒）。
+    分辨率字段本身填了别的东西也要报出来：调用方能立刻知道自己写错了字段。
+    """
+    metadata = payload.get('metadata') if isinstance(payload.get('metadata'), dict) else {}
+    result = _resolution_fields(payload)
+    quality = payload.get('quality')
+    if quality is not None and _resolution_requested(quality) is not None:
+        result.append(('quality', str(quality)))
+    size = payload.get('size') or metadata.get('size')
+    if _size_resolution(size) is not None:
+        result.append(('size', str(size)))
+    return result
+
+
+def _format_resolutions(resolutions: list[str]) -> str:
+    return '、'.join(resolutions)
+
+
+def enforce_resolution(
+    payload: Mapping[str, Any],
+    allowed: list[str],
+) -> None:
+    """请求的分辨率不在这条路由支持的分辨率列表里就拒绝，而不是透传给上游。
+
+    透传的后果要么是上游报错，要么是上游按别的分辨率出片——用户以为付的是
+    1080p 的钱，拿到的却是上游默认档位的画面。没传分辨率时不做处理：由路由
+    自己的固定分辨率（``apply_pinned_resolution``）或上游默认值决定。
+
+    比较时容忍同一件事的不同写法（``720P``、``1280x720``）。配置项如果本身就带
+    额外信息（AutoDL 的 ``768p横`` 把方向写进了同一串），就按原样精确比较：把
+    它降级成 ``768p`` 会让横竖两个档位互相冒充。
+    """
+    if not allowed:
+        return
+    exact = {value.strip().lower() for value in allowed}
+    bare_tiers = {
+        _resolution_requested(value)
+        for value in allowed
+        if _resolution_requested(value) == value.strip().lower()
+    }
+    for field, value in resolution_candidates(payload):
+        normalized = value.strip().lower()
+        wanted = _resolution_requested(value) or _size_resolution(value)
+        if normalized in exact or (wanted is not None and wanted in bare_tiers):
+            continue
+        if wanted is None:
+            raise ResolutionNotAllowedError(
+                f'{field} 必须是 480p、720p、1080p 这样的分辨率，收到 {value}；'
+                f'当前模型只支持：{_format_resolutions(allowed)}'
+            )
+        raise ResolutionNotAllowedError(
+            f'当前模型不支持分辨率 {value}，只支持：{_format_resolutions(allowed)}'
+        )
 
 
 def apply_pinned_resolution(
     payload: dict[str, Any],
     resolutions: list[str] | None,
-    model: str | None = None,
-    upstream_model: str | None = None,
 ) -> dict[str, Any]:
-    """让名字里写了分辨率的路由真的按这个分辨率出片。
+    """只配了一个分辨率的路由，调用方没传分辨率时补上它。
 
     按分辨率拆分出来的路由（``wan3.0-video-720p``）共用同一个上游模型，区别只在
-    分辨率。调用方没传分辨率时补上路由的分辨率；传了别的分辨率就拒绝——不能让
-    名叫 720p 的模型悄悄出 1080p。``quality`` 只有写成 ``720p`` 这种形式时才当
-    分辨率比较，``high`` 之类的画质参数不受影响。
+    分辨率；MAI Token 这类上游还要求请求体里必须带 ``resolution``。两种情况都
+    需要一个明确的档位，而路由配置的唯一选项就是它。是否拒绝别的分辨率由
+    ``enforce_resolution`` 按同一份配置决定。
     """
-    pinned = pinned_resolution(resolutions, model, upstream_model)
+    pinned = pinned_resolution(resolutions)
     if pinned is None:
         return payload
-    metadata = payload.get('metadata') if isinstance(payload.get('metadata'), dict) else {}
-    parameters = metadata.get('parameters') if isinstance(metadata.get('parameters'), dict) else {}
-    requested = [
-        value.strip()
-        for value in (
-            payload.get('resolution'),
-            metadata.get('resolution'),
-            parameters.get('resolution'),
-            payload.get('quality'),
-        )
-        if isinstance(value, str) and _RESOLUTION_VALUE.match(value.strip())
-    ]
-    for value in requested:
-        if value.lower() != pinned.lower():
-            raise ResolutionMismatchError(f'当前模型固定为 {pinned}，不支持 {value}')
+    # 真正的分辨率字段里已经写了档位，就按调用方的选择：不重复下发，也不覆盖
+    # 它在 ``metadata`` 里的写法。``quality`` / ``size`` 不算——渠道未必把它们
+    # 当分辨率读（扶摇通用档就不读 ``size``），当作"已指定"会让请求漏掉分辨率。
+    if _resolution_fields(payload):
+        return payload
     return {**payload, 'resolution': pinned}
 
 

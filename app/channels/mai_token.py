@@ -13,8 +13,8 @@ Documented contract (https://api.mai-token.com):
 * poll ``GET /v1/videos/{task_id}``
 * download ``GET /v1/videos/{task_id}/content``
 * ``seconds`` is a string from ``"4"`` to ``"15"``
-* the output resolution comes from the model name, so ``resolution`` is never
-  forwarded
+* the upstream expects an explicit ``resolution`` (``480p`` / ``720p`` /
+  ``1080p``); the model name alone is not enough, so it is always sent
 * at most 9 images, 3 audios, and 3 videos; first/last frames share the
   image budget
 """
@@ -22,6 +22,7 @@ Documented contract (https://api.mai-token.com):
 from __future__ import annotations
 
 import math
+import re
 from typing import Any
 from urllib.parse import quote, urlsplit
 
@@ -70,6 +71,8 @@ _RESOLUTION_SUFFIXES = (
     ("-720p", "720p"),
     ("-480p", "480p"),
 )
+_RESOLUTION_SUFFIXES_VALUES = tuple(resolution for _, resolution in _RESOLUTION_SUFFIXES)
+_RESOLUTION_LABEL = '、'.join(_RESOLUTION_SUFFIXES_VALUES)
 
 _PROFILE_BY_RESOLUTION = {
     "1080p": "mai-token-1080p",
@@ -84,6 +87,29 @@ _AUDIO_KEYS = ("audio_urls", "audios")
 _SINGLE_AUDIO_KEYS = ("audio_url",)
 _VIDEO_KEYS = ("reference_video_urls", "reference_videos", "video_urls")
 _SINGLE_VIDEO_KEYS = ("reference_video", "video_url")
+
+
+class MaiTokenRequestError(Exception):
+    """请求超出了 MAI Token 文档写明的范围，不能靠改写请求来迁就。"""
+
+
+def _check_limits(images: int, audios: int, videos: int) -> None:
+    """超出文档上限就拒绝，而不是截断。
+
+    截断等于把调用方的素材悄悄扔掉：用户传了 12 张参考图、付了整单的钱，却只
+    有 9 张进了上游。路由配置的上限（``/v1/model-capabilities`` 公布的
+    ``maxImages``）在代理层已经拦过一次，这里是渠道自身的硬上限兜底——运营把
+    数量填大时也不会让素材无声消失。
+    """
+    for count, limit, label, unit in (
+        (images, MAX_IMAGES, '图片', '张'),
+        (audios, MAX_AUDIOS, '音频', '段'),
+        (videos, MAX_VIDEOS, '视频', '段'),
+    ):
+        if count > limit:
+            raise MaiTokenRequestError(
+                f'MAI Token 每个任务最多 {limit} {unit}{label}，本次请求 {count} {unit}'
+            )
 
 
 def _capabilities(resolution: str) -> dict[str, Any]:
@@ -177,10 +203,13 @@ def is_known_model(model: str) -> bool:
 def transform_create_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """Build the documented ``content[]`` request body.
 
-    Only declared MAI Token fields are emitted. Undeclared client fields are
-    dropped on purpose: the upstream rejects a ``resolution`` that conflicts
-    with the model suffix, while ``seed`` and ``generate_audio`` are forwarded
-    explicitly because they are part of the documented contract.
+    Only declared MAI Token fields are emitted. ``resolution`` is always sent:
+    the upstream requires an explicit tier and does not reliably infer it from
+    the model name, so dropping it made every request fall back to the upstream
+    default (a 1080p route silently produced 720p). The route-level check in
+    ``proxy.create_video`` has already rejected a tier the model does not
+    publish; here the value is normalized to the documented spelling and, when
+    the caller omitted it, derived from the model suffix.
     """
     prompt = str(payload.get("prompt") or "").strip()
     content: list[dict[str, Any]] = []
@@ -207,15 +236,21 @@ def transform_create_payload(payload: dict[str, Any]) -> dict[str, Any]:
     ]
     images = _media_urls(payload, _IMAGE_KEYS, _SINGLE_IMAGE_KEYS)
     references = _media_urls(payload, _REFERENCE_IMAGE_KEYS, ())
-    # The documented 9-image budget covers first_frame and last_frame too.
+    audios = _media_urls(payload, _AUDIO_KEYS, _SINGLE_AUDIO_KEYS)
+    videos = _media_urls(payload, _VIDEO_KEYS, _SINGLE_VIDEO_KEYS)
+    # The documented budget covers first_frame and last_frame too, so the frame
+    # URLs are counted before the media is trimmed or rejected.
+    ordered_images = _dedupe([url for _, url in frames] + images + references)
+    _check_limits(len(ordered_images), len(audios), len(videos))
+
     role_by_url = {url: role for role, url in frames}
-    for url in _dedupe([url for _, url in frames] + images + references)[:MAX_IMAGES]:
+    for url in ordered_images:
         content.append(_image_item(role_by_url.get(url, "reference_image"), url))
 
-    for url in _media_urls(payload, _AUDIO_KEYS, _SINGLE_AUDIO_KEYS)[:MAX_AUDIOS]:
+    for url in audios:
         content.append({"type": "audio_url", "role": "reference_audio", "audio_url": {"url": url}})
 
-    for url in _media_urls(payload, _VIDEO_KEYS, _SINGLE_VIDEO_KEYS)[:MAX_VIDEOS]:
+    for url in videos:
         content.append({"type": "video_url", "role": "reference_video", "video_url": {"url": url}})
 
     result: dict[str, Any] = {
@@ -226,8 +261,17 @@ def transform_create_payload(payload: dict[str, Any]) -> dict[str, Any]:
     seconds = _seconds(payload)
     if seconds:
         result["seconds"] = seconds
+    resolution = _resolution(payload)
+    if resolution:
+        if resolution not in _RESOLUTION_SUFFIXES_VALUES:
+            raise MaiTokenRequestError(
+                f'MAI Token 只支持分辨率 {_RESOLUTION_LABEL}，收到 {resolution}'
+            )
+        result["resolution"] = resolution
     ratio = _ratio(payload)
     if ratio:
+        if ratio not in RATIOS:
+            raise MaiTokenRequestError(f'MAI Token 只支持画面比例 {"、".join(RATIOS)}，收到 {ratio}')
         result["ratio"] = ratio
     if payload.get("generate_audio") is not None:
         result["generate_audio"] = payload["generate_audio"]
@@ -264,15 +308,68 @@ def _image_item(role: str, url: str) -> dict[str, Any]:
 
 
 def _seconds(payload: dict[str, Any]) -> str | None:
+    """Return the documented ``seconds`` string, refusing a length out of range.
+
+    The upstream only accepts 4–15 seconds. Sending anything else either fails
+    the create or gets replaced by the default length, and a replaced length is
+    billed as a different task than the caller asked for.
+    """
     value = payload.get("duration")
     if value is None:
         value = payload.get("seconds")
     if value is None or value == "":
         return None
     try:
-        return str(int(float(value)))
+        seconds = int(float(value))
     except (TypeError, ValueError):
-        return str(value).strip() or None
+        raise MaiTokenRequestError(f'时长必须是整数秒，收到 {value!r}') from None
+    if not MIN_SECONDS <= seconds <= MAX_SECONDS:
+        raise MaiTokenRequestError(
+            f'MAI Token 只支持 {MIN_SECONDS}–{MAX_SECONDS} 秒，收到 {seconds} 秒'
+        )
+    return str(seconds)
+
+
+def _resolution(payload: dict[str, Any]) -> str | None:
+    """Return the tier to send upstream, falling back to the model suffix.
+
+    The upstream wants an explicit ``resolution``. When the caller omitted it
+    the model name still encodes the tier (``sdg-2.5-1080p``), so the request
+    stays correct for that route instead of letting the upstream choose.
+    ``quality`` only counts when it is written like a tier: ``high`` is a
+    quality word for other channels and must not turn into a resolution here.
+    """
+    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    parameters = metadata.get("parameters") if isinstance(metadata.get("parameters"), dict) else {}
+    fields = (
+        ("resolution", payload.get("resolution")),
+        ("metadata.resolution", metadata.get("resolution")),
+        ("metadata.parameters.resolution", parameters.get("resolution")),
+        ("quality", payload.get("quality")),
+    )
+    for field, value in fields:
+        if not isinstance(value, str) or not value.strip():
+            continue
+        normalized = _normalize_resolution(value)
+        if normalized in _RESOLUTION_SUFFIXES_VALUES:
+            return normalized
+        if field != "quality":
+            # The field is meant to hold a tier; report the value as given and
+            # let the caller's error name what the upstream accepts.
+            return normalized
+    return resolve_resolution(str(payload.get("model") or ""))
+
+
+def _normalize_resolution(value: str) -> str:
+    """``720P`` / ``1280x720`` → ``720p`` so the upstream sees one spelling."""
+    normalized = value.strip().lower()
+    match = re.fullmatch(r"(\d{3,4})p", normalized)
+    if match is not None:
+        return f"{match.group(1)}p"
+    size = re.fullmatch(r"(\d{2,5})\s*[x*×]\s*(\d{2,5})", normalized)
+    if size is not None:
+        return f"{min(int(size.group(1)), int(size.group(2)))}p"
+    return normalized
 
 
 def _ratio(payload: dict[str, Any]) -> str | None:

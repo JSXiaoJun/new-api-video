@@ -106,9 +106,18 @@ renames a model, update that route's `映射上游模型名` manually, verify it
 The `拆` button at the end of a row splits it by resolution: a row listing `480p, 720p, 1080p` becomes three rows named
 `<对外模型名>-480p` and so on, each with a single resolution and every other setting copied, all mapped to the same upstream
 model. It is disabled when the row has fewer than two resolutions or `传分辨率` is off. Several public names may therefore
-share one `映射上游模型名`; only public names must be unique. A route whose public name ends in `-<resolution>` while its
-upstream model does not, and which lists only that resolution, is pinned to it: the relay fills in `resolution` when the
-caller omits it and rejects a different one with HTTP 400. Routes whose name does not promise a resolution are unchanged.
+share one `映射上游模型名`; only public names must be unique.
+
+Resolution is enforced per route, exactly like duration: the list in `支持分辨率` is what `/v1/model-capabilities` publishes
+and what a create is checked against. A request asking for a tier the route does not list is rejected with HTTP 400, for
+example `当前模型不支持分辨率 1080p，只支持：480p、720p`, and never reaches the upstream. Equivalent spellings are accepted
+(`1080P`, `1280x720`, `720x1280`), and AutoDL's orientation suffix (`768p横`) is compared verbatim so two orientations cannot
+stand in for each other. A route with `支持分辨率` empty publishes and enforces the profile default; omitting `resolution`
+altogether is left to the route's own single value or to the upstream default.
+
+A route that lists exactly one resolution is pinned to it: when the caller omits `resolution` the relay fills it in. `传分辨率`
+off means the value is stripped before the request is built, for upstreams that derive the size themselves; the check above
+still applies, so a route fixed at 720p answers 400 rather than returning a 720p clip to someone billed for 1080p.
 
 Each route is edited on two lines. The first carries the routing fields and a summary of the capacity parameters; the
 parameters themselves sit on a collapsible second line, opened per row or in bulk with `展开全部参数`. Below roughly
@@ -210,6 +219,14 @@ enabled public models and their configured capabilities.
 `reference_audio`，`reference_video` 转成 `reference_video`，首尾帧分别使用 `first_frame`
 和 `last_frame` 角色并计入 9 张图片总额。每个任务最多 9 张图片、3 段音频和 3 段视频，
 比例支持 `16:9`、`9:16`、`1:1`、`4:3`、`3:4`、`21:9`，时长 `4`–`15` 秒。
+
+上游要求请求体里必须带 `resolution`，只靠模型名不够，因此适配器**总是**下发它：调用方
+传了就按传的（`720P`、`1280x720` 都归一成 `720p`），没传就取模型名里的档位
+（`sdg-2.5-1080p` → `1080p`）。早期版本把它当冗余字段丢掉，导致 1080p 的路由实际按上游
+默认档位出片。超出范围的请求一律**明确报错**而不是改写：图片/音频/视频超过 9/3/3 会报
+`MAI Token 每个任务最多 9 张图片，本次请求 11 张`，时长不在 4–15 秒、比例不在上面的清单、
+分辨率不是 480p/720p/1080p 都会返回 400。截断或替换会把用户付过钱的素材与时长悄悄换成
+另一个任务，因此这里不做任何"帮你修好"的兼容。
 
 ### 扶摇 API（Fuyao）Channel
 

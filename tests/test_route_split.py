@@ -25,7 +25,13 @@ from fastapi.testclient import TestClient
 
 from app import database
 from app.main import app
-from app.model_profiles import ResolutionMismatchError, apply_pinned_resolution, pinned_resolution
+from app.model_profiles import (
+    ResolutionNotAllowedError,
+    allowed_resolutions,
+    apply_pinned_resolution,
+    enforce_resolution,
+    pinned_resolution,
+)
 from app.proxy import create_video
 from app.schemas import UpstreamInput
 
@@ -45,45 +51,117 @@ def _route(model: str, resolutions: list[str], **extra) -> dict:
     }
 
 
-SPLIT = ("wan3.0-video-720p", "wan3.0-video")
-
-
 class ResolutionPinningTests(unittest.TestCase):
-    def test_only_a_split_shaped_route_is_pinned(self):
-        self.assertEqual(pinned_resolution(["720p"], *SPLIT), "720p")
-        self.assertEqual(pinned_resolution([" 720p ", ""], "WAN-720P", "wan"), "720p")
-        self.assertIsNone(pinned_resolution(["480p", "720p"], *SPLIT))
-        self.assertIsNone(pinned_resolution([], *SPLIT))
-        self.assertIsNone(pinned_resolution(["自动"], *SPLIT))
-        # The name does not promise a resolution.
-        self.assertIsNone(pinned_resolution(["720p"], "wan3.0-video", "wan3.0-video"))
-        # The upstream model already carries it (e.g. MAI Token ``sd-2.0-720p``,
-        # which ignores ``resolution``): nothing to pin.
-        self.assertIsNone(pinned_resolution(["720p"], "sd-2.0-720p", "sd-2.0-720p"))
+    def test_a_route_with_a_single_resolution_always_pins_it(self):
+        # A single configured resolution is both what the route publishes and
+        # what it must produce, whatever its name looks like: MAI Token demands
+        # an explicit ``resolution`` in the body, so leaving it to the upstream
+        # default silently downgraded a 1080p route.
+        self.assertEqual(pinned_resolution(["720p"]), "720p")
+        self.assertEqual(pinned_resolution([" 720p ", ""]), "720p")
+        self.assertEqual(pinned_resolution(["720P"]), "720P")
+        # Several resolutions, none, or "自动" leave the choice to the caller.
+        self.assertIsNone(pinned_resolution(["480p", "720p"]))
+        self.assertIsNone(pinned_resolution([]))
+        self.assertIsNone(pinned_resolution(None))
+        self.assertIsNone(pinned_resolution(["自动"]))
+        self.assertIsNone(pinned_resolution(["   "]))
 
-    def test_missing_resolution_is_filled_and_a_match_is_kept(self):
+    def test_missing_resolution_is_filled_and_an_explicit_one_is_kept(self):
         self.assertEqual(
-            apply_pinned_resolution({"prompt": "p"}, ["720p"], *SPLIT)["resolution"], "720p"
+            apply_pinned_resolution({"prompt": "p"}, ["720p"])["resolution"], "720p"
         )
-        self.assertEqual(
-            apply_pinned_resolution({"resolution": "720P"}, ["720p"], *SPLIT)["resolution"], "720p"
-        )
+        # An explicit resolution is left untouched: whether it is allowed is
+        # decided once, by ``enforce_resolution``, from the same route list, so
+        # a second copy of the rule cannot drift away from what is published.
+        for payload in (
+            {"resolution": "720P"},
+            {"resolution": "1280x720"},
+            {"metadata": {"resolution": "720p"}},
+        ):
+            with self.subTest(payload=payload):
+                self.assertIs(apply_pinned_resolution(payload, ["720p"]), payload)
         payload = {"resolution": "1080p"}
-        self.assertIs(apply_pinned_resolution(payload, ["720p", "1080p"], *SPLIT), payload)
-        self.assertIs(apply_pinned_resolution(payload, ["720p"], "sd-2.0-720p", "sd-2.0-720p"), payload)
+        self.assertIs(apply_pinned_resolution(payload, ["720p", "1080p"]), payload)
 
-    def test_a_different_resolution_is_rejected(self):
+    def test_a_different_resolution_is_rejected_by_the_route_list(self):
         for payload in (
             {"resolution": "1080p"},
             {"metadata": {"resolution": "480p"}},
             {"quality": "1080p"},
         ):
-            with self.assertRaises(ResolutionMismatchError, msg=payload):
-                apply_pinned_resolution(payload, ["720p"], *SPLIT)
+            with self.subTest(payload=payload):
+                with self.assertRaisesRegex(ResolutionNotAllowedError, "只支持：720p"):
+                    enforce_resolution(payload, ["720p"])
         # A quality word is not a resolution and must pass through.
-        self.assertEqual(
-            apply_pinned_resolution({"quality": "high"}, ["720p"], *SPLIT)["quality"], "high"
-        )
+        enforce_resolution({"quality": "high"}, ["720p"])
+
+    def test_the_route_list_is_what_gets_enforced(self):
+        for payload in (
+            {},
+            {"resolution": "1080p"},
+            {"resolution": "1080P"},
+            {"resolution": "1280x720"},
+            {"metadata": {"resolution": "720p"}},
+            {"metadata": {"parameters": {"resolution": "720P"}}},
+            {"quality": "720p"},
+            {"size": "1280x720"},
+            {"size": "720x1280"},
+        ):
+            with self.subTest(payload=payload):
+                enforce_resolution(payload, ["480p", "720p", "1080p"])
+
+        rejected = {
+            "resolution": {"resolution": "1080p"},
+            "metadata.resolution": {"metadata": {"resolution": "2160p"}},
+            "metadata.parameters.resolution": {"metadata": {"parameters": {"resolution": "1080p"}}},
+            "quality": {"quality": "1080P"},
+            "size": {"size": "3840x2160"},
+        }
+        for field, payload in rejected.items():
+            with self.subTest(field=field):
+                with self.assertRaisesRegex(ResolutionNotAllowedError, "只支持：480p、720p"):
+                    enforce_resolution(payload, ["480p", "720p"])
+
+        # A value that is not a resolution at all says so and lists the options.
+        with self.assertRaisesRegex(ResolutionNotAllowedError, "必须是.*只支持：480p、720p"):
+            enforce_resolution({"resolution": "4k"}, ["480p", "720p"])
+        # A size that is not a video resolution is not mistaken for one.
+        enforce_resolution({"size": "1280x32"}, ["720p"])
+
+    def test_a_route_without_resolutions_is_not_limited(self):
+        enforce_resolution({"resolution": "2160p"}, [])
+        self.assertEqual(allowed_resolutions("sora2"), ["720p"])
+        self.assertEqual(allowed_resolutions("sora2", ["480p", "720p"]), ["480p", "720p"])
+        self.assertEqual(allowed_resolutions("sora2", [" 480p ", ""]), ["480p"])
+        # "自动" means the gateway picks: not a value to pin, not a value to
+        # reject a caller's explicit tier for.
+        self.assertEqual(allowed_resolutions("sora2", ["自动"]), [])
+
+    def test_autoDL_orientation_suffixes_are_not_mistaken_for_other_tiers(self):
+        # AutoDL's workflows carry the orientation inside the resolution string
+        # (``768p横`` / ``768p(1:1)``); rejecting them would break a channel that
+        # works today, and collapsing them to ``768p`` would let a portrait
+        # request pass as a landscape one.
+        for payload in (
+            {"resolution": "768p横"},
+            {"resolution": "768p竖"},
+            {"resolution": "768p(1:1)"},
+            {"resolution": "480p横"},
+            {"resolution": "768P横"},
+        ):
+            with self.subTest(payload=payload):
+                enforce_resolution(payload, ["480p", "768p"])
+        enforce_resolution({"resolution": "768p横"}, ["768p横", "768p竖"])
+        for payload in (
+            {"resolution": "1080p横"},
+            {"resolution": "768p横"},
+        ):
+            with self.subTest(payload=payload):
+                with self.assertRaises(ResolutionNotAllowedError):
+                    enforce_resolution(payload, ["768p竖"])
+        # A single orientation-specific value is pinned verbatim.
+        self.assertEqual(apply_pinned_resolution({}, ["768p横"])["resolution"], "768p横")
 
 
 class SharedUpstreamModelTests(unittest.TestCase):
@@ -210,17 +288,45 @@ class SplitRouteProxyTests(unittest.TestCase):
         self.assertEqual(raised.exception.status_code, 400)
         self.assertIn("720p", raised.exception.detail)
 
-    def test_route_that_does_not_forward_resolution_is_not_pinned(self):
+    def test_a_route_that_does_not_forward_resolution_still_rejects_another_tier(self):
+        # The switch controls whether the value reaches the upstream body, not
+        # whether the route keeps its promise. A route fixed at 720p must still
+        # answer 400 instead of quietly returning a 720p clip to someone who
+        # asked (and was billed) for 1080p.
         public_model = self._save(forward_resolution=False)
+        with self.assertRaises(HTTPException) as raised:
+            self._create({
+                "model": public_model,
+                "prompt": "p",
+                "seconds": 5,
+                "resolution": "1080p",
+                "metadata": {"parameters": {"resolution": "1080P"}},
+            })
+        self.assertEqual(raised.exception.status_code, 400)
+        self.assertIn("只支持：720p", raised.exception.detail)
+
         sent = self._create({
             "model": public_model,
             "prompt": "p",
             "seconds": 5,
-            "resolution": "1080p",
-            "metadata": {"parameters": {"resolution": "1080P"}},
+            "resolution": "720p",
+            "metadata": {"parameters": {"resolution": "720P"}},
         })
         self.assertNotIn("resolution", sent["json"])
         self.assertNotIn("resolution", sent["json"].get("metadata", {}).get("parameters", {}))
+
+
+    def test_a_rejected_resolution_never_reaches_the_upstream(self):
+        public_model = self._save()
+        with patch("app.proxy.httpx.AsyncClient") as client:
+            with self.assertRaises(HTTPException) as raised:
+                self._create({"model": public_model, "prompt": "p", "seconds": 5, "resolution": "1080p"})
+            client.assert_not_called()
+        self.assertEqual(raised.exception.status_code, 400)
+        # The message names the value and every tier the model does support, so
+        # the caller can fix the request without reading the docs.
+        self.assertIn("1080p", raised.exception.detail)
+        self.assertIn("只支持：720p", raised.exception.detail)
 
 
 class SplitButtonTests(unittest.TestCase):

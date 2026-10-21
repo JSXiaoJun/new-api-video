@@ -20,12 +20,19 @@ os.environ.setdefault("PUBLIC_BASE_URL", "https://video-admin.yyapi.cloud")
 TEST_DATA_DIR = tempfile.TemporaryDirectory()
 os.environ["DATA_DIR"] = TEST_DATA_DIR.name
 
+from app import database
 from app.channels import funai
 from app.main import normalize_discovered_models
 from app.proxy import create_video, fetch_task, reconcile_pending_tasks
 
 
 class FunAIChannelTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        # The proxy tests below write audit rows; without this the schema is
+        # never created and every create fails with "no such table".
+        database.initialize()
+
     def test_model_discovery_filters_non_video_models_and_assigns_profiles(self):
         models = normalize_discovered_models(
             {
