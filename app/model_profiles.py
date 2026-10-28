@@ -4,7 +4,7 @@ from copy import deepcopy
 import re
 from typing import Any, Iterator, Mapping
 
-from .channels import autodl_comfyui, funai, fuyao, mai_token, o10_grok, pro666, rolldek, sub2api_video, wangyue
+from .channels import autodl_comfyui, funai, fuyao, mai_token, o10_grok, pro666, rolldek, sub2api_video, wangyue, xingapi
 
 
 MAX_DURATION_SECONDS = 60
@@ -523,6 +523,7 @@ PROFILE_DEFINITIONS: dict[str, dict[str, Any]] = {
     **rolldek.PROFILE_DEFINITIONS,
     **fuyao.PROFILE_DEFINITIONS,
     **wangyue.PROFILE_DEFINITIONS,
+    **xingapi.PROFILE_DEFINITIONS,
 }
 
 
@@ -548,6 +549,8 @@ def suggest_profile(model: str, protocol: str) -> str:
         return fuyao.suggest_route(model)['profile']
     if protocol == wangyue.PROTOCOL:
         return wangyue.suggest_route(model)['profile']
+    if protocol == xingapi.PROTOCOL:
+        return xingapi.PROFILE
     if protocol == 'seedance':
         return 'default'
     pro666_route = pro666.suggest_route(model)
@@ -686,6 +689,8 @@ def _suggest_route(model: str, protocol: str) -> dict[str, Any]:
         return fuyao.suggest_route(model)
     if protocol == wangyue.PROTOCOL:
         return wangyue.suggest_route(model)
+    if protocol == xingapi.PROTOCOL:
+        return xingapi.suggest_route(model)
     channel_route = pro666.suggest_route(model) if protocol == 'videos' else None
     if channel_route:
         return channel_route
@@ -857,6 +862,8 @@ def transform_create_payload(
         return mai_token.transform_create_payload(payload)
     if request_format == fuyao.PROFILE:
         return fuyao.transform_create_payload(payload, profile)
+    if request_format == xingapi.PROFILE:
+        return xingapi.transform_create_payload(payload, allowed_durations(profile))
     if request_format in pro666.REQUEST_FORMATS:
         return pro666.transform_create_payload(payload, request_format)
     metadata = payload.get('metadata') if isinstance(payload.get('metadata'), dict) else {}

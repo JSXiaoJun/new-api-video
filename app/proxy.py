@@ -14,7 +14,7 @@ from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from . import ark_video, database, media_probe
-from .channels import autodl_comfyui, funai, fuyao, mai_token, o10_grok, pro666, rolldek, sub2api_video, wangyue
+from .channels import autodl_comfyui, funai, fuyao, mai_token, o10_grok, pro666, rolldek, sub2api_video, wangyue, xingapi
 from .config import settings
 from .model_profiles import (
     INLINE_VALUE_KEYS,
@@ -514,6 +514,8 @@ def _extract_create_task_id(protocol: str, payload: dict[str, Any]) -> str:
         return fuyao.extract_create_task_id(payload)
     if protocol == wangyue.PROTOCOL:
         return wangyue.extract_create_task_id(payload)
+    if protocol == xingapi.PROTOCOL:
+        return xingapi.extract_create_task_id(payload)
     return str(payload.get("task_id") or payload.get("id") or "").strip()
 
 
@@ -965,6 +967,18 @@ async def create_video(
                 detail=str(error),
                 headers={REQUEST_ID_HEADER: relay_request_id},
             ) from error
+    elif protocol == xingapi.PROTOCOL:
+        try:
+            upstream_payload = xingapi.transform_create_payload(
+                routed_payload, allowed_durations(upstream["profile"], upstream.get("durations"))
+            )
+        except xingapi.XingApiRequestError as error:
+            database.fail_audit_request(relay_request_id, str(error))
+            raise HTTPException(
+                status_code=400,
+                detail=str(error),
+                headers={REQUEST_ID_HEADER: relay_request_id},
+            ) from error
     else:
         upstream_payload = transform_create_payload(
             routed_payload, upstream["profile"], video_limit
@@ -995,6 +1009,8 @@ async def create_video(
         if protocol == fuyao.PROTOCOL
         else wangyue.CREATE_PATH
         if protocol == wangyue.PROTOCOL
+        else xingapi.CREATE_PATH
+        if protocol == xingapi.PROTOCOL
         else "/v1/video/generations" if protocol == "seedance" else "/v1/videos"
     )
     headers = _create_headers(protocol, upstream["api_key"])
@@ -1011,6 +1027,8 @@ async def create_video(
     url = (
         funai.api_url(upstream["base_url"], endpoint)
         if protocol == funai.PROTOCOL
+        else xingapi.api_url(upstream["base_url"], endpoint)
+        if protocol == xingapi.PROTOCOL
         else upstream["base_url"] + endpoint
     )
     if public_task_id:
@@ -1075,6 +1093,8 @@ def _finish_create(
         if protocol == fuyao.PROTOCOL
         else wangyue.extract_create_status(upstream_payload)
         if protocol == wangyue.PROTOCOL
+        else xingapi.extract_create_status(upstream_payload)
+        if protocol == xingapi.PROTOCOL
         else upstream_payload.get("status")
     )
     if create_status is None and upstream_payload.get("error"):
@@ -1191,6 +1211,12 @@ def normalize_task_payload(task: dict[str, Any], payload: dict[str, Any]) -> tup
         video_url = fields["video_url"]
         error_value = fields["error"]
         progress = fields["progress"]
+    elif task["protocol"] == xingapi.PROTOCOL:
+        fields = xingapi.extract_task_fields(payload)
+        status_value = fields["status"]
+        video_url = fields["video_url"]
+        error_value = fields["error"]
+        progress = fields["progress"]
 
     if status_value is None and error_value:
         status_value = "failed"
@@ -1256,11 +1282,15 @@ async def fetch_task(task_id: str, timeout_seconds: float | None = None) -> JSON
         if task["protocol"] == fuyao.PROTOCOL
         else wangyue.task_path(task_id)
         if task["protocol"] == wangyue.PROTOCOL
+        else xingapi.task_path(task_id)
+        if task["protocol"] == xingapi.PROTOCOL
         else f"/v1/videos/{task_id}"
     )
     url = (
         funai.api_url(task["base_url"], endpoint)
         if task["protocol"] == funai.PROTOCOL
+        else xingapi.api_url(task["base_url"], endpoint)
+        if task["protocol"] == xingapi.PROTOCOL
         else f"{task['base_url']}{endpoint}"
     )
     headers: dict[str, str] | Callable[[], dict[str, str]] = (
@@ -1296,6 +1326,9 @@ async def fetch_task(task_id: str, timeout_seconds: float | None = None) -> JSON
             # nonce) says nothing about the task, which keeps running.
             task["protocol"] == wangyue.PROTOCOL
             and wangyue.is_credential_rejection(response.status_code, _json_or_none(response))
+        ) or (
+            task["protocol"] == xingapi.PROTOCOL
+            and response.status_code in xingapi.CREDENTIAL_REJECTION_STATUS_CODES
         ):
             return pending_task_response(task, response)
         else:
@@ -1601,7 +1634,7 @@ async def stream_content(
         )
 
     source_url = task.get("source_video_url")
-    if not source_url:
+    if not source_url and not (task["protocol"] == xingapi.PROTOCOL and task.get("status") == "completed"):
         task_response = await fetch_task(task_id)
         status_payload = json.loads(bytes(task_response.body))
         refreshed_task = database.get_task(task_id)
@@ -1628,6 +1661,8 @@ async def stream_content(
         source_url = f"{task['base_url']}{rolldek.content_path(task_id)}"
     elif task["protocol"] == fuyao.PROTOCOL:
         source_url = f"{task['base_url']}{fuyao.content_path(task_id)}"
+    elif task["protocol"] == xingapi.PROTOCOL:
+        source_url = xingapi.api_url(task["base_url"], xingapi.content_path(task_id))
     else:
         source_url = f"{task['base_url']}/v1/videos/{task_id}/content"
 

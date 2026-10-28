@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.templating import Jinja2Templates
 
 from . import database, image_database, image_proxy, new_api_gateway, proxy
-from .channels import autodl_comfyui, funai, fuyao, mai_token, o10_grok, rolldek, sub2api_video, wangyue
+from .channels import autodl_comfyui, funai, fuyao, mai_token, o10_grok, rolldek, sub2api_video, wangyue, xingapi
 from .config import PUBLIC_LINK_BASE_URLS, ROOT_DIR, settings
 from .integration_doc import build_integration_document
 from .image_integration_doc import build_image_integration_document
@@ -188,6 +188,11 @@ def normalize_discovered_models(payload: Any, protocol_override: str | None = No
         # The Fuyao token also sees chat and image models; only video models
         # may become video routes.
         if protocol_override == fuyao.PROTOCOL and not fuyao.is_video_model(
+            model_id,
+            item.get("supported_endpoint_types") if isinstance(item, dict) else None,
+        ):
+            continue
+        if protocol_override == xingapi.PROTOCOL and not xingapi.is_video_model(
             model_id,
             item.get("supported_endpoint_types") if isinstance(item, dict) else None,
         ):
@@ -522,6 +527,8 @@ async def discover_upstream_models(payload: ModelDiscoveryInput, _: dict = Depen
         if mai_token.is_mai_token_base_url(payload.base_url)
         else fuyao.PROTOCOL
         if fuyao.is_fuyao_base_url(payload.base_url)
+        else xingapi.PROTOCOL
+        if xingapi.is_xingapi_base_url(payload.base_url)
         else None
     )
     try:
@@ -529,6 +536,8 @@ async def discover_upstream_models(payload: ModelDiscoveryInput, _: dict = Depen
             discovery_url = (
                 funai.api_url(payload.base_url, "/v1/models")
                 if discovery_protocol == funai.PROTOCOL
+                else xingapi.api_url(payload.base_url, xingapi.MODELS_PATH)
+                if discovery_protocol == xingapi.PROTOCOL
                 else f"{payload.base_url}/v1/models"
             )
             response = await client.get(discovery_url, headers=headers)

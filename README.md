@@ -203,6 +203,22 @@ enabled public models and their configured capabilities.
 `images: ["公开图片 URL"]`，最多传 7 张；不支持参考视频和音频。任务创建、查询和视频下载分别使用
 `POST /v1/videos`、`GET /v1/videos/{task_id}` 和 `GET /v1/videos/{task_id}/content`。
 
+### XingAPI Video Channel (`xingapi`)
+
+为 `https://xingapi.top/v1`（带不带 `/v1` 都可以）新建视频上游，填写 XingAPI Key 后点击
+`同步上游模型`。模型列表来自该 Key 的 `GET /v1/models`，只保留视频模型；不同 Key 的分组和权限不同，
+不要手抄别的 Key 的模型名。适配器为 `app/channels/xingapi.py`，任务创建、查询和下载分别使用
+`POST /v1/videos/generations`、`GET /v1/videos/{task_id}` 和 `GET /v1/videos/{task_id}/content`，
+均带 `Bearer` 密钥。
+
+请求只下发文档里的公共字段：`model`、`prompt`、`duration`、`ratio`、`resolution` 以及
+`images` / `videos` / `audios` URL 数组；`seconds`、`image_urls`、`aspect_ratio` 等写法会被换成这些
+字段，不会原样透传。上游要求必须带 `duration`，调用方没传时只有单一时长的路由（如 `快乐马1.1-5S`）
+会自动补上，其余直接返回 400。参考素材必须是公网 `http(s)` 直链。模型名决定后端：
+`seedance2.0-mini`（纯900）最多 10 张图、3 段音频；`seedance-2.0-933x` / `seedance-2.0-mini`（喵呜）
+支持图片和音频；两者都不支持参考视频，同步出来的路由默认 `video_count = 0`。比例 `16:9` / `9:16`，
+分辨率 `480p` / `720p`。查询返回 401/403（换 Key、权限变化）时任务保持进行中，不会判失败退款。
+
 ### MAI Token Seedance Channel
 
 为 `https://api.mai-token.com` 新建视频上游并点击 `同步上游模型`。MAI Token 使用独立的 `mai-token`
