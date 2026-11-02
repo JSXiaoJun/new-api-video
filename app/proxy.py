@@ -1483,7 +1483,6 @@ async def stream_upstream_content(
         "content-length",
         "content-range",
         "accept-ranges",
-        "content-disposition",
         "etag",
         "last-modified",
         "cache-control",
@@ -1543,10 +1542,18 @@ async def stream_upstream_content(
     # caller's known type instead.
     if media_type.split(";", 1)[0].strip().lower() in _GENERIC_MEDIA_TYPES:
         media_type = default_media_type
-    if filename_stem and "content-disposition" not in response_headers:
+    if filename_stem:
+        # Storage providers (Volcengine TOS among them) label the finished file
+        # ``attachment``. Forwarding that turns every public video link into a
+        # download: a browser or in-app viewer saves the file instead of
+        # playing it. The relay's own inline name wins; a "save as" still works,
+        # and API clients that stream the body are unaffected.
         stem = re.sub(r"[^A-Za-z0-9._-]", "_", filename_stem)
         extension = _MEDIA_EXTENSIONS.get(media_type.split(";", 1)[0].strip().lower(), "")
         response_headers["content-disposition"] = f'inline; filename="{stem}{extension}"'
+    elif "content-disposition" in upstream_response.headers:
+        # Asset streams have no filename of their own, so the provider's wins.
+        response_headers["content-disposition"] = upstream_response.headers["content-disposition"]
     return StreamingResponse(
         iterator(),
         status_code=status_code,

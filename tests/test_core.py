@@ -1522,6 +1522,8 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(response.headers["content-disposition"], 'inline; filename="task_public.mp4"')
 
     def test_video_stream_keeps_specific_upstream_type_and_name(self):
+        # A storage provider that labels the file ``attachment`` must not turn
+        # the public play link into a download: the relay names it inline.
         def handler(_request):
             return httpx.Response(
                 200,
@@ -1549,7 +1551,7 @@ class CoreTests(unittest.TestCase):
             asyncio.run(response.body_iterator.aclose())
 
         self.assertEqual(response.media_type, "video/webm")
-        self.assertEqual(response.headers["content-disposition"], 'attachment; filename="clip.webm"')
+        self.assertEqual(response.headers["content-disposition"], 'inline; filename="task_public.webm"')
 
     def test_initialize_migrates_legacy_tasks_without_data_loss(self):
         with tempfile.TemporaryDirectory() as data_dir:
@@ -3967,6 +3969,50 @@ class UpstreamRangeTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.content, self.BODY)
         self.assertEqual(response.headers["accept-ranges"], "bytes")
+
+    def test_public_video_range_response_is_inline_not_attachment(self):
+        """A browser opening the public link must play it, not save it.
+
+        Volcengine's storage links answer with ``content-disposition:
+        attachment``; forwarding that left every public video as a download.
+        """
+
+        def handler(_request):
+            return httpx.Response(
+                200,
+                headers={
+                    "content-type": "video/mp4",
+                    "content-length": str(len(self.BODY)),
+                    "accept-ranges": "bytes",
+                    "content-disposition": 'attachment; filename="021793591545092.mp4"',
+                },
+                content=self.BODY,
+            )
+
+        real_client = httpx.AsyncClient
+
+        def client_factory(**kwargs):
+            return real_client(transport=httpx.MockTransport(handler), **kwargs)
+
+        test_app = FastAPI()
+
+        @test_app.get("/public/videos/{public_task_id}/content")
+        async def content(public_task_id: str, request: Request):
+            return await stream_upstream_content(
+                "https://ark.example/clip.mp4",
+                request,
+                default_media_type="video/mp4",
+                filename_stem=public_task_id,
+            )
+
+        with patch("app.proxy.httpx.AsyncClient", new=client_factory):
+            response = TestClient(test_app).get(
+                "/public/videos/task_abc/content", headers={"Range": "bytes=-4"}
+            )
+        self.assertEqual(response.status_code, 206)
+        self.assertEqual(response.content, b"6789")
+        self.assertEqual(response.headers["content-range"], "bytes 6-9/10")
+        self.assertEqual(response.headers["content-disposition"], 'inline; filename="task_abc.mp4"')
 
 
 if __name__ == "__main__":
