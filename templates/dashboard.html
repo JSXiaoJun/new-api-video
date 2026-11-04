@@ -85,6 +85,7 @@
               <option value="processing">处理中</option>
               <option value="completed">已完成</option>
               <option value="failed">失败</option>
+              <option value="rejected">请求拒绝</option>
             </select>
             <button class="quiet-button compact" type="submit">搜索</button>
           </form>
@@ -189,6 +190,11 @@
             <div><span>状态</span><span id="audit-status"></span></div>
             <div><span>上游</span><strong id="audit-upstream"></strong></div>
             <div><span>创建时间</span><time id="audit-created"></time></div>
+          </section>
+
+          <section id="audit-error-section" class="audit-section" hidden>
+            <div class="audit-section-heading"><h3 id="audit-error-heading">失败原因</h3></div>
+            <p id="audit-error" class="audit-error"></p>
           </section>
 
           <section id="create-check-section" class="audit-section create-check-section" hidden>

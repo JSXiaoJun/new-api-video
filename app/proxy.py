@@ -825,6 +825,22 @@ def _pending_create_status(submission: dict[str, Any]) -> JSONResponse:
     return JSONResponse(result, headers={REQUEST_ID_HEADER: relay_request_id})
 
 
+def _rejected(relay_request_id: str, detail: str, status_code: int = 400) -> HTTPException:
+    """Record a locally refused request and return the exception to raise.
+
+    The audit row is written before the exception leaves the gateway, so
+    任务审计 shows every refused request with the reason even though nothing
+    reached the upstream (no task, no billing).
+    """
+    database.reject_audit_request(relay_request_id, detail)
+    logger.info("Rejected video request %s: %s", relay_request_id, detail)
+    return HTTPException(
+        status_code=status_code,
+        detail=detail,
+        headers={REQUEST_ID_HEADER: relay_request_id},
+    )
+
+
 async def create_video(
     payload: dict[str, Any],
     incoming_idempotency_key: str | None,
@@ -839,9 +855,16 @@ async def create_video(
     if upstream is None:
         raise HTTPException(status_code=404, detail=f"No enabled upstream for model {model}")
 
-    validate_online_image_inputs(payload)
-
     protocol = upstream["protocol"]
+    # The audit row opens as soon as a route is chosen, before any request
+    # validation: a refused request then still appears in 任务审计 with the
+    # ``rejected`` status and its reason instead of leaving no trace. Nothing
+    # has been sent upstream at this point.
+    relay_request_id = database.start_audit_request(upstream["id"], model, protocol, payload)
+    try:
+        validate_online_image_inputs(payload)
+    except HTTPException as error:
+        raise _rejected(relay_request_id, str(error.detail), error.status_code) from error
     # 参考媒体的数量上限在这里统一执行：超过后台配置的数量直接拒绝，并说明是哪
     # 一种媒体超了多少，绝不悄悄丢掉参考媒体让用户拿到另一个任务的结果。数量与
     # ``/v1/model-capabilities`` 公布的数字同源，调用方可以提前知道预算。
@@ -849,7 +872,7 @@ async def create_video(
     try:
         enforce_reference_media_limits(payload, media_counts)
     except MediaLimitError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
+        raise _rejected(relay_request_id, str(error)) from error
     # 时长同理：只放行 ``/v1/model-capabilities`` 公布的时长，不支持的时长直接
     # 拒绝，不交给上游去报错或悄悄换成默认时长。
     try:
@@ -863,7 +886,7 @@ async def create_video(
             else (),
         )
     except DurationNotAllowedError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
+        raise _rejected(relay_request_id, str(error)) from error
     video_limit = media_counts["video"]
     routed_payload = {**payload, "model": upstream["upstream_model"]}
     # 分辨率与时长同一套规则：只放行这条路由配置（对 ``/v1/model-capabilities``
@@ -875,7 +898,7 @@ async def create_video(
     try:
         enforce_resolution(routed_payload, resolutions)
     except ResolutionNotAllowedError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
+        raise _rejected(relay_request_id, str(error)) from error
     routed_payload = _normalize_requested_resolution(routed_payload, resolutions)
     if upstream.get("forward_resolution", True):
         routed_payload = apply_pinned_resolution(routed_payload, upstream.get("resolutions"))
@@ -886,7 +909,7 @@ async def create_video(
         and not autodl_comfyui.requires_prompt(upstream["upstream_model"])
     )
     if not prompt and not allows_promptless:
-        raise HTTPException(status_code=400, detail="prompt is required")
+        raise _rejected(relay_request_id, "prompt is required")
     reference_video_urls: list[str] | None = None
     if upstream.get("measure_reference_video"):
         # Measured after the upstream accepts the task, so submission never
@@ -894,7 +917,6 @@ async def create_video(
         reference_video_urls = list(dict.fromkeys(
             value.strip() for value in iter_media_references(payload, "video") if value.strip()
         ))
-    relay_request_id = database.start_audit_request(upstream["id"], model, protocol, payload)
     if protocol == wangyue.PROTOCOL:
         try:
             wangyue.parse_credentials(upstream["api_key"])
@@ -920,30 +942,26 @@ async def create_video(
         upstream_payload = sub2api_video.transform_create_payload(routed_payload)
     elif protocol == mai_token.PROTOCOL:
         try:
-            upstream_payload = mai_token.transform_create_payload(routed_payload)
+            upstream_payload = mai_token.transform_create_payload(
+                routed_payload,
+                public_model=model,
+                durations=allowed_durations(upstream["profile"], upstream.get("durations")),
+            )
         except mai_token.MaiTokenRequestError as error:
             # The channel cannot serve this request as asked; say so instead of
             # trimming the media or the length to make it fit.
-            database.fail_audit_request(relay_request_id, str(error))
-            raise HTTPException(
-                status_code=400,
-                detail=str(error),
-                headers={REQUEST_ID_HEADER: relay_request_id},
-            ) from error
+            raise _rejected(relay_request_id, str(error)) from error
     elif protocol == rolldek.PROTOCOL:
         upstream_payload = rolldek.transform_create_payload(routed_payload)
     elif protocol == fuyao.PROTOCOL:
         try:
-            upstream_payload = fuyao.transform_create_payload(routed_payload, upstream["profile"])
+            upstream_payload = fuyao.transform_create_payload(
+                routed_payload, upstream["profile"], public_model=model
+            )
         except fuyao.FuyaoRequestError as error:
             # The model family cannot serve this request; say why instead of
             # sending a trimmed task the caller did not ask for.
-            database.fail_audit_request(relay_request_id, str(error))
-            raise HTTPException(
-                status_code=400,
-                detail=str(error),
-                headers={REQUEST_ID_HEADER: relay_request_id},
-            ) from error
+            raise _rejected(relay_request_id, str(error)) from error
     elif protocol == wangyue.PROTOCOL:
         # The key travels in the signed headers and in the body, so it is
         # fixed before the body is built.
@@ -961,24 +979,14 @@ async def create_video(
                 allowed_durations(upstream["profile"], upstream.get("durations")),
             )
         except wangyue.WangyueRequestError as error:
-            database.fail_audit_request(relay_request_id, str(error))
-            raise HTTPException(
-                status_code=400,
-                detail=str(error),
-                headers={REQUEST_ID_HEADER: relay_request_id},
-            ) from error
+            raise _rejected(relay_request_id, str(error)) from error
     elif protocol == xingapi.PROTOCOL:
         try:
             upstream_payload = xingapi.transform_create_payload(
                 routed_payload, allowed_durations(upstream["profile"], upstream.get("durations"))
             )
         except xingapi.XingApiRequestError as error:
-            database.fail_audit_request(relay_request_id, str(error))
-            raise HTTPException(
-                status_code=400,
-                detail=str(error),
-                headers={REQUEST_ID_HEADER: relay_request_id},
-            ) from error
+            raise _rejected(relay_request_id, str(error)) from error
     else:
         upstream_payload = transform_create_payload(
             routed_payload, upstream["profile"], video_limit

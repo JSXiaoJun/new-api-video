@@ -324,6 +324,119 @@ class MaiTokenAdapterTests(unittest.TestCase):
                     str(int(float(value))),
                 )
 
+    def test_request_errors_name_the_model_instead_of_the_upstream(self):
+        cases = (
+            (
+                {"model": "sd-2.0-720p", "prompt": "p", "duration": 19},
+                "sd-2.0-720p 模型只支持 4–15 秒",
+            ),
+            (
+                {"model": "sd-2.0-720p", "prompt": "p", "aspect_ratio": "2:1"},
+                "sd-2.0-720p 模型只支持画面比例",
+            ),
+            (
+                {"model": "sd-2.0-720p", "prompt": "p", "resolution": "2160p"},
+                "sd-2.0-720p 模型只支持分辨率",
+            ),
+            (
+                {
+                    "model": "sd-2.0-720p",
+                    "prompt": "p",
+                    "image_urls": [f"https://cdn.example/ref-{index}.png" for index in range(10)],
+                },
+                "sd-2.0-720p 模型每个任务最多",
+            ),
+        )
+        for payload, expected in cases:
+            with self.subTest(expected=expected):
+                with self.assertRaises(mai_token.MaiTokenRequestError) as raised:
+                    mai_token.transform_create_payload(payload)
+                message = str(raised.exception)
+                self.assertIn(expected, message)
+                self.assertNotIn("MAI Token", message)
+
+    def test_errors_use_the_public_model_name_not_the_routed_one(self):
+        with self.assertRaises(mai_token.MaiTokenRequestError) as raised:
+            mai_token.transform_create_payload(
+                {"model": "sd-2.0-720p", "prompt": "p", "duration": 19},
+                public_model="sd2-903-720p",
+            )
+        self.assertIn("sd2-903-720p 模型只支持 4–15 秒", str(raised.exception))
+        self.assertNotIn("sd-2.0-720p", str(raised.exception))
+        # The public name is only a label; the upstream still gets its own name.
+        body = mai_token.transform_create_payload(
+            {"model": "sd-2.0-720p", "prompt": "p", "seconds": 5},
+            public_model="sd2-903-720p",
+        )
+        self.assertEqual(body["model"], "sd-2.0-720p")
+
+    def test_route_durations_override_the_documented_cap(self):
+        # A route that publishes 4–30 must not be refused by the adapter's
+        # stale 4–15 default: the published list is the enforced list.
+        with self.assertRaisesRegex(mai_token.MaiTokenRequestError, "4–15 秒"):
+            mai_token.transform_create_payload(
+                {"model": "sd-2.0-720p", "prompt": "p", "duration": 19},
+            )
+        body = mai_token.transform_create_payload(
+            {"model": "sd-2.0-720p", "prompt": "p", "seconds": 19},
+            durations=list(range(4, 31)),
+        )
+        self.assertEqual(body["seconds"], "19")
+
+    def test_proxy_forwards_a_length_the_route_publishes(self):
+        public_model = f"mai-public-{time.time_ns()}"
+        database.save_upstream({
+            "name": public_model,
+            "base_url": "https://api.mai-token.com",
+            "api_key": "mai-secret",
+            "enabled": True,
+            "priority": 1,
+            "routes": [{
+                "model": public_model,
+                "upstream_model": "sd-2.0-720p",
+                "protocol": mai_token.PROTOCOL,
+                "profile": "mai-token-720p",
+                "durations": list(range(4, 31)),
+                "resolutions": ["720p"],
+                "image_count": 9,
+                "supports_image": True,
+                "supports_video": True,
+                "supports_audio": True,
+            }],
+        })
+        captured: dict = {}
+
+        class MockAsyncClient:
+            def __init__(self, **_kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            async def post(self, url, **kwargs):
+                captured["json"] = kwargs["json"]
+                return httpx.Response(
+                    200,
+                    request=httpx.Request("POST", url),
+                    json={"id": "task_long", "status": "queued"},
+                )
+
+        with patch("app.proxy.httpx.AsyncClient", MockAsyncClient):
+            created = asyncio.run(create_video({
+                "model": public_model,
+                "prompt": "p",
+                "duration": 19,
+                "resolution": "720p",
+            }, None))
+        self.assertEqual(created.status_code, 200)
+        self.assertEqual(captured["json"]["seconds"], "19")
+        self.assertEqual(captured["json"]["model"], "sd-2.0-720p")
+        audit = database.get_audit_request(created.headers["X-Oneapi-Request-Id"])
+        self.assertEqual(audit["status"], "queued")
+
     def test_an_unsupported_ratio_or_resolution_is_refused(self):
         with self.assertRaisesRegex(mai_token.MaiTokenRequestError, "画面比例"):
             mai_token.transform_create_payload(

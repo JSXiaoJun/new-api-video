@@ -93,7 +93,19 @@ class MaiTokenRequestError(Exception):
     """请求超出了 MAI Token 文档写明的范围，不能靠改写请求来迁就。"""
 
 
-def _check_limits(images: int, audios: int, videos: int) -> None:
+def _model_prefix(model: Any) -> str:
+    """User-facing subject for request errors.
+
+    ``model`` must be the public name the caller used, not the mapped
+    upstream model: the message has to match the caller's own model list and
+    must not reveal the routing table. ``<model> 模型`` mirrors the
+    route-level duration error so both layers read the same way.
+    """
+    name = str(model or "").strip()
+    return f"{name} 模型" if name else "当前模型"
+
+
+def _check_limits(images: int, audios: int, videos: int, model_prefix: str) -> None:
     """超出文档上限就拒绝，而不是截断。
 
     截断等于把调用方的素材悄悄扔掉：用户传了 12 张参考图、付了整单的钱，却只
@@ -108,7 +120,7 @@ def _check_limits(images: int, audios: int, videos: int) -> None:
     ):
         if count > limit:
             raise MaiTokenRequestError(
-                f'MAI Token 每个任务最多 {limit} {unit}{label}，本次请求 {count} {unit}'
+                f'{model_prefix}每个任务最多 {limit} {unit}{label}，本次请求 {count} {unit}'
             )
 
 
@@ -200,8 +212,18 @@ def is_known_model(model: str) -> bool:
     return model.strip().lower() in _MODEL_RESOLUTIONS
 
 
-def transform_create_payload(payload: dict[str, Any]) -> dict[str, Any]:
+def transform_create_payload(
+    payload: dict[str, Any],
+    public_model: str | None = None,
+    durations: list[int] | None = None,
+) -> dict[str, Any]:
     """Build the documented ``content[]`` request body.
+
+    ``public_model`` is the name the caller used, when it differs from the
+    routed upstream model. It is only used in error messages, never in the
+    request body. ``durations`` is the route's published length list; when
+    given, it overrides the documented 4–15 default so a route that really
+    serves longer clips is not refused by a second, stale copy of the rule.
 
     Only declared MAI Token fields are emitted. ``resolution`` is always sent:
     the upstream requires an explicit tier and does not reliably infer it from
@@ -241,7 +263,8 @@ def transform_create_payload(payload: dict[str, Any]) -> dict[str, Any]:
     # The documented budget covers first_frame and last_frame too, so the frame
     # URLs are counted before the media is trimmed or rejected.
     ordered_images = _dedupe([url for _, url in frames] + images + references)
-    _check_limits(len(ordered_images), len(audios), len(videos))
+    model_prefix = _model_prefix(public_model or payload.get("model"))
+    _check_limits(len(ordered_images), len(audios), len(videos), model_prefix)
 
     role_by_url = {url: role for role, url in frames}
     for url in ordered_images:
@@ -258,20 +281,20 @@ def transform_create_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "prompt": payload.get("prompt"),
         "content": content,
     }
-    seconds = _seconds(payload)
+    seconds = _seconds(payload, model_prefix, durations)
     if seconds:
         result["seconds"] = seconds
     resolution = _resolution(payload)
     if resolution:
         if resolution not in _RESOLUTION_SUFFIXES_VALUES:
             raise MaiTokenRequestError(
-                f'MAI Token 只支持分辨率 {_RESOLUTION_LABEL}，收到 {resolution}'
+                f'{model_prefix}只支持分辨率 {_RESOLUTION_LABEL}，收到 {resolution}'
             )
         result["resolution"] = resolution
     ratio = _ratio(payload)
     if ratio:
         if ratio not in RATIOS:
-            raise MaiTokenRequestError(f'MAI Token 只支持画面比例 {"、".join(RATIOS)}，收到 {ratio}')
+            raise MaiTokenRequestError(f'{model_prefix}只支持画面比例 {"、".join(RATIOS)}，收到 {ratio}')
         result["ratio"] = ratio
     if payload.get("generate_audio") is not None:
         result["generate_audio"] = payload["generate_audio"]
@@ -307,12 +330,17 @@ def _image_item(role: str, url: str) -> dict[str, Any]:
     return {"type": "image_url", "role": role, "image_url": {"url": url}}
 
 
-def _seconds(payload: dict[str, Any]) -> str | None:
+def _seconds(
+    payload: dict[str, Any], model_prefix: str, durations: list[int] | None = None
+) -> str | None:
     """Return the documented ``seconds`` string, refusing a length out of range.
 
-    The upstream only accepts 4–15 seconds. Sending anything else either fails
-    the create or gets replaced by the default length, and a replaced length is
-    billed as a different task than the caller asked for.
+    The documented upstream range is 4–15 seconds; sending anything else either
+    fails the create or gets replaced by the default length, and a replaced
+    length is billed as a different task than the caller asked for. A route may
+    publish a wider list (for example 4–30 on a newer tier): that list is
+    already enforced by ``proxy.enforce_duration`` and wins here, so the
+    gateway never advertises a length it then refuses itself.
     """
     value = payload.get("duration")
     if value is None:
@@ -323,9 +351,11 @@ def _seconds(payload: dict[str, Any]) -> str | None:
         seconds = int(float(value))
     except (TypeError, ValueError):
         raise MaiTokenRequestError(f'时长必须是整数秒，收到 {value!r}') from None
+    if durations:
+        return str(seconds)
     if not MIN_SECONDS <= seconds <= MAX_SECONDS:
         raise MaiTokenRequestError(
-            f'MAI Token 只支持 {MIN_SECONDS}–{MAX_SECONDS} 秒，收到 {seconds} 秒'
+            f'{model_prefix}只支持 {MIN_SECONDS}–{MAX_SECONDS} 秒，收到 {seconds} 秒'
         )
     return str(seconds)
 

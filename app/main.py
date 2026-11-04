@@ -397,7 +397,7 @@ def image_integration_document(_: tuple[str, dict] = Depends(admin_session)):
 @app.get("/admin/api/tasks")
 async def audit_tasks(
     q: str = Query(default="", max_length=191),
-    status: str = Query(default="", pattern="^(|queued|processing|completed|failed)$"),
+    status: str = Query(default="", pattern="^(|queued|processing|completed|failed|rejected)$"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=database.DEFAULT_LOG_PAGE_SIZE, ge=1, le=database.MAX_LOG_PAGE_SIZE),
     _: tuple[str, dict] = Depends(admin_session),

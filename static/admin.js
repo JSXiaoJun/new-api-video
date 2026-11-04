@@ -127,7 +127,7 @@ async function api(url, options = {}) {
 }
 
 function statusLabel(status) {
-  const labels = { queued: '排队中', processing: '处理中', completed: '已完成', failed: '失败' }
+  const labels = { queued: '排队中', processing: '处理中', completed: '已完成', failed: '失败', rejected: '请求拒绝' }
   return labels[status] || status
 }
 
@@ -310,6 +310,18 @@ function renderAuditDetail(task) {
   document.querySelector('#audit-upstream').textContent = task.upstream_name
   document.querySelector('#audit-created').textContent = formatTime(task.created_at)
   document.querySelector('#audit-status').innerHTML = taskStatusBadge(task)
+
+  // A refused request has no upstream task and no events; its only trace is
+  // the reason. Show it here so the operator does not have to read the audit
+  // JSON to learn why the gateway stopped the request.
+  const errorSection = document.querySelector('#audit-error-section')
+  const reason = String(task.error || '').trim()
+  errorSection.hidden = !reason
+  document.querySelector('#audit-error-heading').textContent = task.status === 'rejected' ? '拒绝原因' : '失败原因'
+  document.querySelector('#audit-error').textContent = reason
+  const rejected = task.status === 'rejected'
+  document.querySelector('.media-section').hidden = rejected
+  document.querySelector('.public-task-section').hidden = rejected
 
   const unconfirmed = Boolean(task.create_state) && task.status === 'queued' && !task.upstream_task_id
   document.querySelector('#create-check-section').hidden = !unconfirmed

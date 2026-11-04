@@ -714,6 +714,25 @@ def fail_audit_request(relay_request_id: str, error: str) -> None:
         )
 
 
+def reject_audit_request(relay_request_id: str, error: str) -> None:
+    """Mark a request the gateway refused before contacting the upstream.
+
+    ``rejected`` stays separate from ``failed`` so 任务审计 can tell a local
+    refusal (length, resolution, media budget, ...) from a task that actually
+    reached the upstream and then failed. Nothing was sent or billed.
+    """
+    with connection() as conn:
+        conn.execute(
+            """
+            UPDATE audit_requests
+            SET status = 'rejected', error = ?, create_state = NULL, updated_at = ?,
+                public_task_id = CASE WHEN upstream_task_id IS NULL THEN NULL ELSE public_task_id END
+            WHERE relay_request_id = ?
+            """,
+            (error, int(time.time()), relay_request_id),
+        )
+
+
 # A create the upstream has not confirmed is tracked in ``create_state``:
 # ``submitting`` while a POST is in flight, ``unknown`` once it ended without a
 # definite answer. The caller then holds the relay request ID as a provisional

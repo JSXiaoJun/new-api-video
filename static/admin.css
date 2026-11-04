@@ -190,6 +190,7 @@ code { font-family: "SFMono-Regular", Consolas, monospace; font-size: 12px; colo
 .state.disabled, .task-status.failed { color: #9e2c22; background: #fde8e6; }
 .task-status.queued { color: #795000; background: #fff0c9; }
 .task-status.processing { color: #1957a6; background: #e5effc; }
+.task-status.rejected { color: #5b3aa0; background: #efe9fb; }
 .route-list { display: flex; flex-wrap: wrap; gap: 6px; max-width: 600px; }
 .route-list span { display: inline-flex; align-items: center; gap: 7px; border: 1px solid #dce4df; border-radius: 4px; padding: 4px 7px; background: #f7f9f7; font-size: 11px; }
 .route-list b { color: #617068; font-size: 10px; font-weight: 600; }
@@ -255,6 +256,7 @@ dialog::backdrop { background: rgba(17, 26, 21, .62); backdrop-filter: blur(2px)
 .public-task-form { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; }
 .public-task-form input { height: 38px; }
 .create-check-note { margin: 0 0 12px; color: var(--muted); font-size: 13px; line-height: 1.6; }
+.audit-error { margin: 0; color: var(--danger); font-size: 13px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
 .create-check-actions { margin-top: 10px; }
 .quiet-button.danger { color: #9e2c22; }
 .task-status.unconfirmed { color: #8a3b00; background: #ffe4cc; }

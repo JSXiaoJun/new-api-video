@@ -234,13 +234,14 @@ enabled public models and their configured capabilities.
 同时下发，`image_urls` / `images` / `image_url` 转成 `reference_image`，`audio_urls` 转成
 `reference_audio`，`reference_video` 转成 `reference_video`，首尾帧分别使用 `first_frame`
 和 `last_frame` 角色并计入 9 张图片总额。每个任务最多 9 张图片、3 段音频和 3 段视频，
-比例支持 `16:9`、`9:16`、`1:1`、`4:3`、`3:4`、`21:9`，时长 `4`–`15` 秒。
+比例支持 `16:9`、`9:16`、`1:1`、`4:3`、`3:4`、`21:9`，文档默认时长 `4`–`15` 秒；路由上
+配置了别的范围（例如 `4`–`30`）时以路由为准，适配器按路由公布的范围放行。
 
 上游要求请求体里必须带 `resolution`，只靠模型名不够，因此适配器**总是**下发它：调用方
 传了就按传的（`720P`、`1280x720` 都归一成 `720p`），没传就取模型名里的档位
 （`sdg-2.5-1080p` → `1080p`）。早期版本把它当冗余字段丢掉，导致 1080p 的路由实际按上游
 默认档位出片。超出范围的请求一律**明确报错**而不是改写：图片/音频/视频超过 9/3/3 会报
-`MAI Token 每个任务最多 9 张图片，本次请求 11 张`，时长不在 4–15 秒、比例不在上面的清单、
+`sd-2.0-720p 模型每个任务最多 9 张图片，本次请求 11 张`，时长不在路由公布的范围、比例不在上面的清单、
 分辨率不是 480p/720p/1080p 都会返回 400。截断或替换会把用户付过钱的素材与时长悄悄换成
 另一个任务，因此这里不做任何"帮你修好"的兼容。
 
@@ -394,6 +395,13 @@ opaque task ID to the adapter in `X-Public-Task-ID` when creating a video. The a
 creation and returns `/public/videos/{public_task_id}/content` on the selected public media domain. This public link is
 valid for 24 hours and defaults to 50 download starts per video; the limit can be changed from the admin page
 (1-10,000). Video bytes are served directly by the adapter and do not pass through New API.
+
+### 请求被网关拒绝时
+
+时长、分辨率、画面比例、参考素材数量等校验都在发往上游之前执行。被拒绝的请求不会创建任务、不会扣费，
+但会在「任务审计」里以「请求拒绝」状态留档，详情页直接显示拒绝原因。它和「失败」分开：前者表示请求
+根本没离开网关，后者表示请求已经到达上游、是任务本身失败或上游报错。没有匹配到任何路由的请求（模型名
+不存在或路由被停用）连上游都选不出来，仍只返回 404，不写审计。
 
 ### 创建结果不确定时
 

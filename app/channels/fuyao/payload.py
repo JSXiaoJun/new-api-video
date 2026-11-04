@@ -43,15 +43,20 @@ _AUDIO_LIST_KEYS = ("reference_audios", "audio_urls", "audios")
 _AUDIO_SINGLE_KEYS = ("reference_audio", "audio_url")
 
 
-def transform_create_payload(payload: dict[str, Any], profile: str | None = None) -> dict[str, Any]:
+def transform_create_payload(
+    payload: dict[str, Any], profile: str | None = None, public_model: str | None = None
+) -> dict[str, Any]:
     """Convert the canonical relay payload into the Fuyao request body.
 
     The route's profile picks the family, so an operator can override the
     name-based guess; without a Fuyao profile the model name decides.
+    ``public_model`` is the name the caller used, when it differs from the
+    routed upstream model, and is only used in error messages.
     """
     model = str(payload.get("model") or "").strip()
     if not model:
         raise FuyaoRequestError("model is required")
+    model_label = str(public_model or model).strip()
     family = catalog.family_for_profile(profile) or catalog.family_for_model(model)
 
     images = _images(payload)
@@ -75,11 +80,11 @@ def transform_create_payload(payload: dict[str, Any], profile: str | None = None
             seconds = allowed[0]
         if seconds not in allowed:
             raise FuyaoRequestError(
-                f"{model} 的时长由模型 ID 固定，seconds 只能是 "
+                f"{model_label} 的时长由模型 ID 固定，seconds 只能是 "
                 + " 或 ".join(str(value) for value in allowed)
             )
     elif family == catalog.SD2 and catalog.requires_reference(model) and not (images or videos or audios):
-        raise FuyaoRequestError(f"{model} 不支持纯文生视频，请提供首帧、首尾帧或参考素材")
+        raise FuyaoRequestError(f"{model_label} 不支持纯文生视频，请提供首帧、首尾帧或参考素材")
 
     if seconds is not None:
         body["seconds"] = str(seconds)

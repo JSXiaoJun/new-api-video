@@ -316,6 +316,29 @@ class SplitRouteProxyTests(unittest.TestCase):
         self.assertNotIn("resolution", sent["json"].get("metadata", {}).get("parameters", {}))
 
 
+    def test_a_refused_request_is_audited_as_rejected(self):
+        # A request the gateway refuses locally never reaches the upstream, but
+        # it must still show up in 任务审计 so the operator can see where it
+        # stopped. The status distinguishes it from an upstream task failure.
+        public_model = self._save()
+        with patch("app.proxy.httpx.AsyncClient") as client:
+            with self.assertRaises(HTTPException):
+                self._create({
+                    "model": public_model,
+                    "prompt": "p",
+                    "seconds": 5,
+                    "resolution": "1080p",
+                })
+            client.assert_not_called()
+        recorded = [
+            task
+            for task in database.list_audit_requests(status="rejected")
+            if task["model"] == public_model
+        ]
+        self.assertTrue(recorded, "rejected request must remain visible in 任务审计")
+        self.assertIn("只支持", recorded[0]["error"])
+        self.assertIsNone(recorded[0]["upstream_task_id"])
+
     def test_a_rejected_resolution_never_reaches_the_upstream(self):
         public_model = self._save()
         with patch("app.proxy.httpx.AsyncClient") as client:
