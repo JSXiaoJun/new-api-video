@@ -9,8 +9,10 @@ URLs (the relay rejects base64 before it gets here):
 * videos -> ``reference_videos: [url]``
 * audios -> ``reference_audios: [url]``
 
-Wan3 is the exception: options go under ``metadata.parameters`` and media
-under ``metadata.input.media[]`` as ``{type, url}`` items (see ``_wan3_body``).
+Wan3 keeps everything at the top level, matching the 2026-11 contract:
+``duration``/``resolution``/``aspect_ratio``/``mode``/``generate_audio`` and
+``images``/``videos``/``audios`` or ``first_frame``/``last_frame`` (see
+``_wan3_body``).
 
 A request the family cannot serve raises :class:`FuyaoRequestError` instead of
 being trimmed, so the caller never gets a different task than it asked for.
@@ -142,9 +144,17 @@ def special_durations(model: str, profile: str | None = None) -> list[int]:
     return [WAN3_AUTO_DURATION] if family == catalog.WAN3 else []
 
 
-_WAN3_RESOLUTIONS = ("480P", "720P", "1080P")
+# The 2026-11 revision of the Wan3 contract documents top-level fields only.
+# The gateway validates the body against that list and refuses the old
+# ``metadata.parameters`` names one by one -- ``audio`` answers with
+# "This protocol does not document audio" -- so the body is always emitted in
+# the documented shape.
+_WAN3_RESOLUTIONS = ("480p", "720p", "1080p")
 _WAN3_AUTO_RATIOS = frozenset({"adaptive", "auto"})
-_WAN3_EXTRA_PARAMETERS = ("prompt_extend", "watermark", "seed")
+_WAN3_MODES = ("text2video", "frames2video", "mixed2video")
+# Documented as unsupported: forwarding these only earns an opaque
+# "does not document ..." rejection from the gateway.
+_WAN3_UNSUPPORTED = ("seed", "watermark", "prompt_extend")
 
 
 def _wan3_body(
@@ -157,12 +167,11 @@ def _wan3_body(
     ratio: str | None,
     resolution: str | None,
 ) -> dict[str, Any]:
-    """Wan3 takes its options under ``metadata.parameters`` and its media as
-    typed items in ``metadata.input.media`` (tutorial update of 2026-10-02).
+    """Wan3 takes top-level options and media (tutorial update of 2026-11-09).
 
-    The gateway still converts the legacy top-level fields, but documents the
-    structured form as the one it bills and validates against, and asks not to
-    send ``metadata.video_urls``/``metadata.audio_urls`` at all.
+    The previous revision nested everything under ``metadata.parameters`` /
+    ``metadata.input.media``; those names are now rejected field by field, so
+    the body always uses the documented top-level shape.
     """
     metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
     if isinstance(metadata.get("input"), dict) and metadata["input"].get("media"):
@@ -173,6 +182,10 @@ def _wan3_body(
         )
     explicit = metadata.get("parameters") if isinstance(metadata.get("parameters"), dict) else {}
 
+    for key in _WAN3_UNSUPPORTED:
+        if payload.get(key) is not None or explicit.get(key) is not None:
+            raise FuyaoRequestError(f"扶摇 Wan3 不支持 {key}，请去掉该参数")
+
     roles = [role for role, _ in images]
     has_frames = FIRST_FRAME in roles or LAST_FRAME in roles
     if LAST_FRAME in roles and FIRST_FRAME not in roles:
@@ -180,46 +193,53 @@ def _wan3_body(
     if has_frames and (REFERENCE_IMAGE in roles or videos or audios):
         raise FuyaoRequestError("Wan3 的首尾帧模式不能与参考图、参考视频或参考音频混用")
 
-    parameters: dict[str, Any] = {}
-    if seconds is not None:
-        if seconds != WAN3_AUTO_DURATION and not 2 <= seconds <= 30:
-            raise FuyaoRequestError("Wan3 的时长必须是 2–30 秒，或 -1 表示自动时长")
-        parameters["duration"] = seconds
-    resolution = resolution or _resolution_from_size(payload.get("size") or metadata.get("size"))
-    if resolution:
-        parameters["resolution"] = _wan3_resolution(resolution)
-    # ``adaptive``/``auto`` mean "let the model decide", which Wan3 expresses
-    # by leaving ``ratio`` out.
-    if ratio and ratio.lower() not in _WAN3_AUTO_RATIOS:
-        parameters["ratio"] = ratio
-    audio = _first_bool(payload, metadata, ("generate_audio", "generateAudio"))
-    if audio is not None:
-        parameters["audio"] = audio
-    for key in _WAN3_EXTRA_PARAMETERS:
-        if payload.get(key) is not None:
-            parameters[key] = payload[key]
-    # A caller who already speaks the Wan3 form fills the gaps; the relay's own
-    # fields carry a split route's pinned resolution, so they come first.
-    for key, value in explicit.items():
-        if value is None or key in parameters:
-            continue
-        parameters[key] = _wan3_resolution(value) if key == "resolution" and isinstance(value, str) else value
-    # Wan3 bills per second, and the gateway requires the duration to be
-    # explicit for that; -1 is the explicit way to ask for automatic length.
-    if "duration" not in parameters:
+    if seconds is None:
+        seconds = _wan3_explicit_seconds(explicit.get("duration"))
+    if seconds is None:
+        # Wan3 bills per second, and the gateway requires the duration to be
+        # explicit for that; -1 is the explicit way to ask for automatic length.
         raise FuyaoRequestError("Wan3 按秒计费，必须提供时长（2–30 秒，或 -1 表示自动时长）")
+    if seconds != WAN3_AUTO_DURATION and not 2 <= seconds <= 30:
+        raise FuyaoRequestError("Wan3 的时长必须是 2–30 秒，或 -1 表示自动时长")
+    body["duration"] = seconds
 
-    media = [{"type": role, "url": url} for role, url in images]
-    media += [{"type": "reference_video", "url": url} for url in videos]
-    media += [{"type": "reference_audio", "url": url} for url in audios]
+    resolution = resolution or _resolution_from_size(payload.get("size") or metadata.get("size"))
+    if not resolution and isinstance(explicit.get("resolution"), str):
+        resolution = explicit["resolution"]
+    if resolution:
+        body["resolution"] = _wan3_resolution(resolution)
 
-    wan_metadata: dict[str, Any] = {}
-    if parameters:
-        wan_metadata["parameters"] = parameters
-    if media:
-        wan_metadata["input"] = {"media": media}
-    if wan_metadata:
-        body["metadata"] = wan_metadata
+    # ``adaptive``/``auto`` leave the ratio to the model; the contract still
+    # expects the field, so the neutral value is sent instead of omitting it.
+    if ratio and ratio.lower() not in _WAN3_AUTO_RATIOS:
+        body["aspect_ratio"] = ratio
+    else:
+        body["aspect_ratio"] = "adaptive"
+
+    audio = _first_bool(payload, metadata, ("generate_audio", "generateAudio"))
+    if audio is None:
+        audio = _explicit_bool(explicit.get("generate_audio"))
+    if audio is None:
+        audio = _explicit_bool(explicit.get("audio"))
+    if audio is not None:
+        body["generate_audio"] = audio
+
+    body["mode"] = _wan3_mode(payload.get("mode") or explicit.get("mode"), has_frames, bool(images or videos or audios))
+
+    if has_frames:
+        first = next((url for role, url in images if role == FIRST_FRAME), None)
+        last = next((url for role, url in images if role == LAST_FRAME), None)
+        if first:
+            body["first_frame"] = first
+        if last:
+            body["last_frame"] = last
+    else:
+        if images:
+            body["images"] = [url for _, url in images]
+        if videos:
+            body["videos"] = videos
+        if audios:
+            body["audios"] = audios
     return body
 
 
@@ -335,9 +355,43 @@ def _seedance_fast_requested_mode(payload: dict[str, Any]) -> str | None:
 
 
 def _wan3_resolution(value: str) -> str:
-    normalized = value.strip().upper()
+    normalized = value.strip().lower()
     if normalized not in _WAN3_RESOLUTIONS:
-        raise FuyaoRequestError("Wan3 的分辨率只能是 480P、720P 或 1080P")
+        raise FuyaoRequestError("Wan3 的分辨率只能是 480p、720p 或 1080p")
+    return normalized
+
+
+def _wan3_explicit_seconds(value: Any) -> int | None:
+    """Read ``metadata.parameters.duration`` from a caller on the old form."""
+    if value is None or value == "":
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise FuyaoRequestError("metadata.parameters.duration 必须是整数秒") from exc
+    if not number.is_integer():
+        raise FuyaoRequestError("metadata.parameters.duration 必须是整数秒")
+    return int(number)
+
+
+def _explicit_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str) and value.strip().lower() in {"true", "false"}:
+        return value.strip().lower() == "true"
+    return None
+
+
+def _wan3_mode(requested: Any, has_frames: bool, has_references: bool) -> str:
+    """The documented mode for the material, or the caller's matching choice."""
+    expected = "frames2video" if has_frames else "mixed2video" if has_references else "text2video"
+    if requested is None or requested == "":
+        return expected
+    normalized = requested.strip().lower() if isinstance(requested, str) else ""
+    if normalized not in _WAN3_MODES:
+        raise FuyaoRequestError("Wan3 的 mode 只能是 text2video、frames2video 或 mixed2video")
+    if normalized != expected:
+        raise FuyaoRequestError(f"按提供的素材，Wan3 的 mode 应为 {expected}")
     return normalized
 
 

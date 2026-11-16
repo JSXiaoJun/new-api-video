@@ -210,7 +210,7 @@ class FuyaoPayloadTests(unittest.TestCase):
             fuyao.transform_create_payload({"model": SD_FULL, "prompt": "p", "seconds": 5}),
         )
 
-    def test_wan3_uses_metadata_parameters_and_typed_media(self):
+    def test_wan3_sends_the_documented_top_level_fields(self):
         body = fuyao.transform_create_payload({
             "model": "wan3.0-video",
             "prompt": "使用图片1的人物，参考视频1的镜头运动，并参考音频1生成视频",
@@ -218,28 +218,25 @@ class FuyaoPayloadTests(unittest.TestCase):
             "resolution": "720p",
             "aspect_ratio": "16:9",
             "generate_audio": True,
-            "seed": 7,
             "image_urls": ["https://cdn.example/person.jpg"],
             "video_urls": ["https://cdn.example/reference.mp4"],
             "metadata": {"audio_urls": ["https://cdn.example/reference.mp3"]},
         }, "fuyao-wan3")
+        # The 2026-10-02 shape (metadata.parameters / metadata.input.media) is
+        # rejected field by field now: ``audio`` answers with
+        # "This protocol does not document audio", so nothing is nested.
+        self.assertNotIn("metadata", body)
         self.assertEqual(body, {
             "model": "wan3.0-video",
             "prompt": "使用图片1的人物，参考视频1的镜头运动，并参考音频1生成视频",
-            "metadata": {
-                "parameters": {
-                    "duration": 8,
-                    "resolution": "720P",
-                    "ratio": "16:9",
-                    "audio": True,
-                    "seed": 7,
-                },
-                "input": {"media": [
-                    {"type": "reference_image", "url": "https://cdn.example/person.jpg"},
-                    {"type": "reference_video", "url": "https://cdn.example/reference.mp4"},
-                    {"type": "reference_audio", "url": "https://cdn.example/reference.mp3"},
-                ]},
-            },
+            "duration": 8,
+            "resolution": "720p",
+            "aspect_ratio": "16:9",
+            "generate_audio": True,
+            "mode": "mixed2video",
+            "images": ["https://cdn.example/person.jpg"],
+            "videos": ["https://cdn.example/reference.mp4"],
+            "audios": ["https://cdn.example/reference.mp3"],
         })
 
     def test_wan3_first_and_last_frame(self):
@@ -251,12 +248,14 @@ class FuyaoPayloadTests(unittest.TestCase):
             "first_frame": {"url": "https://cdn.example/first.jpg"},
             "aspect_ratio": "adaptive",
         })
-        self.assertEqual(body["metadata"], {
-            "parameters": {"duration": 5},
-            "input": {"media": [
-                {"type": "first_frame", "url": "https://cdn.example/first.jpg"},
-                {"type": "last_frame", "url": "https://cdn.example/last.jpg"},
-            ]},
+        self.assertEqual(body, {
+            "model": "wan3.0-video-prime",
+            "prompt": "镜头从第一帧平滑过渡到最后一帧",
+            "duration": 5,
+            "aspect_ratio": "adaptive",
+            "mode": "frames2video",
+            "first_frame": "https://cdn.example/first.jpg",
+            "last_frame": "https://cdn.example/last.jpg",
         })
 
     def test_wan3_rejects_what_the_gateway_documents_as_invalid(self):
@@ -270,10 +269,13 @@ class FuyaoPayloadTests(unittest.TestCase):
                 "first_frame_url": "https://cdn.example/first.jpg",
                 "video_urls": ["https://cdn.example/v.mp4"],
             },
+            {"first_frame_url": "https://cdn.example/first.jpg", "mode": "text2video"},
             {"seconds": 1},
             {"seconds": 31},
             {"seconds": None},
             {"resolution": "1440p"},
+            {"seed": 7},
+            {"watermark": False},
             {"metadata": {"input": {"media": [{"type": "reference_image", "url": "https://x/y.jpg"}]}}},
         ]
         for extra in cases:
@@ -287,15 +289,17 @@ class FuyaoPayloadTests(unittest.TestCase):
             "seconds": -1,
             "size": "1280x720",
             "generate_audio": "false",
-            "metadata": {"parameters": {"duration": 10, "ratio": "9:16", "watermark": False, "resolution": "1080P"}},
+            "metadata": {"parameters": {"duration": 10, "ratio": "9:16", "resolution": "1080P"}},
         })
         # Relay fields win over metadata.parameters, which only fills gaps.
-        self.assertEqual(body["metadata"]["parameters"], {
+        self.assertEqual(body, {
+            "model": "wan3.0-video",
+            "prompt": "p",
             "duration": -1,
-            "resolution": "720P",
-            "ratio": "16:9",
-            "audio": False,
-            "watermark": False,
+            "resolution": "720p",
+            "aspect_ratio": "16:9",
+            "generate_audio": False,
+            "mode": "text2video",
         })
         self.assertNotIn("seconds", body)
         self.assertNotIn("size", body)
@@ -304,7 +308,14 @@ class FuyaoPayloadTests(unittest.TestCase):
             "prompt": "p",
             "metadata": {"parameters": {"duration": 6, "audio": True}},
         })
-        self.assertEqual(only_explicit["metadata"], {"parameters": {"duration": 6, "audio": True}})
+        self.assertEqual(only_explicit, {
+            "model": "wan3.0-video",
+            "prompt": "p",
+            "duration": 6,
+            "aspect_ratio": "adaptive",
+            "generate_audio": True,
+            "mode": "text2video",
+        })
 
     def test_forwarded_media_matches_what_the_relay_counts(self):
         payload = {
@@ -322,10 +333,8 @@ class FuyaoPayloadTests(unittest.TestCase):
         self.assertEqual(len(body["reference_videos"]), counts["video"])
         self.assertEqual(len(body["reference_audios"]), counts["audio"])
         wan = fuyao.transform_create_payload({**payload, "model": "wan3.0-video", "seconds": 8})
-        media = wan["metadata"]["input"]["media"]
-        for kind in ("image", "video", "audio"):
-            forwarded = [item for item in media if item["type"] == f"reference_{kind}"]
-            self.assertEqual(len(forwarded), counts[kind], kind)
+        for kind, field in (("image", "images"), ("video", "videos"), ("audio", "audios")):
+            self.assertEqual(len(wan[field]), counts[kind], kind)
 
     def test_conflicting_or_fractional_seconds_are_rejected(self):
         for extra in ({"seconds": 5, "duration": 6}, {"seconds": "5.5"}, {"seconds": "abc"}):

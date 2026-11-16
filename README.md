@@ -261,11 +261,13 @@ enabled public models and their configured capabilities.
 - `Minimax-H3-*` → `fuyao-minimax-h3`：分辨率和时长由模型 ID 固定，`seconds` 必须与 ID 里的
   `10s`/`15s` 一致（单一时长会自动补齐），不下发 `resolution`。
 - `【官方稳定版】sd2.0-{480p,720p}-*` → `fuyao-sd2`：4–15 秒，分辨率由模型 ID 固定；`mini` 不支持纯文生视频。
-- `wan3.0-video*` → `fuyao-wan3`：2–30 秒（`-1` 为自动时长），480P/720P/1080P，最多 10 张图、5 段视频、
-  5 段音频。按扶摇 2026-10-02 的 Wan3 专用说明，时长、分辨率、比例和 `generate_audio` 统一放进
-  `metadata.parameters`（`duration` / `resolution` / `ratio` / `audio`），参考素材放进
-  `metadata.input.media[]: {"type", "url"}`；`adaptive` 比例不下发，交给模型决定。尾帧必须配合首帧，
-  首尾帧模式不能与参考图、参考视频、参考音频混用。
+- `wan3.0-video*` → `fuyao-wan3`：2–30 秒（`-1` 为自动时长），480p/720p/1080p，最多 10 张图、5 段视频、
+  5 段音频。按扶摇 2026-11-09 的 Wan3 专用说明，参数全部作为顶层字段下发：`duration` / `resolution` /
+  `aspect_ratio` / `mode` / `generate_audio`，参考素材用顶层 `images` / `videos` / `audios`，首尾帧用
+  `first_frame` / `last_frame`；`adaptive` 比例显式下发，交给模型决定。旧版 `metadata.parameters`
+  （`duration` / `resolution` / `ratio` / `audio`）会被网关按字段拒绝——`audio` 会报
+  `This protocol does not document audio`——所以不再使用；`seed`、`watermark`、`prompt_extend` 上游已声明
+  不支持，传了直接 400。尾帧必须配合首帧，首尾帧模式不能与参考图、参考视频、参考音频混用。
 - 其他视频模型 → `fuyao-video`：上游未公布上限，默认只开放 1 张参考图，按实测在路由上放宽。
 
 除 Wan3 外，参考素材统一以公网 URL 下发：图片为 `reference_images: [{"url", "role"}]`（`reference_image` /

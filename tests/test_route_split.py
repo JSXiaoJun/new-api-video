@@ -261,7 +261,7 @@ class SplitRouteProxyTests(unittest.TestCase):
         public_model = self._save()
         sent = self._create({"model": public_model, "prompt": "p", "seconds": 5})
         self.assertEqual(sent["json"]["model"], "wan3.0-video")
-        self.assertEqual(sent["json"]["metadata"]["parameters"]["resolution"], "720P")
+        self.assertEqual(sent["json"]["resolution"], "720p")
 
     def test_split_route_checks_metadata_parameters_resolution(self):
         public_model = self._save()
@@ -279,7 +279,7 @@ class SplitRouteProxyTests(unittest.TestCase):
             "seconds": 5,
             "metadata": {"parameters": {"resolution": "720P"}},
         })
-        self.assertEqual(sent["json"]["metadata"]["parameters"]["resolution"], "720P")
+        self.assertEqual(sent["json"]["resolution"], "720p")
 
     def test_split_route_rejects_another_resolution(self):
         public_model = self._save()

@@ -161,7 +161,7 @@ class DurationProxyTests(unittest.TestCase):
     def test_wan3_automatic_duration_is_still_accepted(self):
         model = self._save("fuyao", "fuyao-wan3", [5], "wan3.0-video")
         sent = self._create({"model": model, "prompt": "p", "seconds": -1})
-        self.assertEqual(sent[0]["metadata"]["parameters"]["duration"], -1)
+        self.assertEqual(sent[0]["duration"], -1)
         with self.assertRaises(HTTPException):
             self._create({"model": model, "prompt": "p", "seconds": 6})
 
